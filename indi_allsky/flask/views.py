@@ -4446,7 +4446,7 @@ class AjaxImageViewerView(BaseView):
             json_data['IMAGE_DATA'] = form_viewer.getImages(year, month, day, hour)
 
         else:
-            # this happens when filtering images
+            # this happens when filtering images on detections
             json_data['YEAR_SELECT'] = form_viewer.getYears()
 
             if not json_data['YEAR_SELECT']:
@@ -4456,7 +4456,6 @@ class AjaxImageViewerView(BaseView):
                 json_data['DAY_SELECT'] = (('', None),)
                 json_data['HOUR_SELECT'] = (('', None),)
                 json_data['IMG_SELECT'] = (('', None),)
-                json_data['IMAGE_DATA'] = []
 
                 return json_data
 
@@ -4582,7 +4581,7 @@ class AjaxFitsImageViewerView(BaseView):
             json_data['IMAGE_DATA'] = form_viewer.getImages(year, month, day, hour)
 
         else:
-            # this happens when filtering images
+            # this happens when filtering images on detections
             json_data['YEAR_SELECT'] = form_viewer.getYears()
 
             if not json_data['YEAR_SELECT']:
@@ -4592,7 +4591,6 @@ class AjaxFitsImageViewerView(BaseView):
                 json_data['DAY_SELECT'] = (('', None),)
                 json_data['HOUR_SELECT'] = (('', None),)
                 json_data['IMG_SELECT'] = (('', None),)
-                json_data['IMAGE_DATA'] = []
 
                 return json_data
 
@@ -4894,7 +4892,7 @@ class AjaxGalleryViewerView(BaseView):
             json_data['IMAGE_DATA'] = form_viewer.getImages(year, month, day, hour)
 
         else:
-            # this happens when filtering images on detections
+            # this happens when filtering images
             json_data['YEAR_SELECT'] = form_viewer.getYears()
 
             if not json_data['YEAR_SELECT']:
@@ -4904,6 +4902,7 @@ class AjaxGalleryViewerView(BaseView):
                 json_data['DAY_SELECT'] = (('', None),)
                 json_data['HOUR_SELECT'] = (('', None),)
                 json_data['IMG_SELECT'] = (('', None),)
+                json_data['IMAGE_DATA'] = []
 
                 return json_data
 

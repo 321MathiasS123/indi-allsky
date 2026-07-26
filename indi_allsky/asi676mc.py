@@ -141,7 +141,11 @@ def frame_signature(data, settings=None):
     """Measure the four Bayer parities and classify the purple-frame fault."""
     validate_raw_mosaic(data)
     config = normalize_settings(settings)
+    return _frame_signature(data, config)
 
+
+def _frame_signature(data, config):
+    """Measure a validated frame using already-normalized settings."""
     height, width = data.shape
     sample_step = config['SAMPLE_STEP']
 
@@ -183,7 +187,7 @@ def frame_signature(data, settings=None):
     }
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=1)
 def _build_lookup_tables(gains):
     values = numpy.arange(65536, dtype=numpy.float64)
     return tuple(
@@ -192,7 +196,23 @@ def _build_lookup_tables(gains):
     )
 
 
-def _reconstruct_clipped_green(data, green1_clipped, chunk_rows):
+def _pack_clipped_green_mask(data, saturation_threshold, chunk_rows):
+    """Record clipped G1 samples compactly before applying the gain tables."""
+    green1 = data[0::2, 1::2]
+    plane_height, plane_width = green1.shape
+    plane_chunk_rows = max(1, chunk_rows // 2)
+    packed_width = (plane_width + 7) // 8
+    packed_mask = numpy.empty((plane_height, packed_width), dtype=numpy.uint8)
+
+    for row_start in range(0, plane_height, plane_chunk_rows):
+        row_stop = min(row_start + plane_chunk_rows, plane_height)
+        clipped = green1[row_start:row_stop] >= saturation_threshold
+        packed_mask[row_start:row_stop] = numpy.packbits(clipped, axis=1)
+
+    return packed_mask
+
+
+def _reconstruct_clipped_green(data, green1_clipped_packed, chunk_rows):
     green1 = data[0::2, 1::2]
     green2 = data[1::2, 0::2]
     plane_height, plane_width = green1.shape
@@ -218,7 +238,11 @@ def _reconstruct_clipped_green(data, green1_clipped, chunk_rows):
             (upper[:, -1] + lower[:, -1]) / 2.0
         ).astype(numpy.uint16)
 
-        mask = green1_clipped[row_start:row_stop]
+        mask = numpy.unpackbits(
+            green1_clipped_packed[row_start:row_stop],
+            axis=1,
+            count=plane_width,
+        ).view(numpy.bool_)
         target = green1[row_start:row_stop]
         replace = mask & (estimate > target)
         target[replace] = estimate[replace]
@@ -228,7 +252,11 @@ def repair_in_place(data, settings=None):
     """Restore row phase, Bayer gains, and prematurely clipped G1 samples."""
     validate_raw_mosaic(data)
     config = normalize_settings(settings)
+    return _repair_in_place(data, config)
 
+
+def _repair_in_place(data, config):
+    """Repair a validated frame using already-normalized settings."""
     chunk_rows = config['CHUNK_ROWS']
     height = data.shape[0]
     gains = (
@@ -244,8 +272,10 @@ def repair_in_place(data, settings=None):
         data[row_start:row_stop] = data[row_start + 1:row_stop + 1]
     data[-1] = data[-3]
 
-    green1_clipped = (
-        data[0::2, 1::2] >= config['SOURCE_SATURATION_THRESHOLD']
+    green1_clipped_packed = _pack_clipped_green_mask(
+        data,
+        config['SOURCE_SATURATION_THRESHOLD'],
+        chunk_rows,
     )
 
     for row_start in range(0, height, chunk_rows):
@@ -259,7 +289,7 @@ def repair_in_place(data, settings=None):
                 lookup = lookup_tables[row_parity * 2 + column_parity]
                 plane[:] = lookup[plane]
 
-    _reconstruct_clipped_green(data, green1_clipped, chunk_rows)
+    _reconstruct_clipped_green(data, green1_clipped_packed, chunk_rows)
     return data
 
 
@@ -267,9 +297,10 @@ def repair_if_needed(data, settings=None):
     """Repair a bad frame and report before/after diagnostic signatures."""
     total_start = time.perf_counter()
     config = normalize_settings(settings)
+    validate_raw_mosaic(data)
 
     detection_start = time.perf_counter()
-    signature_before = frame_signature(data, config)
+    signature_before = _frame_signature(data, config)
     detection_elapsed_s = time.perf_counter() - detection_start
 
     if not signature_before['is_bad']:
@@ -293,7 +324,7 @@ def repair_if_needed(data, settings=None):
     repair_start = time.perf_counter()
     repaired_data = data.copy()
     repair_in_place(repaired_data, config)
-    signature_after = frame_signature(repaired_data, config)
+    signature_after = _frame_signature(repaired_data, config)
     repair_elapsed_s = time.perf_counter() - repair_start
     total_elapsed_s = time.perf_counter() - total_start
 

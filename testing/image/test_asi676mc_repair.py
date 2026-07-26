@@ -118,6 +118,20 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         with self.assertRaises(ValueError):
             asi676mc.normalize_settings({'CHUNK_ROWS': 3})
 
+    def test_packed_clipping_mask_preserves_partial_final_byte(self):
+        data = numpy.arange(12 * 20, dtype=numpy.uint16).reshape((12, 20))
+        expected = data[0::2, 1::2] >= 100
+
+        packed = asi676mc._pack_clipped_green_mask(data, 100, 4)
+        unpacked = numpy.unpackbits(
+            packed,
+            axis=1,
+            count=expected.shape[1],
+        ).view(numpy.bool_)
+
+        self.assertEqual(packed.shape, (6, 2))
+        numpy.testing.assert_array_equal(unpacked, expected)
+
     def test_repair_audit_metadata_is_json_safe(self):
         signature_before = {
             'purple_ratio': numpy.float64(2.0),

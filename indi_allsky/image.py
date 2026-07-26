@@ -797,7 +797,13 @@ class ImageWorker(Process):
             }
 
             asi676mc_repair_result = i_ref.asi676mc_repair_result
-            if asi676mc_repair_result:
+            if (
+                asi676mc_repair_result
+                and asi676mc_repair_result['status'] in (
+                    'repaired',
+                    'validation_failed',
+                )
+            ):
                 image_add_data['asi676mc_repair_status'] = asi676mc_repair_result['status']
                 image_add_data['asi676mc_repair'] = dict(asi676mc_repair_result)
 
