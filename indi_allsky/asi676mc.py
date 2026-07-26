@@ -72,6 +72,31 @@ def normalize_settings(settings=None):
     return normalized
 
 
+def audit_metadata(status, reason=None, signature_before=None, signature_after=None):
+    """Build the JSON-safe repair audit record stored with a saved image."""
+    metadata = {
+        'status' : str(status),
+    }
+
+    if reason:
+        metadata['reason'] = str(reason)
+
+    for key, signature in (
+        ('signature_before', signature_before),
+        ('signature_after', signature_after),
+    ):
+        if not signature:
+            continue
+
+        metadata[key] = {
+            'purple_ratio'    : float(signature['purple_ratio']),
+            'red_side_ratio'  : float(signature['red_side_ratio']),
+            'blue_side_ratio' : float(signature['blue_side_ratio']),
+        }
+
+    return metadata
+
+
 def validate_raw_mosaic(data):
     """Reject inputs that cannot safely use the RGGB parity repair."""
     if not isinstance(data, numpy.ndarray):

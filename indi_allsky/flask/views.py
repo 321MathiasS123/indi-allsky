@@ -2400,6 +2400,7 @@ class ConfigView(FormView):
             'STARTRAILS__IMAGE_CIRCLE_MASK_BLUR'    : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_BLUR', 35),
             'STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY' : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_OPACITY', 100),
             'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False),
+            'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'             : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('LOG_EVERY_FRAME', False),
             'IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('PURPLE_RATIO_THRESHOLD', 1.5),
             'IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'    : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('RED_SIDE_RATIO_THRESHOLD', 1.25),
             'IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'   : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('BLUE_SIDE_RATIO_THRESHOLD', 1.5),
@@ -3437,6 +3438,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['STARTRAILS']['IMAGE_CIRCLE_MASK_OPACITY']  = int(request.json['STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY'])
         asi676mc_repair_config = self.indi_allsky_config.setdefault('IMAGE_ASI676MC_REPAIR', {})
         asi676mc_repair_config['ENABLE']                      = bool(request.json['IMAGE_ASI676MC_REPAIR__ENABLE'])
+        asi676mc_repair_config['LOG_EVERY_FRAME']             = bool(request.json['IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'])
         asi676mc_repair_config['PURPLE_RATIO_THRESHOLD']      = float(request.json['IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'])
         asi676mc_repair_config['RED_SIDE_RATIO_THRESHOLD']    = float(request.json['IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'])
         asi676mc_repair_config['BLUE_SIDE_RATIO_THRESHOLD']   = float(request.json['IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'])
@@ -4410,7 +4412,7 @@ class AjaxImageViewerView(BaseView):
             json_data['IMAGE_DATA'] = form_viewer.getImages(year, month, day, hour)
 
         else:
-            # this happens when filtering images on detections
+            # this happens when filtering images
             json_data['YEAR_SELECT'] = form_viewer.getYears()
 
             if not json_data['YEAR_SELECT']:
@@ -4420,6 +4422,7 @@ class AjaxImageViewerView(BaseView):
                 json_data['DAY_SELECT'] = (('', None),)
                 json_data['HOUR_SELECT'] = (('', None),)
                 json_data['IMG_SELECT'] = (('', None),)
+                json_data['IMAGE_DATA'] = []
 
                 return json_data
 
@@ -4545,7 +4548,7 @@ class AjaxFitsImageViewerView(BaseView):
             json_data['IMAGE_DATA'] = form_viewer.getImages(year, month, day, hour)
 
         else:
-            # this happens when filtering images on detections
+            # this happens when filtering images
             json_data['YEAR_SELECT'] = form_viewer.getYears()
 
             if not json_data['YEAR_SELECT']:
@@ -4555,6 +4558,7 @@ class AjaxFitsImageViewerView(BaseView):
                 json_data['DAY_SELECT'] = (('', None),)
                 json_data['HOUR_SELECT'] = (('', None),)
                 json_data['IMG_SELECT'] = (('', None),)
+                json_data['IMAGE_DATA'] = []
 
                 return json_data
 
@@ -4717,6 +4721,7 @@ class GalleryViewerView(FormView):
             'DAY_SELECT'   : None,
             'HOUR_SELECT'  : None,
             'FILTER_DETECTIONS' : None,
+            'FILTER_ASI676MC_REPAIRED' : None,
         }
 
 
@@ -4753,6 +4758,7 @@ class AjaxGalleryViewerView(BaseView):
         form_day   = int(request.json.get('DAY_SELECT', 0))
         form_hour  = int(request.json.get('HOUR_SELECT', -1))  # 0 is a real hour
         form_filter_detections = bool(request.json.get('FILTER_DETECTIONS'))
+        form_filter_asi676mc_repaired = bool(request.json.get('FILTER_ASI676MC_REPAIRED'))
 
         self.cameraSetup(camera_id=camera_id)
 
@@ -4770,6 +4776,7 @@ class AjaxGalleryViewerView(BaseView):
                 data=request.json,
                 camera_id=camera_id,
                 detections_count=1,
+                asi676mc_repaired_only=form_filter_asi676mc_repaired,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
@@ -4778,6 +4785,7 @@ class AjaxGalleryViewerView(BaseView):
                 data=request.json,
                 camera_id=camera_id,
                 detections_count=0,
+                asi676mc_repaired_only=form_filter_asi676mc_repaired,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )

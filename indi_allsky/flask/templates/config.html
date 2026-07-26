@@ -1306,6 +1306,21 @@ var camera_id = {{ camera_id }};
 
     <div class="form-group row">
         <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME.label }}
+        </div>
+        <div class="col-sm-2">
+            <div class="form-switch">
+                {{ form_config.IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME(class='form-check-input') }}
+                <div id="IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME-error" class="invalid-feedback text-danger" style="display: none;"></div>
+            </div>
+        </div>
+        <div class="col-sm-8">
+            Log the detection result for every ASI676MC frame. Successful repairs and validation failures are always logged.
+        </div>
+    </div>
+
+    <div class="form-group row">
+        <div class="col-sm-2">
             {{ form_config.IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD.label(class='col-form-label') }}
         </div>
         <div class="col-sm-2">
@@ -10622,6 +10637,7 @@ const checkbox_field_names = [
     'IMAGE_STACK_MOONMODE',
     'IMAGE_STACK_DAY',
     'IMAGE_ASI676MC_REPAIR__ENABLE',
+    'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
     'IMAGE_CALIBRATE_DARK',
     'IMAGE_CALIBRATE_BPM',
     'IMAGE_CALIBRATE_FIX_HOLES',
@@ -11321,8 +11337,11 @@ var group_fields_asi676mc_repair = [
     'IMAGE_ASI676MC_REPAIR__CHUNK_ROWS',
 ];
 
+var group_checkbox_fields_asi676mc_repair = [
+    'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
+];
 
-group_on_change('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, []);
+group_on_change('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, group_checkbox_fields_asi676mc_repair);
 
 
 var group_fields_fits = [
@@ -11655,7 +11674,7 @@ $( document ).ready(function() {
     }
 
 
-    group_on_ready('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, []);
+    group_on_ready('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, group_checkbox_fields_asi676mc_repair);
     group_on_ready('IMAGE_SAVE_FITS', group_fields_fits, group_checkbox_fields_fits);
     group_on_ready('IMAGE_CIRCLE_MASK__ENABLE', group_fields_image_circle_mask, group_checkbox_fields_image_circle_mask);
     group_on_ready('CAMERA_SQM__ENABLE', group_fields_camera_sqm, group_checkbox_fields_camera_sqm);

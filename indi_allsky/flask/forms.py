@@ -4568,6 +4568,7 @@ class IndiAllskyConfigForm(FlaskForm):
     STARTRAILS__IMAGE_CIRCLE_MASK_BLUR      = IntegerField('Mask Blur', validators=[IMAGE_CIRCLE_MASK__BLUR_validator])
     STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY   = IntegerField('Mask Opacity %', validators=[IMAGE_CIRCLE_MASK__OPACITY_validator])
     IMAGE_ASI676MC_REPAIR__ENABLE                      = BooleanField('Enable ASI676MC RAW16 Repair')
+    IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME             = BooleanField('Log Every ASI676MC Frame')
     IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD      = FloatField('Purple Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD    = FloatField('Red-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD   = FloatField('Blue-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
@@ -7320,6 +7321,7 @@ class IndiAllskyGalleryViewer(FlaskForm):
     DAY_SELECT           = SelectField('Day', choices=[], validators=[])
     HOUR_SELECT          = SelectField('Hour', choices=[], validators=[])
     FILTER_DETECTIONS    = BooleanField('Detections')
+    FILTER_ASI676MC_REPAIRED = BooleanField('ASI676MC repaired')
 
 
     def __init__(self, *args, **kwargs):
@@ -7329,6 +7331,16 @@ class IndiAllskyGalleryViewer(FlaskForm):
         self.s3_prefix = kwargs.get('s3_prefix', '')
         self.camera_id = kwargs.get('camera_id')
         self.local = kwargs.get('local')
+        self.asi676mc_repaired_only = kwargs.get('asi676mc_repaired_only', False)
+
+
+    def _apply_asi676mc_repaired_filter(self, query):
+        if not self.asi676mc_repaired_only:
+            return query
+
+        return query.filter(
+            IndiAllSkyDbImageTable.data['asi676mc_repair_status'].as_string() == 'repaired'
+        )
 
 
     def getYears(self):
@@ -7342,6 +7354,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
                     IndiAllSkyDbImageTable.detections >= self.detections_count,
                 )
         )
+
+        years_query = self._apply_asi676mc_repaired_filter(years_query)
 
 
         ### Disable this join to make things faster
@@ -7386,6 +7400,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
                     IndiAllSkyDbImageTable.createDate_year == year,
                 )
         )
+
+        months_query = self._apply_asi676mc_repaired_filter(months_query)
 
         ### Disable this join to make things faster
         #    .join(IndiAllSkyDbThumbnailTable, IndiAllSkyDbImageTable.thumbnail_uuid == IndiAllSkyDbThumbnailTable.uuid)\
@@ -7433,6 +7449,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
                     IndiAllSkyDbImageTable.createDate_month == month,
                 )
         )
+
+        days_query = self._apply_asi676mc_repaired_filter(days_query)
 
 
         ### Disable this join to make things faster
@@ -7482,6 +7500,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
                 )
         )
 
+        hours_query = self._apply_asi676mc_repaired_filter(hours_query)
+
 
         ### Disable this join to make things faster
         #    .join(IndiAllSkyDbThumbnailTable, IndiAllSkyDbImageTable.thumbnail_uuid == IndiAllSkyDbThumbnailTable.uuid)\
@@ -7530,6 +7550,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
                 )
         )
 
+        images_query = self._apply_asi676mc_repaired_filter(images_query)
+
 
         if not self.local:
             # Do not serve local assets
@@ -7569,6 +7591,19 @@ class IndiAllskyGalleryViewer(FlaskForm):
             image_dict['thumbnail_url'] = str(thumbnail_url)
             image_dict['thumbnail_width'] = thumb.width
             image_dict['thumbnail_height'] = thumb.height
+
+            image_metadata = img.data or {}
+            repair_metadata = image_metadata.get('asi676mc_repair', {})
+            repair_status = image_metadata.get(
+                'asi676mc_repair_status',
+                repair_metadata.get('status'),
+            )
+            image_dict['asi676mc_repair_status'] = repair_status
+
+            signature_before = repair_metadata.get('signature_before') or {}
+            signature_after = repair_metadata.get('signature_after') or {}
+            image_dict['asi676mc_purple_ratio_before'] = signature_before.get('purple_ratio')
+            image_dict['asi676mc_purple_ratio_after'] = signature_after.get('purple_ratio')
 
 
             images_data.append(image_dict)

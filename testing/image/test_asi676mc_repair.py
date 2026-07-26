@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest import mock
 
@@ -86,6 +87,29 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             asi676mc.normalize_settings({'CHUNK_ROWS': 3})
+
+    def test_repair_audit_metadata_is_json_safe(self):
+        signature_before = {
+            'purple_ratio': numpy.float64(2.0),
+            'red_side_ratio': numpy.float64(1.5),
+            'blue_side_ratio': numpy.float64(1.75),
+        }
+        signature_after = {
+            'purple_ratio': numpy.float64(0.9),
+            'red_side_ratio': numpy.float64(1.0),
+            'blue_side_ratio': numpy.float64(1.0),
+        }
+
+        metadata = asi676mc.audit_metadata(
+            'repaired',
+            signature_before=signature_before,
+            signature_after=signature_after,
+        )
+
+        self.assertEqual(metadata['status'], 'repaired')
+        self.assertEqual(metadata['signature_before']['purple_ratio'], 2.0)
+        self.assertEqual(metadata['signature_after']['purple_ratio'], 0.9)
+        json.dumps(metadata)
 
 
 if __name__ == '__main__':

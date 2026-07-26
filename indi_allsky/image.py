@@ -796,6 +796,11 @@ class ImageWorker(Process):
                 'camera_sqm_raw_mag' : self.image_processor.camera_sqm_raw_mag,
             }
 
+            asi676mc_repair_result = i_ref.asi676mc_repair_result
+            if asi676mc_repair_result:
+                image_add_data['asi676mc_repair_status'] = asi676mc_repair_result['status']
+                image_add_data['asi676mc_repair'] = dict(asi676mc_repair_result)
+
 
             for i in range(60):
                 v = self.sensors_temp_av[i]

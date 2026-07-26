@@ -258,6 +258,7 @@ class IndiAllSkyConfigBase(object):
         },
         "IMAGE_ASI676MC_REPAIR" : {
             "ENABLE"                      : False,
+            "LOG_EVERY_FRAME"             : False,
             "PURPLE_RATIO_THRESHOLD"      : 1.5,
             "RED_SIDE_RATIO_THRESHOLD"    : 1.25,
             "BLUE_SIDE_RATIO_THRESHOLD"   : 1.5,
