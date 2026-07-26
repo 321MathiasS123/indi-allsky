@@ -2399,6 +2399,17 @@ class ConfigView(FormView):
             'STARTRAILS__IMAGE_CIRCLE_MASK_DIAMETER': self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_DIAMETER', 3000),
             'STARTRAILS__IMAGE_CIRCLE_MASK_BLUR'    : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_BLUR', 35),
             'STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY' : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_OPACITY', 100),
+            'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False),
+            'IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('PURPLE_RATIO_THRESHOLD', 1.5),
+            'IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'    : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('RED_SIDE_RATIO_THRESHOLD', 1.25),
+            'IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'   : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('BLUE_SIDE_RATIO_THRESHOLD', 1.5),
+            'IMAGE_ASI676MC_REPAIR__SAMPLE_STEP'                 : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('SAMPLE_STEP', 32),
+            'IMAGE_ASI676MC_REPAIR__SOURCE_SATURATION_THRESHOLD' : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('SOURCE_SATURATION_THRESHOLD', 65000),
+            'IMAGE_ASI676MC_REPAIR__GAIN_R'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_R', 0.91004),
+            'IMAGE_ASI676MC_REPAIR__GAIN_G1'                     : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_G1', 1.68652),
+            'IMAGE_ASI676MC_REPAIR__GAIN_G2'                     : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_G2', 1.09238),
+            'IMAGE_ASI676MC_REPAIR__GAIN_B'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_B', 0.59537),
+            'IMAGE_ASI676MC_REPAIR__CHUNK_ROWS'                  : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('CHUNK_ROWS', 128),
             'IMAGE_CALIBRATE_DARK'           : self.indi_allsky_config.get('IMAGE_CALIBRATE_DARK', True),
             'IMAGE_CALIBRATE_BPM'            : self.indi_allsky_config.get('IMAGE_CALIBRATE_BPM', False),
             'IMAGE_CALIBRATE_FIX_HOLES'      : self.indi_allsky_config.get('IMAGE_CALIBRATE_FIX_HOLES', False),
@@ -3424,6 +3435,18 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['STARTRAILS']['IMAGE_CIRCLE_MASK_DIAMETER'] = int(request.json['STARTRAILS__IMAGE_CIRCLE_MASK_DIAMETER'])
         self.indi_allsky_config['STARTRAILS']['IMAGE_CIRCLE_MASK_BLUR']     = int(request.json['STARTRAILS__IMAGE_CIRCLE_MASK_BLUR'])
         self.indi_allsky_config['STARTRAILS']['IMAGE_CIRCLE_MASK_OPACITY']  = int(request.json['STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY'])
+        asi676mc_repair_config = self.indi_allsky_config.setdefault('IMAGE_ASI676MC_REPAIR', {})
+        asi676mc_repair_config['ENABLE']                      = bool(request.json['IMAGE_ASI676MC_REPAIR__ENABLE'])
+        asi676mc_repair_config['PURPLE_RATIO_THRESHOLD']      = float(request.json['IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'])
+        asi676mc_repair_config['RED_SIDE_RATIO_THRESHOLD']    = float(request.json['IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'])
+        asi676mc_repair_config['BLUE_SIDE_RATIO_THRESHOLD']   = float(request.json['IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'])
+        asi676mc_repair_config['SAMPLE_STEP']                 = int(request.json['IMAGE_ASI676MC_REPAIR__SAMPLE_STEP'])
+        asi676mc_repair_config['SOURCE_SATURATION_THRESHOLD'] = int(request.json['IMAGE_ASI676MC_REPAIR__SOURCE_SATURATION_THRESHOLD'])
+        asi676mc_repair_config['GAIN_R']                      = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_R'])
+        asi676mc_repair_config['GAIN_G1']                     = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_G1'])
+        asi676mc_repair_config['GAIN_G2']                     = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_G2'])
+        asi676mc_repair_config['GAIN_B']                      = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_B'])
+        asi676mc_repair_config['CHUNK_ROWS']                  = int(request.json['IMAGE_ASI676MC_REPAIR__CHUNK_ROWS'])
         self.indi_allsky_config['IMAGE_CALIBRATE_DARK']                 = bool(request.json['IMAGE_CALIBRATE_DARK'])
         self.indi_allsky_config['IMAGE_CALIBRATE_BPM']                  = bool(request.json['IMAGE_CALIBRATE_BPM'])
         self.indi_allsky_config['IMAGE_CALIBRATE_FIX_HOLES']            = bool(request.json['IMAGE_CALIBRATE_FIX_HOLES'])

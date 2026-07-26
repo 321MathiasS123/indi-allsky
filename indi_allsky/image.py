@@ -386,6 +386,9 @@ class ImageWorker(Process):
             return
 
 
+        self.image_processor.correct_asi676mc_frame(i_ref)
+
+
         filename_p.unlink()  # original file is no longer needed
 
 
@@ -2512,6 +2515,9 @@ class ImageWorker(Process):
             filename_p.unlink()
             #task.setFailed('Bad Image: {0:s}'.format(str(filename_p)))
             return
+
+
+        self.image_processor.correct_asi676mc_frame(i_ref)
 
 
         filename_p.unlink()

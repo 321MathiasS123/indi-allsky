@@ -21,6 +21,7 @@ import logging
 import ephem
 
 from . import constants
+from . import asi676mc
 
 from . import stretch as stretch_classes
 from .overlay.orb import IndiAllskyOrbGenerator
@@ -945,6 +946,81 @@ class ImageProcessor(object):
 
     def getLatestImage(self):
         return self.image_list[0]
+
+
+    def correct_asi676mc_frame(self, i_ref):
+        repair_config = self.config.get('IMAGE_ASI676MC_REPAIR', {})
+        if not repair_config.get('ENABLE', False):
+            return False
+
+        if not asi676mc.camera_name_matches(i_ref.camera_name):
+            logger.debug(
+                'ASI676MC frame repair skipped for camera: %s',
+                i_ref.camera_name,
+            )
+            return False
+
+        if i_ref.binning != 1:
+            logger.warning(
+                'ASI676MC frame repair skipped: binning %d is not supported',
+                i_ref.binning,
+            )
+            return False
+
+        bayer_pattern = str(i_ref.image_bayerpat or '').upper()
+        if bayer_pattern != 'RGGB':
+            logger.warning(
+                'ASI676MC frame repair skipped: expected RGGB data, got %s',
+                bayer_pattern or 'unset',
+            )
+            return False
+
+        x_bayer_offset = int(i_ref.hdulist[0].header.get('XBAYROFF', 0))
+        y_bayer_offset = int(i_ref.hdulist[0].header.get('YBAYROFF', 0))
+        if x_bayer_offset or y_bayer_offset:
+            logger.warning(
+                'ASI676MC frame repair skipped: unsupported Bayer offsets X %d, Y %d',
+                x_bayer_offset,
+                y_bayer_offset,
+            )
+            return False
+
+        try:
+            result = asi676mc.repair_if_needed(
+                i_ref.hdulist[0].data,
+                repair_config,
+            )
+        except (TypeError, ValueError) as e:
+            logger.error('ASI676MC frame repair skipped: %s', str(e))
+            return False
+
+        signature_before = result['signature_before']
+        if result['validation_failed']:
+            signature_after = result['signature_after']
+            logger.error(
+                'ASI676MC frame repair validation failed; original frame retained '
+                '(purple ratio: %0.3f -> %0.3f)',
+                signature_before['purple_ratio'],
+                signature_after['purple_ratio'],
+            )
+            return False
+
+        if not result['repaired']:
+            logger.debug(
+                'ASI676MC frame signature normal (purple ratio: %0.3f)',
+                signature_before['purple_ratio'],
+            )
+            return False
+
+        signature_after = result['signature_after']
+        logger.warning(
+            'ASI676MC purple-frame failure repaired '
+            '(purple ratio: %0.3f -> %0.3f)',
+            signature_before['purple_ratio'],
+            signature_after['purple_ratio'],
+        )
+
+        return True
 
 
     def calibrate(self, libcamera_black_level=None):

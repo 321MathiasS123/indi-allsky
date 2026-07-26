@@ -469,6 +469,52 @@ def IMAGE_CALIBRATE_HOLE_THOLD_validator(form, field):
         raise ValidationError('Threshold must be less than 100')
 
 
+def IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator(form, field):
+    if not isinstance(field.data, (int, float)):
+        raise ValidationError('Please enter valid number')
+
+    if field.data <= 0:
+        raise ValidationError('Ratio must be greater than 0')
+
+    if field.data > 100:
+        raise ValidationError('Ratio must be 100 or less')
+
+
+def IMAGE_ASI676MC_REPAIR__SAMPLE_STEP_validator(form, field):
+    if not isinstance(field.data, int):
+        raise ValidationError('Please enter valid number')
+
+    if field.data < 2 or field.data % 2:
+        raise ValidationError('Sample step must be an even number of at least 2')
+
+
+def IMAGE_ASI676MC_REPAIR__SOURCE_SATURATION_THRESHOLD_validator(form, field):
+    if not isinstance(field.data, int):
+        raise ValidationError('Please enter valid number')
+
+    if field.data < 1 or field.data > 65535:
+        raise ValidationError('Threshold must be between 1 and 65535')
+
+
+def IMAGE_ASI676MC_REPAIR__GAIN_validator(form, field):
+    if not isinstance(field.data, (int, float)):
+        raise ValidationError('Please enter valid number')
+
+    if field.data <= 0:
+        raise ValidationError('Gain must be greater than 0')
+
+    if field.data > 10:
+        raise ValidationError('Gain must be 10 or less')
+
+
+def IMAGE_ASI676MC_REPAIR__CHUNK_ROWS_validator(form, field):
+    if not isinstance(field.data, int):
+        raise ValidationError('Please enter valid number')
+
+    if field.data < 2 or field.data % 2:
+        raise ValidationError('Chunk rows must be an even number of at least 2')
+
+
 def CCD_TEMP_SCRIPT_validator(form, field):
     if not field.data:
         return
@@ -4521,6 +4567,17 @@ class IndiAllskyConfigForm(FlaskForm):
     STARTRAILS__IMAGE_CIRCLE_MASK_DIAMETER  = IntegerField('Mask Diameter', validators=[DataRequired(), IMAGE_CIRCLE_MASK__DIAMETER_validator])
     STARTRAILS__IMAGE_CIRCLE_MASK_BLUR      = IntegerField('Mask Blur', validators=[IMAGE_CIRCLE_MASK__BLUR_validator])
     STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY   = IntegerField('Mask Opacity %', validators=[IMAGE_CIRCLE_MASK__OPACITY_validator])
+    IMAGE_ASI676MC_REPAIR__ENABLE                      = BooleanField('Enable ASI676MC RAW16 Repair')
+    IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD      = FloatField('Purple Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
+    IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD    = FloatField('Red-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
+    IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD   = FloatField('Blue-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
+    IMAGE_ASI676MC_REPAIR__SAMPLE_STEP                 = IntegerField('Signature Sample Step', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__SAMPLE_STEP_validator])
+    IMAGE_ASI676MC_REPAIR__SOURCE_SATURATION_THRESHOLD = IntegerField('Source Saturation Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__SOURCE_SATURATION_THRESHOLD_validator])
+    IMAGE_ASI676MC_REPAIR__GAIN_R                      = FloatField('Bad-frame Gain R', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
+    IMAGE_ASI676MC_REPAIR__GAIN_G1                     = FloatField('Bad-frame Gain G1', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
+    IMAGE_ASI676MC_REPAIR__GAIN_G2                     = FloatField('Bad-frame Gain G2', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
+    IMAGE_ASI676MC_REPAIR__GAIN_B                      = FloatField('Bad-frame Gain B', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
+    IMAGE_ASI676MC_REPAIR__CHUNK_ROWS                  = IntegerField('Repair Chunk Rows', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__CHUNK_ROWS_validator])
     IMAGE_CALIBRATE_DARK             = BooleanField('Apply Dark Calibration Frames')
     IMAGE_CALIBRATE_BPM              = BooleanField('Apply Bad Pixel Map Frames')
     IMAGE_CALIBRATE_FIX_HOLES        = BooleanField('Fix Calibration Pin Holes')
