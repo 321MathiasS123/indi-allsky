@@ -1,6 +1,7 @@
 import json
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 import numpy
 
@@ -16,6 +17,23 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertFalse(asi676mc.camera_name_matches('ZWO CCD ASI678MC'))
         self.assertFalse(asi676mc.camera_name_matches(''))
 
+    def test_camera_record_gate_checks_persistent_names(self):
+        asi_camera = SimpleNamespace(
+            name='ZWO CCD',
+            name_alt1='ZWO CCD ASI676MC',
+            name_alt2=None,
+            friendlyName='All-sky camera',
+        )
+        other_camera = SimpleNamespace(
+            name='ZWO CCD ASI678MC',
+            name_alt1=None,
+            name_alt2=None,
+            friendlyName='Other camera',
+        )
+
+        self.assertTrue(asi676mc.camera_record_matches(asi_camera))
+        self.assertFalse(asi676mc.camera_record_matches(other_camera))
+
     def test_normal_frame_is_not_modified(self):
         data = numpy.full((64, 64), 1000, dtype=numpy.uint16)
         original = data.copy()
@@ -23,6 +41,12 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         result = asi676mc.repair_if_needed(data)
 
         self.assertFalse(result['repaired'])
+        self.assertGreaterEqual(result['timing']['detection_s'], 0.0)
+        self.assertEqual(result['timing']['repair_s'], 0.0)
+        self.assertGreaterEqual(
+            result['timing']['total_s'],
+            result['timing']['detection_s'],
+        )
         numpy.testing.assert_array_equal(data, original)
 
     def test_bad_frame_is_repaired_in_place(self):
@@ -40,6 +64,12 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertEqual(data.dtype, numpy.uint16)
         self.assertEqual(data.shape, (64, 64))
         self.assertFalse(result['signature_after']['is_bad'])
+        self.assertGreaterEqual(result['timing']['detection_s'], 0.0)
+        self.assertGreaterEqual(result['timing']['repair_s'], 0.0)
+        self.assertGreaterEqual(
+            result['timing']['total_s'],
+            result['timing']['detection_s'] + result['timing']['repair_s'],
+        )
 
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
@@ -104,11 +134,19 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
             'repaired',
             signature_before=signature_before,
             signature_after=signature_after,
+            timing={
+                'detection_s': numpy.float64(0.001),
+                'repair_s': numpy.float64(0.010),
+                'total_s': numpy.float64(0.011),
+            },
         )
 
         self.assertEqual(metadata['status'], 'repaired')
         self.assertEqual(metadata['signature_before']['purple_ratio'], 2.0)
         self.assertEqual(metadata['signature_after']['purple_ratio'], 0.9)
+        self.assertEqual(metadata['timing']['detection_s'], 0.001)
+        self.assertEqual(metadata['timing']['repair_s'], 0.010)
+        self.assertEqual(metadata['timing']['total_s'], 0.011)
         json.dumps(metadata)
 
 

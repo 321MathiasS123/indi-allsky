@@ -22,6 +22,7 @@ from passlib.hash import argon2
 
 from ..version import __version__
 from .. import constants
+from .. import asi676mc
 from ..processing import ImageProcessor
 
 from cryptography.fernet import InvalidToken
@@ -137,6 +138,18 @@ bp_allsky = Blueprint(
     url_prefix='/indi-allsky',  # gunicorn
     static_url_path='static',
 )
+
+
+def _visible_asi676mc_cameras():
+    visible_cameras = IndiAllSkyDbCameraTable.query\
+        .filter(IndiAllSkyDbCameraTable.hidden == sa_false())\
+        .all()
+
+    return [
+        camera
+        for camera in visible_cameras
+        if asi676mc.camera_record_matches(camera)
+    ]
 
 
 class AjaxStatusUpdateView(BaseView):
@@ -2020,6 +2033,14 @@ class ConfigView(FormView):
     def get_context(self):
         context = super(ConfigView, self).get_context()
 
+        asi676mc_cameras = _visible_asi676mc_cameras()
+        asi676mc_repair_supported = bool(asi676mc_cameras)
+        context['asi676mc_repair_supported'] = asi676mc_repair_supported
+        context['asi676mc_camera_names'] = [
+            camera.friendlyName or camera.name
+            for camera in asi676mc_cameras
+        ]
+
         context['camera_minGain'] = self.camera.minGain
         context['camera_maxGain'] = self.camera.maxGain
         context['camera_minBinning'] = self.camera.minBinning
@@ -2399,8 +2420,9 @@ class ConfigView(FormView):
             'STARTRAILS__IMAGE_CIRCLE_MASK_DIAMETER': self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_DIAMETER', 3000),
             'STARTRAILS__IMAGE_CIRCLE_MASK_BLUR'    : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_BLUR', 35),
             'STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY' : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_OPACITY', 100),
-            'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False),
+            'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False) and asi676mc_repair_supported,
             'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'             : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('LOG_EVERY_FRAME', False),
+            'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'              : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True),
             'IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('PURPLE_RATIO_THRESHOLD', 1.5),
             'IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'    : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('RED_SIDE_RATIO_THRESHOLD', 1.25),
             'IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'   : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('BLUE_SIDE_RATIO_THRESHOLD', 1.5),
@@ -3198,6 +3220,17 @@ class AjaxConfigView(BaseView):
 
         # form passed validation
 
+        if request.json.get('IMAGE_ASI676MC_REPAIR__ENABLE') and not _visible_asi676mc_cameras():
+            form_errors = {
+                'IMAGE_ASI676MC_REPAIR__ENABLE' : [
+                    'No detected ASI676MC camera is available',
+                ],
+                'form_global' : [
+                    'ASI676MC frame repair can only be enabled when an ASI676MC camera is available',
+                ],
+            }
+            return jsonify(form_errors), 400
+
         if not self.indi_allsky_config:
             return jsonify({}), 400
 
@@ -3439,6 +3472,7 @@ class AjaxConfigView(BaseView):
         asi676mc_repair_config = self.indi_allsky_config.setdefault('IMAGE_ASI676MC_REPAIR', {})
         asi676mc_repair_config['ENABLE']                      = bool(request.json['IMAGE_ASI676MC_REPAIR__ENABLE'])
         asi676mc_repair_config['LOG_EVERY_FRAME']             = bool(request.json['IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'])
+        asi676mc_repair_config['GALLERY_ENABLE']              = bool(request.json['IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'])
         asi676mc_repair_config['PURPLE_RATIO_THRESHOLD']      = float(request.json['IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'])
         asi676mc_repair_config['RED_SIDE_RATIO_THRESHOLD']    = float(request.json['IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'])
         asi676mc_repair_config['BLUE_SIDE_RATIO_THRESHOLD']   = float(request.json['IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'])
@@ -4714,6 +4748,12 @@ class GalleryViewerView(FormView):
     def get_context(self):
         context = super(GalleryViewerView, self).get_context()
 
+        context['asi676mc_repair_gallery_enabled'] = int(
+            self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False)
+            and self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True)
+            and asi676mc.camera_record_matches(self.camera)
+        )
+
         form_data = {
             'CAMERA_ID'    : self.camera.id,
             'YEAR_SELECT'  : None,
@@ -4758,9 +4798,16 @@ class AjaxGalleryViewerView(BaseView):
         form_day   = int(request.json.get('DAY_SELECT', 0))
         form_hour  = int(request.json.get('HOUR_SELECT', -1))  # 0 is a real hour
         form_filter_detections = bool(request.json.get('FILTER_DETECTIONS'))
-        form_filter_asi676mc_repaired = bool(request.json.get('FILTER_ASI676MC_REPAIRED'))
+        form_filter_asi676mc_repaired_requested = bool(request.json.get('FILTER_ASI676MC_REPAIRED'))
 
         self.cameraSetup(camera_id=camera_id)
+
+        form_filter_asi676mc_repaired = bool(
+            form_filter_asi676mc_repaired_requested
+            and self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False)
+            and self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True)
+            and asi676mc.camera_record_matches(self.camera)
+        )
 
         local = True  # default to local assets
         if self.web_nonlocal_images:

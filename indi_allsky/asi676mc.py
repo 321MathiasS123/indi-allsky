@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import re
+import time
 
 import numpy
 
@@ -26,6 +27,14 @@ _CAMERA_NAME_RE = re.compile(r'(?<![A-Z0-9])ASI[\s_-]*676MC(?![A-Z0-9])', re.IGN
 def camera_name_matches(camera_name):
     """Return whether a detected camera name identifies an ASI676MC."""
     return bool(_CAMERA_NAME_RE.search(str(camera_name or '')))
+
+
+def camera_record_matches(camera):
+    """Return whether any persistent name for a camera identifies an ASI676MC."""
+    return any(
+        camera_name_matches(getattr(camera, attr, None))
+        for attr in ('name', 'name_alt1', 'name_alt2', 'friendlyName')
+    )
 
 
 def normalize_settings(settings=None):
@@ -72,7 +81,13 @@ def normalize_settings(settings=None):
     return normalized
 
 
-def audit_metadata(status, reason=None, signature_before=None, signature_after=None):
+def audit_metadata(
+    status,
+    reason=None,
+    signature_before=None,
+    signature_after=None,
+    timing=None,
+):
     """Build the JSON-safe repair audit record stored with a saved image."""
     metadata = {
         'status' : str(status),
@@ -92,6 +107,13 @@ def audit_metadata(status, reason=None, signature_before=None, signature_after=N
             'purple_ratio'    : float(signature['purple_ratio']),
             'red_side_ratio'  : float(signature['red_side_ratio']),
             'blue_side_ratio' : float(signature['blue_side_ratio']),
+        }
+
+    if timing:
+        metadata['timing'] = {
+            'detection_s' : float(timing.get('detection_s', 0.0)),
+            'repair_s'    : float(timing.get('repair_s', 0.0)),
+            'total_s'     : float(timing.get('total_s', 0.0)),
         }
 
     return metadata
@@ -243,29 +265,51 @@ def repair_in_place(data, settings=None):
 
 def repair_if_needed(data, settings=None):
     """Repair a bad frame and report before/after diagnostic signatures."""
+    total_start = time.perf_counter()
     config = normalize_settings(settings)
+
+    detection_start = time.perf_counter()
     signature_before = frame_signature(data, config)
+    detection_elapsed_s = time.perf_counter() - detection_start
+
     if not signature_before['is_bad']:
+        total_elapsed_s = time.perf_counter() - total_start
         return {
             'repaired': False,
             'validation_failed': False,
             'signature_before': signature_before,
             'signature_after': None,
+            'timing': {
+                'detection_s': detection_elapsed_s,
+                'repair_s': 0.0,
+                'total_s': total_elapsed_s,
+            },
         }
 
     # The offline tool can leave its source FITS untouched when validation
     # fails.  The live pipeline needs the same safety property in memory, so a
     # detected bad frame is repaired on a temporary array and committed only
     # after its signature no longer matches the failure.
+    repair_start = time.perf_counter()
     repaired_data = data.copy()
     repair_in_place(repaired_data, config)
     signature_after = frame_signature(repaired_data, config)
+    repair_elapsed_s = time.perf_counter() - repair_start
+    total_elapsed_s = time.perf_counter() - total_start
+
+    timing = {
+        'detection_s': detection_elapsed_s,
+        'repair_s': repair_elapsed_s,
+        'total_s': total_elapsed_s,
+    }
+
     if signature_after['is_bad']:
         return {
             'repaired': False,
             'validation_failed': True,
             'signature_before': signature_before,
             'signature_after': signature_after,
+            'timing': timing,
         }
 
     data[:] = repaired_data
@@ -274,4 +318,5 @@ def repair_if_needed(data, settings=None):
         'validation_failed': False,
         'signature_before': signature_before,
         'signature_after': signature_after,
+        'timing': timing,
     }

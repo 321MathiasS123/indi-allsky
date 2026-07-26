@@ -1294,13 +1294,23 @@ var camera_id = {{ camera_id }};
         </div>
         <div class="col-sm-2">
             <div class="form-switch">
+                {% if asi676mc_repair_supported %}
                 {{ form_config.IMAGE_ASI676MC_REPAIR__ENABLE(class='form-check-input') }}
+                {% else %}
+                {{ form_config.IMAGE_ASI676MC_REPAIR__ENABLE(class='form-check-input', disabled=true) }}
+                {% endif %}
                 <div id="IMAGE_ASI676MC_REPAIR__ENABLE-error" class="invalid-feedback text-danger" style="display: none;"></div>
             </div>
         </div>
         <div class="col-sm-8">
+            {% if asi676mc_repair_supported %}
             Detect and repair the ASI676MC purple-frame RAW16 failure before calibration and debayering.
             Frames from other camera models are always left unchanged.
+            Detected ASI676MC camera{% if asi676mc_camera_names|length != 1 %}s{% endif %}: {{ asi676mc_camera_names|join(', ') }}.
+            {% else %}
+            <span class="badge rounded-pill bg-secondary">Unavailable</span>
+            No ASI676MC camera is currently available. This feature cannot be enabled.
+            {% endif %}
         </div>
     </div>
 
@@ -1316,6 +1326,22 @@ var camera_id = {{ camera_id }};
         </div>
         <div class="col-sm-8">
             Log the detection result for every ASI676MC frame. Successful repairs and validation failures are always logged.
+        </div>
+    </div>
+
+    <div class="form-group row">
+        <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE.label }}
+        </div>
+        <div class="col-sm-2">
+            <div class="form-switch">
+                {{ form_config.IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE(class='form-check-input') }}
+                <div id="IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE-error" class="invalid-feedback text-danger" style="display: none;"></div>
+            </div>
+        </div>
+        <div class="col-sm-8">
+            Show repair badges, colored outlines, and the repaired-only filter in the gallery.
+            Repair metadata continues to be recorded when this display option is disabled.
         </div>
     </div>
 
@@ -10638,6 +10664,7 @@ const checkbox_field_names = [
     'IMAGE_STACK_DAY',
     'IMAGE_ASI676MC_REPAIR__ENABLE',
     'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
+    'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE',
     'IMAGE_CALIBRATE_DARK',
     'IMAGE_CALIBRATE_BPM',
     'IMAGE_CALIBRATE_FIX_HOLES',
@@ -11339,6 +11366,7 @@ var group_fields_asi676mc_repair = [
 
 var group_checkbox_fields_asi676mc_repair = [
     'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
+    'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE',
 ];
 
 group_on_change('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, group_checkbox_fields_asi676mc_repair);

@@ -955,12 +955,14 @@ class ImageProcessor(object):
         reason=None,
         signature_before=None,
         signature_after=None,
+        timing=None,
     ):
         i_ref.asi676mc_repair_result = asi676mc.audit_metadata(
             status,
             reason=reason,
             signature_before=signature_before,
             signature_after=signature_after,
+            timing=timing,
         )
 
         return status == 'repaired'
@@ -1019,13 +1021,18 @@ class ImageProcessor(object):
             return self._set_asi676mc_repair_result(i_ref, 'skipped', reason=reason)
 
         signature_before = result['signature_before']
+        timing = result['timing']
         if result['validation_failed']:
             signature_after = result['signature_after']
             logger.error(
                 'ASI676MC frame repair validation failed; original frame retained '
-                '(purple ratio: %0.3f -> %0.3f)',
+                '(purple ratio: %0.3f -> %0.3f, detection: %0.3f ms, '
+                'repair/validation: %0.3f ms, total: %0.3f ms)',
                 signature_before['purple_ratio'],
                 signature_after['purple_ratio'],
+                timing['detection_s'] * 1000,
+                timing['repair_s'] * 1000,
+                timing['total_s'] * 1000,
             )
             return self._set_asi676mc_repair_result(
                 i_ref,
@@ -1033,6 +1040,7 @@ class ImageProcessor(object):
                 reason='post-repair signature still matches the purple-frame failure',
                 signature_before=signature_before,
                 signature_after=signature_after,
+                timing=timing,
             )
 
         if not result['repaired']:
@@ -1043,23 +1051,31 @@ class ImageProcessor(object):
             )
             log_method(
                 'ASI676MC frame repair check: normal '
-                '(purple ratio: %0.3f, red-side ratio: %0.3f, blue-side ratio: %0.3f)',
+                '(purple ratio: %0.3f, red-side ratio: %0.3f, blue-side ratio: %0.3f, '
+                'detection: %0.3f ms, total: %0.3f ms)',
                 signature_before['purple_ratio'],
                 signature_before['red_side_ratio'],
                 signature_before['blue_side_ratio'],
+                timing['detection_s'] * 1000,
+                timing['total_s'] * 1000,
             )
             return self._set_asi676mc_repair_result(
                 i_ref,
                 'normal',
                 signature_before=signature_before,
+                timing=timing,
             )
 
         signature_after = result['signature_after']
         logger.warning(
             'ASI676MC purple-frame failure repaired '
-            '(purple ratio: %0.3f -> %0.3f)',
+            '(purple ratio: %0.3f -> %0.3f, detection: %0.3f ms, '
+            'repair/validation: %0.3f ms, total: %0.3f ms)',
             signature_before['purple_ratio'],
             signature_after['purple_ratio'],
+            timing['detection_s'] * 1000,
+            timing['repair_s'] * 1000,
+            timing['total_s'] * 1000,
         )
 
         return self._set_asi676mc_repair_result(
@@ -1067,6 +1083,7 @@ class ImageProcessor(object):
             'repaired',
             signature_before=signature_before,
             signature_after=signature_after,
+            timing=timing,
         )
 
 

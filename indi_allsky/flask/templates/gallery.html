@@ -63,6 +63,7 @@ figure img {width: 100%;}
 <link rel="stylesheet" href="{{ url_for('indi_allsky.static', filename='photoswipe/dist/photoswipe.css') }}">
 <script type="text/javascript">
 var camera_id = {{ camera_id }};
+var asi676mc_repair_gallery_enabled = Boolean({{ asi676mc_repair_gallery_enabled }});
 var lightbox = null;
 var newest_entry_default = true;
 </script>
@@ -125,11 +126,11 @@ var newest_entry_default = true;
             </div>
         </div>
 
-        <div class="col-sm-2">
+        <div class="col-sm-2{% if not asi676mc_repair_gallery_enabled %} d-none{% endif %}">
             {{ form_viewer.FILTER_ASI676MC_REPAIRED.label }}
         </div>
 
-        <div class="col-sm-1">
+        <div class="col-sm-1{% if not asi676mc_repair_gallery_enabled %} d-none{% endif %}">
             <div class="form-switch">
                 {{ form_viewer.FILTER_ASI676MC_REPAIRED(class='form-check-input') }}
                 <div id="FILTER_ASI676MC_REPAIRED-error" class="invalid-feedback text-danger" style="display: none;"></div>
@@ -244,7 +245,11 @@ function populate_gallery(gallery_data) {
     $('#allsky-gallery').empty();
 
     gallery_data.forEach(item => {
-        const repair_status = item['asi676mc_repair_status'];
+        const repair_status = (
+            asi676mc_repair_gallery_enabled
+            ? item['asi676mc_repair_status']
+            : null
+        );
         const repair_applied = repair_status === 'repaired';
         const repair_validation_failed = repair_status === 'validation_failed';
 
@@ -1045,6 +1050,7 @@ $( document ).ready(function() {
     // Uncheck checkboxes
     $("#FILTER_DETECTIONS").prop('checked', false);
     $("#FILTER_ASI676MC_REPAIRED").prop('checked', false);
+    $("#FILTER_ASI676MC_REPAIRED").prop('disabled', !asi676mc_repair_gallery_enabled);
 
     init();
 

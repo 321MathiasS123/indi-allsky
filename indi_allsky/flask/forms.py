@@ -4569,6 +4569,7 @@ class IndiAllskyConfigForm(FlaskForm):
     STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY   = IntegerField('Mask Opacity %', validators=[IMAGE_CIRCLE_MASK__OPACITY_validator])
     IMAGE_ASI676MC_REPAIR__ENABLE                      = BooleanField('Enable ASI676MC RAW16 Repair')
     IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME             = BooleanField('Log Every ASI676MC Frame')
+    IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE              = BooleanField('Show Repair Status in Gallery')
     IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD      = FloatField('Purple Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD    = FloatField('Red-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD   = FloatField('Blue-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
