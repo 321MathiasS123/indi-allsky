@@ -6879,6 +6879,10 @@ class IndiAllskyImageViewer(FlaskForm):
         self.s3_prefix = kwargs.get('s3_prefix', '')
         self.camera_id = kwargs.get('camera_id')
         self.local = kwargs.get('local')
+        self.asi676mc_diagnostic_download_enabled = kwargs.get(
+            'asi676mc_diagnostic_download_enabled',
+            False,
+        )
 
 
     def getYears(self):
@@ -7480,10 +7484,6 @@ class IndiAllskyGalleryViewer(FlaskForm):
         self.s3_prefix = kwargs.get('s3_prefix', '')
         self.camera_id = kwargs.get('camera_id')
         self.local = kwargs.get('local')
-        self.asi676mc_diagnostic_download_enabled = kwargs.get(
-            'asi676mc_diagnostic_download_enabled',
-            False,
-        )
         self.asi676mc_repaired_only = kwargs.get('asi676mc_repaired_only', False)
         self.asi676mc_repair_gallery_enabled = kwargs.get(
             'asi676mc_repair_gallery_enabled',

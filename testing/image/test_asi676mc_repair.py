@@ -1,4 +1,6 @@
+import ast
 import json
+from pathlib import Path
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -9,6 +11,44 @@ from indi_allsky import asi676mc
 
 
 class TestAsi676mcFrameRepair(unittest.TestCase):
+
+    def test_image_viewer_initializes_diagnostic_download_flag(self):
+        forms_path = (
+            Path(__file__).resolve().parents[2]
+            / 'indi_allsky'
+            / 'flask'
+            / 'forms.py'
+        )
+        forms_tree = ast.parse(
+            forms_path.read_text(encoding='utf-8'),
+            filename=str(forms_path),
+        )
+        class_assignments = {}
+        for node in forms_tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+
+            assigned_attributes = {
+                child.attr
+                for child in ast.walk(node)
+                if (
+                    isinstance(child, ast.Attribute)
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id == 'self'
+                    and isinstance(child.ctx, ast.Store)
+                )
+            }
+            class_assignments[node.name] = assigned_attributes
+
+        flag_name = 'asi676mc_diagnostic_download_enabled'
+        self.assertIn(
+            flag_name,
+            class_assignments['IndiAllskyImageViewer'],
+        )
+        self.assertNotIn(
+            flag_name,
+            class_assignments['IndiAllskyGalleryViewer'],
+        )
 
     def test_camera_name_gate(self):
         self.assertTrue(asi676mc.camera_name_matches('ZWO CCD ASI676MC'))
