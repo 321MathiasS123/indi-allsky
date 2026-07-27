@@ -34,6 +34,59 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(asi676mc.camera_record_matches(asi_camera))
         self.assertFalse(asi676mc.camera_record_matches(other_camera))
 
+    def test_diagnostic_capture_plan_pairs_bad_and_following_frames(self):
+        bad_roles, pending_id = asi676mc.diagnostic_capture_plan(
+            None,
+            'repaired',
+            new_capture_id='pair-a',
+        )
+        self.assertEqual(
+            bad_roles,
+            [{'capture_id': 'pair-a', 'role': 'bad'}],
+        )
+        self.assertEqual(pending_id, 'pair-a')
+
+        following_roles, pending_id = asi676mc.diagnostic_capture_plan(
+            pending_id,
+            'normal',
+        )
+        self.assertEqual(
+            following_roles,
+            [{'capture_id': 'pair-a', 'role': 'following'}],
+        )
+        self.assertIsNone(pending_id)
+
+    def test_diagnostic_capture_plan_handles_consecutive_bad_frames(self):
+        roles, pending_id = asi676mc.diagnostic_capture_plan(
+            'pair-a',
+            'repaired',
+            new_capture_id='pair-b',
+        )
+        self.assertEqual(
+            roles,
+            [
+                {'capture_id': 'pair-a', 'role': 'following'},
+                {'capture_id': 'pair-b', 'role': 'bad'},
+            ],
+        )
+        self.assertEqual(pending_id, 'pair-b')
+
+    def test_diagnostic_capture_plan_includes_validation_failures(self):
+        roles, pending_id = asi676mc.diagnostic_capture_plan(
+            None,
+            'validation_failed',
+            new_capture_id='pair-a',
+        )
+        self.assertEqual(
+            roles,
+            [{'capture_id': 'pair-a', 'role': 'bad'}],
+        )
+        self.assertEqual(pending_id, 'pair-a')
+
+    def test_diagnostic_capture_plan_requires_a_pair_id(self):
+        with self.assertRaises(ValueError):
+            asi676mc.diagnostic_capture_plan(None, 'repaired')
+
     def test_normal_frame_is_not_modified(self):
         data = numpy.full((64, 64), 1000, dtype=numpy.uint16)
         original = data.copy()

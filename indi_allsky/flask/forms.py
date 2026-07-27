@@ -6,6 +6,7 @@ import json
 import time
 from collections import OrderedDict
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 import tempfile
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ import dbus
 from passlib.hash import argon2
 
 from .. import constants
+from .. import asi676mc
 
 from flask_wtf import FlaskForm
 from wtforms import IntegerField
@@ -4570,6 +4572,7 @@ class IndiAllskyConfigForm(FlaskForm):
     IMAGE_ASI676MC_REPAIR__ENABLE                      = BooleanField('Enable ASI676MC RAW16 Repair')
     IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME             = BooleanField('Log Every ASI676MC Frame')
     IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE              = BooleanField('Show Repair Status in Gallery')
+    IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS         = BooleanField('Save Bad and Following RAW FITS')
     IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD      = FloatField('Purple Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD    = FloatField('Red-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD   = FloatField('Blue-side Ratio Threshold', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__RATIO_THRESHOLD_validator], widget=NumberInput(step=0.01))
@@ -6761,6 +6764,104 @@ class IndiAllskyConfigRestoreForm(FlaskForm):
             self.RESET_KEYS.render_kw = {'disabled' : 'disabled'}
 
 
+def _asi676mc_diagnostic_assets(images, camera_id, s3_prefix, local):
+    selected_pairs = {}
+    capture_ids = set()
+
+    for img in images:
+        image_metadata = img.data or {}
+        diagnostic_metadata = image_metadata.get(
+            'asi676mc_diagnostic_fits',
+            {},
+        )
+        roles = diagnostic_metadata.get('roles', [])
+        if not roles:
+            continue
+
+        repair_status = image_metadata.get('asi676mc_repair_status')
+        preferred_role = (
+            'bad'
+            if repair_status in asi676mc.DIAGNOSTIC_BAD_STATUSES
+            else 'following'
+        )
+        selected_role = next(
+            (
+                role
+                for role in roles
+                if role.get('role') == preferred_role
+            ),
+            roles[0],
+        )
+        capture_id = selected_role.get('capture_id')
+        if not capture_id:
+            continue
+
+        selected_pairs[img.id] = capture_id
+        capture_ids.add(capture_id)
+
+    if not capture_ids:
+        return {}
+
+    image_dates = [img.createDate for img in images]
+    query_start = min(image_dates) - timedelta(minutes=15)
+    query_stop = max(image_dates) + timedelta(minutes=15)
+    fits_entries = IndiAllSkyDbFitsImageTable.query\
+        .filter(IndiAllSkyDbFitsImageTable.camera_id == camera_id)\
+        .filter(IndiAllSkyDbFitsImageTable.createDate >= query_start)\
+        .filter(IndiAllSkyDbFitsImageTable.createDate <= query_stop)\
+        .order_by(IndiAllSkyDbFitsImageTable.createDate.asc())\
+        .all()
+
+    pair_assets = {}
+    for fits_entry in fits_entries:
+        diagnostic_metadata = (fits_entry.data or {}).get(
+            asi676mc.DIAGNOSTIC_METADATA_KEY,
+            {},
+        )
+        for role in diagnostic_metadata.get('roles', []):
+            capture_id = role.get('capture_id')
+            role_name = role.get('role')
+            if (
+                capture_id not in capture_ids
+                or role_name not in ('bad', 'following')
+            ):
+                continue
+
+            if (
+                not local
+                and not fits_entry.remote_url
+                and not fits_entry.s3_key
+            ):
+                continue
+
+            try:
+                fits_url = fits_entry.getUrl(
+                    s3_prefix=s3_prefix,
+                    local=local,
+                )
+            except ValueError as e:
+                app.logger.error(
+                    'Error determining diagnostic FITS URL: %s',
+                    str(e),
+                )
+                continue
+
+            pair_assets.setdefault(capture_id, {})[role_name] = {
+                'url': str(fits_url),
+                'filename': Path(fits_entry.filename).name,
+            }
+
+    image_assets = {}
+    for image_id, capture_id in selected_pairs.items():
+        assets = pair_assets.get(capture_id, {})
+        image_assets[image_id] = {
+            'bad': assets.get('bad'),
+            'following': assets.get('following'),
+        }
+
+    return image_assets
+
+
 class IndiAllskyImageViewer(FlaskForm):
     CAMERA_ID            = HiddenField('Camera ID', validators=[DataRequired()])
     YEAR_SELECT          = SelectField('Year', choices=[], validators=[])
@@ -6978,10 +7079,20 @@ class IndiAllskyImageViewer(FlaskForm):
             .order_by(IndiAllSkyDbImageTable.createDate.desc())
 
 
-        app.logger.info('Found %d images for image viewer', images_query.count())
+        image_rows = images_query.all()
+        app.logger.info('Found %d images for image viewer', len(image_rows))
+
+        diagnostic_assets = {}
+        if self.asi676mc_diagnostic_download_enabled:
+            diagnostic_assets = _asi676mc_diagnostic_assets(
+                image_rows,
+                self.camera_id,
+                self.s3_prefix,
+                self.local,
+            )
 
         images_data = list()
-        for img in images_query:
+        for img in image_rows:
             try:
                 url = img.getUrl(s3_prefix=self.s3_prefix, local=self.local)
             except ValueError as e:
@@ -7005,17 +7116,43 @@ class IndiAllskyImageViewer(FlaskForm):
 
             # look for fits
             try:
-                fits_image = db.session.query(
+                fits_images = db.session.query(
                     IndiAllSkyDbFitsImageTable,
                 )\
+                    .filter(IndiAllSkyDbFitsImageTable.camera_id == img.camera_id)\
                     .filter(IndiAllSkyDbFitsImageTable.createDate == img.createDate)\
-                    .one()
+                    .order_by(IndiAllSkyDbFitsImageTable.id.asc())\
+                    .all()
+
+                if not fits_images:
+                    raise NoResultFound
+
+                fits_image = next(
+                    (
+                        entry
+                        for entry in fits_images
+                        if not (entry.data or {}).get(
+                            asi676mc.DIAGNOSTIC_METADATA_KEY
+                        )
+                    ),
+                    None,
+                )
+                if fits_image is None:
+                    raise NoResultFound
 
                 image_dict['fits'] = str(fits_image.getUrl(s3_prefix=self.s3_prefix, local=self.local))
                 image_dict['fits_id'] = fits_image.id
             except NoResultFound:
                 image_dict['fits'] = None
                 image_dict['fits_id'] = None
+
+            image_diagnostic_assets = diagnostic_assets.get(img.id, {})
+            image_dict['asi676mc_diagnostic_bad_fits'] = (
+                image_diagnostic_assets.get('bad')
+            )
+            image_dict['asi676mc_diagnostic_following_fits'] = (
+                image_diagnostic_assets.get('following')
+            )
 
 
             # look for raw exports
@@ -7259,6 +7396,17 @@ class IndiAllskyFitsImageViewer(FlaskForm):
             url = url_for('indi_allsky.fits2jpeg_view', id=img.id)
 
             entry_str = img.createDate.strftime('%H:%M:%S')
+            diagnostic_metadata = (img.data or {}).get(
+                asi676mc.DIAGNOSTIC_METADATA_KEY,
+                {},
+            )
+            diagnostic_roles = diagnostic_metadata.get('roles', [])
+            if diagnostic_roles:
+                role_names = '/'.join(role['role'] for role in diagnostic_roles)
+                entry_str = '{0:s} [ASI676MC {1:s}]'.format(
+                    entry_str,
+                    role_names,
+                )
 
             fits_url = img.getUrl(local=True)
 
@@ -7332,7 +7480,15 @@ class IndiAllskyGalleryViewer(FlaskForm):
         self.s3_prefix = kwargs.get('s3_prefix', '')
         self.camera_id = kwargs.get('camera_id')
         self.local = kwargs.get('local')
+        self.asi676mc_diagnostic_download_enabled = kwargs.get(
+            'asi676mc_diagnostic_download_enabled',
+            False,
+        )
         self.asi676mc_repaired_only = kwargs.get('asi676mc_repaired_only', False)
+        self.asi676mc_repair_gallery_enabled = kwargs.get(
+            'asi676mc_repair_gallery_enabled',
+            False,
+        )
 
 
     def _apply_asi676mc_repaired_filter(self, query):
@@ -7341,6 +7497,18 @@ class IndiAllskyGalleryViewer(FlaskForm):
 
         return query.filter(
             IndiAllSkyDbImageTable.data['asi676mc_repair_status'].as_string() == 'repaired'
+        )
+
+
+    def _asi676mc_diagnostic_assets(self, image_rows):
+        if not self.asi676mc_repair_gallery_enabled:
+            return {}
+
+        return _asi676mc_diagnostic_assets(
+            [img for img, _thumb in image_rows],
+            self.camera_id,
+            self.s3_prefix,
+            self.local,
         )
 
 
@@ -7569,10 +7737,12 @@ class IndiAllskyGalleryViewer(FlaskForm):
             .order_by(IndiAllSkyDbImageTable.createDate.desc())
 
 
-        app.logger.info('Found %d images for gallery', images_query.count())
+        image_rows = images_query.all()
+        app.logger.info('Found %d images for gallery', len(image_rows))
+        diagnostic_assets = self._asi676mc_diagnostic_assets(image_rows)
 
         images_data = list()
-        for img, thumb in images_query:
+        for img, thumb in image_rows:
             try:
                 image_url = img.getUrl(s3_prefix=self.s3_prefix, local=self.local)
                 thumbnail_url = thumb.getUrl(s3_prefix=self.s3_prefix, local=self.local)
@@ -7605,6 +7775,10 @@ class IndiAllskyGalleryViewer(FlaskForm):
             signature_after = repair_metadata.get('signature_after') or {}
             image_dict['asi676mc_purple_ratio_before'] = signature_before.get('purple_ratio')
             image_dict['asi676mc_purple_ratio_after'] = signature_after.get('purple_ratio')
+
+            image_diagnostic_assets = diagnostic_assets.get(img.id, {})
+            image_dict['asi676mc_diagnostic_bad_fits'] = image_diagnostic_assets.get('bad')
+            image_dict['asi676mc_diagnostic_following_fits'] = image_diagnostic_assets.get('following')
 
 
             images_data.append(image_dict)

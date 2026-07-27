@@ -2423,6 +2423,7 @@ class ConfigView(FormView):
             'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False) and asi676mc_repair_supported,
             'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'             : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('LOG_EVERY_FRAME', False),
             'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'              : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True),
+            'IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS'         : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('SAVE_DIAGNOSTIC_FITS', False),
             'IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('PURPLE_RATIO_THRESHOLD', 1.5),
             'IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'    : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('RED_SIDE_RATIO_THRESHOLD', 1.25),
             'IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'   : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('BLUE_SIDE_RATIO_THRESHOLD', 1.5),
@@ -3473,6 +3474,7 @@ class AjaxConfigView(BaseView):
         asi676mc_repair_config['ENABLE']                      = bool(request.json['IMAGE_ASI676MC_REPAIR__ENABLE'])
         asi676mc_repair_config['LOG_EVERY_FRAME']             = bool(request.json['IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'])
         asi676mc_repair_config['GALLERY_ENABLE']              = bool(request.json['IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'])
+        asi676mc_repair_config['SAVE_DIAGNOSTIC_FITS']         = bool(request.json['IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS'])
         asi676mc_repair_config['PURPLE_RATIO_THRESHOLD']      = float(request.json['IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD'])
         asi676mc_repair_config['RED_SIDE_RATIO_THRESHOLD']    = float(request.json['IMAGE_ASI676MC_REPAIR__RED_SIDE_RATIO_THRESHOLD'])
         asi676mc_repair_config['BLUE_SIDE_RATIO_THRESHOLD']   = float(request.json['IMAGE_ASI676MC_REPAIR__BLUE_SIDE_RATIO_THRESHOLD'])
@@ -4370,6 +4372,11 @@ class AjaxImageViewerView(BaseView):
             else:
                 local = False
 
+        asi676mc_diagnostic_download_enabled = bool(
+            self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False)
+            and asi676mc.camera_record_matches(self.camera)
+        )
+
 
         if form_filter_detections:
             # filter images that have a detection
@@ -4377,6 +4384,7 @@ class AjaxImageViewerView(BaseView):
                 data=request.json,
                 camera_id=camera_id,
                 detections_count=1,
+                asi676mc_diagnostic_download_enabled=asi676mc_diagnostic_download_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
@@ -4385,6 +4393,7 @@ class AjaxImageViewerView(BaseView):
                 data=request.json,
                 camera_id=camera_id,
                 detections_count=0,
+                asi676mc_diagnostic_download_enabled=asi676mc_diagnostic_download_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
@@ -4800,11 +4809,14 @@ class AjaxGalleryViewerView(BaseView):
 
         self.cameraSetup(camera_id=camera_id)
 
-        form_filter_asi676mc_repaired = bool(
-            form_filter_asi676mc_repaired_requested
-            and self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False)
+        asi676mc_repair_gallery_enabled = bool(
+            self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False)
             and self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True)
             and asi676mc.camera_record_matches(self.camera)
+        )
+        form_filter_asi676mc_repaired = bool(
+            form_filter_asi676mc_repaired_requested
+            and asi676mc_repair_gallery_enabled
         )
 
         local = True  # default to local assets
@@ -4822,6 +4834,7 @@ class AjaxGalleryViewerView(BaseView):
                 camera_id=camera_id,
                 detections_count=1,
                 asi676mc_repaired_only=form_filter_asi676mc_repaired,
+                asi676mc_repair_gallery_enabled=asi676mc_repair_gallery_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
@@ -4831,6 +4844,7 @@ class AjaxGalleryViewerView(BaseView):
                 camera_id=camera_id,
                 detections_count=0,
                 asi676mc_repaired_only=form_filter_asi676mc_repaired,
+                asi676mc_repair_gallery_enabled=asi676mc_repair_gallery_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )

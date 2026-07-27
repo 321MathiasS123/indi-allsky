@@ -2683,6 +2683,23 @@ var camera_id = {{ camera_id }};
 
     <div class="form-group row">
         <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS.label }}
+        </div>
+        <div class="col-sm-2">
+            <div class="form-switch">
+                {{ form_config.IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS(class='form-check-input') }}
+                <div id="IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS-error" class="invalid-feedback text-danger" style="display: none;"></div>
+            </div>
+        </div>
+        <div class="col-sm-8">
+            Keep the untouched faulty input FITS and the immediately following same-camera FITS.
+            Download links appear on the Image Viewer and in the enlarged gallery viewer.
+            Normal FITS expiration settings apply.
+        </div>
+    </div>
+
+    <div class="form-group row">
+        <div class="col-sm-2">
             {{ form_config.IMAGE_ASI676MC_REPAIR__PURPLE_RATIO_THRESHOLD.label(class='col-form-label') }}
         </div>
         <div class="col-sm-2">
@@ -10665,6 +10682,7 @@ const checkbox_field_names = [
     'IMAGE_ASI676MC_REPAIR__ENABLE',
     'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
     'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE',
+    'IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS',
     'IMAGE_CALIBRATE_DARK',
     'IMAGE_CALIBRATE_BPM',
     'IMAGE_CALIBRATE_FIX_HOLES',
@@ -11367,6 +11385,7 @@ var group_fields_asi676mc_repair = [
 var group_checkbox_fields_asi676mc_repair = [
     'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME',
     'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE',
+    'IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS',
 ];
 
 group_on_change('IMAGE_ASI676MC_REPAIR__ENABLE', group_fields_asi676mc_repair, group_checkbox_fields_asi676mc_repair);

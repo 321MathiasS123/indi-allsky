@@ -260,6 +260,7 @@ class IndiAllSkyConfigBase(object):
             "ENABLE"                      : False,
             "LOG_EVERY_FRAME"             : False,
             "GALLERY_ENABLE"              : True,
+            "SAVE_DIAGNOSTIC_FITS"         : False,
             "PURPLE_RATIO_THRESHOLD"      : 1.5,
             "RED_SIDE_RATIO_THRESHOLD"    : 1.25,
             "BLUE_SIDE_RATIO_THRESHOLD"   : 1.5,

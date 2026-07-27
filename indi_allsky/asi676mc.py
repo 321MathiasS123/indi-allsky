@@ -21,6 +21,10 @@ DEFAULT_SETTINGS = {
 }
 
 
+DIAGNOSTIC_METADATA_KEY = 'asi676mc_diagnostic'
+DIAGNOSTIC_BAD_STATUSES = ('repaired', 'validation_failed')
+
+
 _CAMERA_NAME_RE = re.compile(r'(?<![A-Z0-9])ASI[\s_-]*676MC(?![A-Z0-9])', re.IGNORECASE)
 
 
@@ -35,6 +39,29 @@ def camera_record_matches(camera):
         camera_name_matches(getattr(camera, attr, None))
         for attr in ('name', 'name_alt1', 'name_alt2', 'friendlyName')
     )
+
+
+def diagnostic_capture_plan(pending_capture_id, status, new_capture_id=None):
+    """Plan diagnostic roles for this frame and the next pending capture."""
+    roles = []
+    if pending_capture_id:
+        roles.append({
+            'capture_id': str(pending_capture_id),
+            'role': 'following',
+        })
+
+    next_capture_id = None
+    if status in DIAGNOSTIC_BAD_STATUSES:
+        if not new_capture_id:
+            raise ValueError('new_capture_id is required for a bad diagnostic frame')
+
+        next_capture_id = str(new_capture_id)
+        roles.append({
+            'capture_id': next_capture_id,
+            'role': 'bad',
+        })
+
+    return roles, next_capture_id
 
 
 def normalize_settings(settings=None):
