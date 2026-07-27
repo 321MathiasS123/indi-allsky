@@ -23,6 +23,7 @@ DEFAULT_SETTINGS = {
 
 DIAGNOSTIC_METADATA_KEY = 'asi676mc_diagnostic'
 DIAGNOSTIC_BAD_STATUSES = ('repaired', 'validation_failed')
+# Maintenance and removal guide: docs/asi676mc-frame-repair.md
 
 
 _CAMERA_NAME_RE = re.compile(r'(?<![A-Z0-9])ASI[\s_-]*676MC(?![A-Z0-9])', re.IGNORECASE)
