@@ -18,6 +18,8 @@ commit `3d834018`:
 | `0912d47c` | Reduce CPU and memory use on older Raspberry Pis |
 | `4b7064b4` | Move the settings group to the bottom of the Image tab |
 | `4e553308` | Save paired diagnostic FITS and add download controls |
+| `35e2969f` | Add this maintenance and removal guide |
+| `9909cc35` | Fix Image Viewer initialization with diagnostic downloads |
 
 Use `git show <commit>` for the exact historical patch. When the branch has
 continued to evolve, use these commits as a map rather than blindly reverting
@@ -33,6 +35,32 @@ processing.
 
 The repair implementation is in `indi_allsky/asi676mc.py`; pipeline integration
 is in `indi_allsky/processing.py` and `indi_allsky/image.py`.
+
+### Saturated-highlight reconstruction
+
+The camera fault also clips both source green samples before their inverse gain
+correction. Without a second reconstruction step, the repaired green planes
+plateau below the corrected red and blue planes, leaving saturated highlights
+magenta even though unsaturated areas are repaired correctly.
+
+`_pack_clipped_green_masks()` records two compact masks after row-phase
+restoration and before applying the gain lookup tables:
+
+- source G1 samples at or above `SOURCE_SATURATION_THRESHOLD`, used by the
+  original neighboring-G2 interpolation;
+- cells where both source green samples are clipped.
+
+After gain correction and the original G1 interpolation,
+`_reconstruct_clipped_green()` handles only the jointly clipped cells. Because
+their true green values are no longer recoverable, it raises both corrected
+green values to at least the larger corrected red/blue value in the same Bayer
+cell. This neutralizes false magenta highlights while leaving all recoverable
+samples and all normal frames untouched.
+
+The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's
+3552-by-3552 resolution. Reconstruction remains chunked. It is only reached
+after a frame has been classified as bad, so normal-frame detection cost is
+unchanged.
 
 ### Diagnostic FITS pair capture
 
@@ -164,3 +192,20 @@ wanted, first follow the diagnostic-removal steps above, then:
 
 Stored JSON audit data does not require cleanup when the complete feature is
 removed.
+
+## Removing only saturated-highlight reconstruction
+
+To retain the original row-phase and gain repair but remove the later
+highlight refinement:
+
+1. Replace the runtime call to `_pack_clipped_green_masks()` with
+   `_pack_clipped_green_mask()` and keep only `green1_clipped_packed`.
+2. Remove `both_green_clipped_packed` from `_reconstruct_clipped_green()` and
+   delete the block beginning with its `numpy.unpackbits()` call.
+3. Remove `_pack_clipped_green_masks()`, restoring the original single-mask
+   implementation inside `_pack_clipped_green_mask()`.
+4. Remove the jointly-clipped-green unit test and the joint-mask assertions
+   from the partial-byte test.
+
+This narrower removal does not affect configuration, database rows, gallery
+metadata, or diagnostic FITS capture.

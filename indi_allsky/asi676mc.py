@@ -226,23 +226,63 @@ def _build_lookup_tables(gains):
 
 def _pack_clipped_green_mask(data, saturation_threshold, chunk_rows):
     """Record clipped G1 samples compactly before applying the gain tables."""
+    green1_clipped_packed, _both_green_clipped_packed = (
+        _pack_clipped_green_masks(
+            data,
+            saturation_threshold,
+            chunk_rows,
+        )
+    )
+    return green1_clipped_packed
+
+
+def _pack_clipped_green_masks(data, saturation_threshold, chunk_rows):
+    """Record clipped G1 and jointly clipped green samples compactly."""
     green1 = data[0::2, 1::2]
+    green2 = data[1::2, 0::2]
     plane_height, plane_width = green1.shape
     plane_chunk_rows = max(1, chunk_rows // 2)
     packed_width = (plane_width + 7) // 8
-    packed_mask = numpy.empty((plane_height, packed_width), dtype=numpy.uint8)
+    green1_clipped_packed = numpy.empty(
+        (plane_height, packed_width),
+        dtype=numpy.uint8,
+    )
+    both_green_clipped_packed = numpy.empty(
+        (plane_height, packed_width),
+        dtype=numpy.uint8,
+    )
 
     for row_start in range(0, plane_height, plane_chunk_rows):
         row_stop = min(row_start + plane_chunk_rows, plane_height)
-        clipped = green1[row_start:row_stop] >= saturation_threshold
-        packed_mask[row_start:row_stop] = numpy.packbits(clipped, axis=1)
+        green1_clipped = green1[row_start:row_stop] >= saturation_threshold
+        green2_clipped = green2[row_start:row_stop] >= saturation_threshold
+        green1_clipped_packed[row_start:row_stop] = numpy.packbits(
+            green1_clipped,
+            axis=1,
+        )
+        numpy.logical_and(
+            green1_clipped,
+            green2_clipped,
+            out=green2_clipped,
+        )
+        both_green_clipped_packed[row_start:row_stop] = numpy.packbits(
+            green2_clipped,
+            axis=1,
+        )
 
-    return packed_mask
+    return green1_clipped_packed, both_green_clipped_packed
 
 
-def _reconstruct_clipped_green(data, green1_clipped_packed, chunk_rows):
+def _reconstruct_clipped_green(
+    data,
+    green1_clipped_packed,
+    both_green_clipped_packed,
+    chunk_rows,
+):
+    red = data[0::2, 0::2]
     green1 = data[0::2, 1::2]
     green2 = data[1::2, 0::2]
+    blue = data[1::2, 1::2]
     plane_height, plane_width = green1.shape
     plane_chunk_rows = max(1, chunk_rows // 2)
 
@@ -275,9 +315,40 @@ def _reconstruct_clipped_green(data, green1_clipped_packed, chunk_rows):
         replace = mask & (estimate > target)
         target[replace] = estimate[replace]
 
+        both_green_clipped = numpy.unpackbits(
+            both_green_clipped_packed[row_start:row_stop],
+            axis=1,
+            count=plane_width,
+        ).view(numpy.bool_)
+        if not numpy.any(both_green_clipped):
+            continue
+
+        # Both green values have lost their highlight information.  The
+        # corrected red/blue pair provides the remaining local lower bound;
+        # raising both greens to that level prevents a false magenta plateau.
+        # Reuse the interpolation buffer to keep peak memory bounded.
+        numpy.maximum(
+            red[row_start:row_stop],
+            blue[row_start:row_stop],
+            out=estimate,
+        )
+        numpy.maximum(
+            target,
+            estimate,
+            out=target,
+            where=both_green_clipped,
+        )
+        green2_target = green2[row_start:row_stop]
+        numpy.maximum(
+            green2_target,
+            estimate,
+            out=green2_target,
+            where=both_green_clipped,
+        )
+
 
 def repair_in_place(data, settings=None):
-    """Restore row phase, Bayer gains, and prematurely clipped G1 samples."""
+    """Restore row phase, Bayer gains, and prematurely clipped green samples."""
     validate_raw_mosaic(data)
     config = normalize_settings(settings)
     return _repair_in_place(data, config)
@@ -300,10 +371,12 @@ def _repair_in_place(data, config):
         data[row_start:row_stop] = data[row_start + 1:row_stop + 1]
     data[-1] = data[-3]
 
-    green1_clipped_packed = _pack_clipped_green_mask(
-        data,
-        config['SOURCE_SATURATION_THRESHOLD'],
-        chunk_rows,
+    green1_clipped_packed, both_green_clipped_packed = (
+        _pack_clipped_green_masks(
+            data,
+            config['SOURCE_SATURATION_THRESHOLD'],
+            chunk_rows,
+        )
     )
 
     for row_start in range(0, height, chunk_rows):
@@ -317,7 +390,12 @@ def _repair_in_place(data, config):
                 lookup = lookup_tables[row_parity * 2 + column_parity]
                 plane[:] = lookup[plane]
 
-    _reconstruct_clipped_green(data, green1_clipped_packed, chunk_rows)
+    _reconstruct_clipped_green(
+        data,
+        green1_clipped_packed,
+        both_green_clipped_packed,
+        chunk_rows,
+    )
     return data
 
 

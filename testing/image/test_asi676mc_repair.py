@@ -164,6 +164,28 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
             result['timing']['detection_s'] + result['timing']['repair_s'],
         )
 
+    def test_jointly_clipped_greens_use_corrected_highlight_level(self):
+        height = 12
+        width = 20
+        data = numpy.zeros((height, width), dtype=numpy.uint16)
+
+        # Build the input one row out of phase, matching the camera failure.
+        # After row restoration, both mapped greens are clipped while the
+        # corrected red/blue pair reaches the uint16 highlight ceiling.
+        for source_row in range(1, height):
+            output_row = source_row - 1
+            if output_row % 2 == 0:
+                data[source_row, 0::2] = 65520
+                data[source_row, 1::2] = 65534
+            else:
+                data[source_row, 0::2] = 65534
+                data[source_row, 1::2] = 65520
+
+        asi676mc.repair_in_place(data)
+
+        self.assertTrue(numpy.all(data[0::2, 1::2] == 65535))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == 65535))
+
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
         data[0::2, 0::2] = 4000
@@ -213,17 +235,31 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
 
     def test_packed_clipping_mask_preserves_partial_final_byte(self):
         data = numpy.arange(12 * 20, dtype=numpy.uint16).reshape((12, 20))
-        expected = data[0::2, 1::2] >= 100
+        expected_green1 = data[0::2, 1::2] >= 100
+        expected_both = expected_green1 & (data[1::2, 0::2] >= 100)
 
         packed = asi676mc._pack_clipped_green_mask(data, 100, 4)
         unpacked = numpy.unpackbits(
             packed,
             axis=1,
-            count=expected.shape[1],
+            count=expected_green1.shape[1],
         ).view(numpy.bool_)
 
         self.assertEqual(packed.shape, (6, 2))
-        numpy.testing.assert_array_equal(unpacked, expected)
+        numpy.testing.assert_array_equal(unpacked, expected_green1)
+
+        packed_green1, packed_both = asi676mc._pack_clipped_green_masks(
+            data,
+            100,
+            4,
+        )
+        unpacked_both = numpy.unpackbits(
+            packed_both,
+            axis=1,
+            count=expected_both.shape[1],
+        ).view(numpy.bool_)
+        numpy.testing.assert_array_equal(packed_green1, packed)
+        numpy.testing.assert_array_equal(unpacked_both, expected_both)
 
     def test_repair_audit_metadata_is_json_safe(self):
         signature_before = {
