@@ -108,8 +108,9 @@ role list. Pair UUIDs, rather than timestamps, associate the bad and following
 files.
 
 Downloads appear as `Bad FITS` and `Next FITS` in the standard Image Viewer
-download strip. The enlarged gallery viewer also exposes the pair, but gallery
-thumbnails deliberately do not contain download badges.
+download strip. The gallery deliberately exposes no diagnostic FITS controls
+or URLs, including in its enlarged PhotoSwipe view, so its toolbar cannot cover
+the timestamp or other image annotations.
 
 ## Files involved in diagnostic capture
 
@@ -128,7 +129,7 @@ thumbnails deliberately do not contain download badges.
 - `indi_allsky/flask/forms.py`
   - settings field
   - diagnostic FITS lookup/pairing
-  - Image Viewer and gallery JSON fields
+  - Image Viewer JSON fields
   - labels in the standard FITS viewer
 - `indi_allsky/flask/views.py`
   - settings load/save wiring
@@ -138,7 +139,7 @@ thumbnails deliberately do not contain download badges.
 - `indi_allsky/flask/templates/imageviewer.html`
   - `Bad FITS` and `Next FITS` controls
 - `indi_allsky/flask/templates/gallery.html`
-  - enlarged-view FITS controls and slide data attributes
+  - repair outlines, badges, tooltips, and repaired-only filtering
 - `testing/image/test_asi676mc_repair.py`
   - bad/following and consecutive-bad pairing tests
 
@@ -153,17 +154,14 @@ This is the preferred removal scope if frame correction itself is still useful.
 3. From `ImageWorker`, remove the pending-pair dictionary, the guarded
    `capture_asi676mc_diagnostic_fits()` call, both diagnostic capture methods,
    and persistence of `asi676mc_diagnostic_fits` into image metadata.
-4. Remove `_asi676mc_diagnostic_assets()` and its Image Viewer/gallery response
-   fields from `indi_allsky/flask/forms.py`. Remove the diagnostic labels from
-   the FITS viewer. The camera-specific filter added to the ordinary
-   same-timestamp FITS lookup is safe to retain.
+4. Remove `_asi676mc_diagnostic_assets()` and its Image Viewer response fields
+   from `indi_allsky/flask/forms.py`. Remove the diagnostic labels from the FITS
+   viewer. The camera-specific filter added to the ordinary same-timestamp FITS
+   lookup is safe to retain.
 5. Remove the Image Viewer diagnostic spans and JavaScript.
-6. Remove only the diagnostic FITS data attributes, label CSS, and PhotoSwipe
-   registration helper from the gallery template. Keep repair outlines, repair
-   badges, and the repaired-only filter.
-7. Remove the diagnostic pairing tests, but retain all detection, repair,
+6. Remove the diagnostic pairing tests, but retain all detection, repair,
    validation, timing, and memory tests.
-8. Run the ASI676MC unit tests and JavaScript syntax checks for the config,
+7. Run the ASI676MC unit tests and JavaScript syntax checks for the config,
    gallery, and Image Viewer templates.
 
 Removing this code needs no database migration. Existing diagnostic FITS remain

@@ -51,15 +51,6 @@ figure img {width: 100%;}
   background-color: #dc3545;
 }
 
-.asi676mc-fits-button-label {
-  display: block;
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1.05;
-  text-align: center;
-}
-
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
@@ -261,17 +252,6 @@ function populate_gallery(gallery_data) {
         );
         const repair_applied = repair_status === 'repaired';
         const repair_validation_failed = repair_status === 'validation_failed';
-        const diagnostic_bad_fits = (
-            asi676mc_repair_gallery_enabled
-            ? item['asi676mc_diagnostic_bad_fits']
-            : null
-        );
-        const diagnostic_following_fits = (
-            asi676mc_repair_gallery_enabled
-            ? item['asi676mc_diagnostic_following_fits']
-            : null
-        );
-
         var repair_title = '';
         if (repair_applied) {
             repair_title = 'ASI676MC frame repaired';
@@ -299,26 +279,6 @@ function populate_gallery(gallery_data) {
             'data-image_id' : item['id'],
             'data-ts'     : item['ts'],
             'data-asi676mc-repair-status' : repair_status || '',
-            'data-asi676mc-bad-fits-url' : (
-                diagnostic_bad_fits
-                ? diagnostic_bad_fits['url']
-                : ''
-            ),
-            'data-asi676mc-bad-fits-filename' : (
-                diagnostic_bad_fits
-                ? diagnostic_bad_fits['filename']
-                : ''
-            ),
-            'data-asi676mc-following-fits-url' : (
-                diagnostic_following_fits
-                ? diagnostic_following_fits['url']
-                : ''
-            ),
-            'data-asi676mc-following-fits-filename' : (
-                diagnostic_following_fits
-                ? diagnostic_following_fits['filename']
-                : ''
-            ),
             'title'       : repair_title,
         });
         a_tag.appendTo($('#allsky-gallery'));
@@ -366,77 +326,6 @@ function populate_gallery(gallery_data) {
     });
 
     lightbox.on('uiRegister', function() {
-        function register_asi676mc_fits_button(
-            name,
-            order,
-            title,
-            url_attribute,
-            filename_attribute,
-            label
-        ) {
-            lightbox.pswp.ui.registerElement({
-                name: name,
-                order: order,
-                title: title,
-                isButton: true,
-                tagName: 'a',
-                html: '<span class="asi676mc-fits-button-label">' + label + '</span>',
-
-                onInit: (el, pswp) => {
-                    el.setAttribute('target', '_blank');
-                    el.setAttribute('rel', 'noopener');
-
-                    const update_button = () => {
-                        const current_element = (
-                            pswp.currSlide
-                            ? pswp.currSlide.data.element
-                            : null
-                        );
-                        const fits_url = (
-                            current_element
-                            ? current_element.getAttribute(url_attribute)
-                            : ''
-                        );
-                        const fits_filename = (
-                            current_element
-                            ? current_element.getAttribute(filename_attribute)
-                            : ''
-                        );
-
-                        if (fits_url) {
-                            el.href = fits_url;
-                            el.setAttribute('download', fits_filename || '');
-                            el.style.display = '';
-                        } else {
-                            el.removeAttribute('href');
-                            el.removeAttribute('download');
-                            el.style.display = 'none';
-                        }
-                    };
-
-                    pswp.on('change', update_button);
-                    update_button();
-                }
-            });
-        }
-
-        register_asi676mc_fits_button(
-            'asi676mc-bad-fits-button',
-            7,
-            'Download untouched faulty RAW FITS',
-            'data-asi676mc-bad-fits-url',
-            'data-asi676mc-bad-fits-filename',
-            'BAD<br>FITS'
-        );
-        register_asi676mc_fits_button(
-            'asi676mc-following-fits-button',
-            7.1,
-            'Download immediately following RAW FITS',
-            'data-asi676mc-following-fits-url',
-            'data-asi676mc-following-fits-filename',
-            'NEXT<br>FITS'
-        );
-
         lightbox.pswp.ui.registerElement({
             name: 'mini_timelapse-button',
             order: 9,

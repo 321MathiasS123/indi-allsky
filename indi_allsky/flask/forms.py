@@ -7485,10 +7485,6 @@ class IndiAllskyGalleryViewer(FlaskForm):
         self.camera_id = kwargs.get('camera_id')
         self.local = kwargs.get('local')
         self.asi676mc_repaired_only = kwargs.get('asi676mc_repaired_only', False)
-        self.asi676mc_repair_gallery_enabled = kwargs.get(
-            'asi676mc_repair_gallery_enabled',
-            False,
-        )
 
 
     def _apply_asi676mc_repaired_filter(self, query):
@@ -7497,18 +7493,6 @@ class IndiAllskyGalleryViewer(FlaskForm):
 
         return query.filter(
             IndiAllSkyDbImageTable.data['asi676mc_repair_status'].as_string() == 'repaired'
-        )
-
-
-    def _asi676mc_diagnostic_assets(self, image_rows):
-        if not self.asi676mc_repair_gallery_enabled:
-            return {}
-
-        return _asi676mc_diagnostic_assets(
-            [img for img, _thumb in image_rows],
-            self.camera_id,
-            self.s3_prefix,
-            self.local,
         )
 
 
@@ -7739,7 +7723,6 @@ class IndiAllskyGalleryViewer(FlaskForm):
 
         image_rows = images_query.all()
         app.logger.info('Found %d images for gallery', len(image_rows))
-        diagnostic_assets = self._asi676mc_diagnostic_assets(image_rows)
 
         images_data = list()
         for img, thumb in image_rows:
@@ -7775,11 +7758,6 @@ class IndiAllskyGalleryViewer(FlaskForm):
             signature_after = repair_metadata.get('signature_after') or {}
             image_dict['asi676mc_purple_ratio_before'] = signature_before.get('purple_ratio')
             image_dict['asi676mc_purple_ratio_after'] = signature_after.get('purple_ratio')
-
-            image_diagnostic_assets = diagnostic_assets.get(img.id, {})
-            image_dict['asi676mc_diagnostic_bad_fits'] = image_diagnostic_assets.get('bad')
-            image_dict['asi676mc_diagnostic_following_fits'] = image_diagnostic_assets.get('following')
-
 
             images_data.append(image_dict)
 

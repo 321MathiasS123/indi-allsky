@@ -50,6 +50,62 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
             class_assignments['IndiAllskyGalleryViewer'],
         )
 
+    def test_diagnostic_downloads_are_only_in_image_viewer(self):
+        project_root = Path(__file__).resolve().parents[2]
+        gallery_template = (
+            project_root
+            / 'indi_allsky'
+            / 'flask'
+            / 'templates'
+            / 'gallery.html'
+        ).read_text(encoding='utf-8')
+        imageviewer_template = (
+            project_root
+            / 'indi_allsky'
+            / 'flask'
+            / 'templates'
+            / 'imageviewer.html'
+        ).read_text(encoding='utf-8')
+        forms_path = project_root / 'indi_allsky' / 'flask' / 'forms.py'
+        forms_source = forms_path.read_text(encoding='utf-8')
+        forms_tree = ast.parse(forms_source, filename=str(forms_path))
+        form_classes = {
+            node.name: ast.get_source_segment(forms_source, node)
+            for node in forms_tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+
+        diagnostic_markers = (
+            'asi676mc_diagnostic_bad_fits',
+            'asi676mc_diagnostic_following_fits',
+            'data-asi676mc-bad-fits-url',
+            'data-asi676mc-following-fits-url',
+            'register_asi676mc_fits_button',
+        )
+        for marker in diagnostic_markers:
+            self.assertNotIn(marker, gallery_template)
+
+        self.assertNotIn(
+            'asi676mc_diagnostic_bad_fits',
+            form_classes['IndiAllskyGalleryViewer'],
+        )
+        self.assertNotIn(
+            'asi676mc_diagnostic_following_fits',
+            form_classes['IndiAllskyGalleryViewer'],
+        )
+        self.assertIn(
+            'asi676mc_diagnostic_bad_fits',
+            form_classes['IndiAllskyImageViewer'],
+        )
+        self.assertIn(
+            'asi676mc_diagnostic_following_fits',
+            form_classes['IndiAllskyImageViewer'],
+        )
+        self.assertIn('asi676mc_diagnostic_bad_fits', imageviewer_template)
+        self.assertIn('asi676mc_diagnostic_following_fits', imageviewer_template)
+        self.assertIn('Bad FITS', imageviewer_template)
+        self.assertIn('Next FITS', imageviewer_template)
+
     def test_camera_name_gate(self):
         self.assertTrue(asi676mc.camera_name_matches('ZWO CCD ASI676MC'))
         self.assertTrue(asi676mc.camera_name_matches('ASI-676MC'))

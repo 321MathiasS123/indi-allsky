@@ -4834,7 +4834,6 @@ class AjaxGalleryViewerView(BaseView):
                 camera_id=camera_id,
                 detections_count=1,
                 asi676mc_repaired_only=form_filter_asi676mc_repaired,
-                asi676mc_repair_gallery_enabled=asi676mc_repair_gallery_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
@@ -4844,7 +4843,6 @@ class AjaxGalleryViewerView(BaseView):
                 camera_id=camera_id,
                 detections_count=0,
                 asi676mc_repaired_only=form_filter_asi676mc_repaired,
-                asi676mc_repair_gallery_enabled=asi676mc_repair_gallery_enabled,
                 s3_prefix=self.s3_prefix,
                 local=local,
             )
