@@ -323,16 +323,37 @@ def _reconstruct_clipped_green(
         if not numpy.any(both_green_clipped):
             continue
 
-        # Both green values have lost their highlight information.  Raising
-        # them to at least the corrected red/blue mean prevents a false
-        # magenta plateau without forcing naturally colored highlights to the
-        # stronger of those two channels.  Reuse the uint32 neighbor buffer
-        # for the rounded mean and the interpolation buffer for its uint16
-        # result, keeping peak memory bounded.
+        # Both green values have lost their highlight information.  Estimate a
+        # target between the corrected red/blue mean and their maximum.  When
+        # red and blue are similar the target approaches the maximum, removing
+        # a false magenta strip next to neutral saturation.  When they differ,
+        # it stays closer to the mean so naturally blue or red highlights do
+        # not acquire a hard cyan/green boundary:
+        #
+        #   target = high - ((high - low) ** 2 / (2 * high))
+        #
+        # Reuse the existing uint32 neighbor buffers and uint16 interpolation
+        # buffer so the adaptive calculation does not increase peak memory.
         upper[:] = red[row_start:row_stop]
-        upper += blue[row_start:row_stop]
-        upper += 1
-        upper //= 2
+        numpy.maximum(upper, blue[row_start:row_stop], out=upper)
+        lower[:] = red[row_start:row_stop]
+        numpy.minimum(lower, blue[row_start:row_stop], out=lower)
+
+        estimate[:] = upper
+        upper -= lower
+        lower[:] = upper
+        lower *= lower
+        upper[:] = estimate
+        lower += upper
+        upper *= 2
+        numpy.floor_divide(
+            lower,
+            upper,
+            out=lower,
+            where=upper != 0,
+        )
+        upper[:] = estimate
+        upper -= lower
         estimate[:] = upper
         numpy.maximum(
             target,

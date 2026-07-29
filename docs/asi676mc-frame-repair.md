@@ -53,15 +53,26 @@ restoration and before applying the gain lookup tables:
 After gain correction and the original G1 interpolation,
 `_reconstruct_clipped_green()` handles only the jointly clipped cells. Because
 their true green values are no longer recoverable, it raises both corrected
-green values to at least the rounded mean of corrected red and blue in the same
-Bayer cell. This neutralizes false magenta highlights without forcing colored
-highlights to the stronger red/blue channel, while leaving all recoverable
-samples and all normal frames untouched.
+green values to at least an adaptive estimate calculated from corrected red and
+blue in the same Bayer cell. If `high` and `low` are the larger and smaller of
+those channels, the estimate is:
+
+```text
+high - round((high - low)^2 / (2 * high))
+```
+
+The estimate varies continuously from near the red/blue mean for strongly
+colored highlights to near their maximum when the channels are balanced. This
+removes the magenta strip next to neutral saturation without recreating the
+hard cyan transition seen when every clipped highlight was forced to the
+strongest channel. All recoverable samples and all normal frames remain
+untouched.
 
 The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's
-3552-by-3552 resolution. Reconstruction remains chunked. It is only reached
-after a frame has been classified as bad, so normal-frame detection cost is
-unchanged.
+3552-by-3552 resolution. Reconstruction remains chunked, and the adaptive
+calculation reuses the existing interpolation buffers instead of allocating
+another full image plane. It is only reached after a frame has been classified
+as bad, so normal-frame detection cost is unchanged.
 
 ### Diagnostic FITS pair capture
 

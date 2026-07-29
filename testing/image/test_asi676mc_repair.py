@@ -267,6 +267,31 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(numpy.all(data[1::2, 0::2] == expected_green))
         self.assertTrue(numpy.all(data[1::2, 1::2] == 65535))
 
+    def test_balanced_clipped_highlights_approach_strongest_channel(self):
+        height = 12
+        width = 20
+        data = numpy.empty((height, width), dtype=numpy.uint16)
+        data[0::2, 0::2] = 60000
+        data[0::2, 1::2] = 59992
+        data[1::2, 0::2] = 59992
+        data[1::2, 1::2] = 65535
+
+        plane_shape = (height // 2, width // 2)
+        clipped = numpy.ones(plane_shape, dtype=numpy.bool_)
+        packed = numpy.packbits(clipped, axis=1)
+
+        asi676mc._reconstruct_clipped_green(
+            data,
+            packed,
+            packed,
+            chunk_rows=4,
+        )
+
+        # high=65535, low=60000:
+        # 65535 - round((65535 - 60000)^2 / (2 * 65535)) = 65301.
+        self.assertTrue(numpy.all(data[0::2, 1::2] == 65301))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == 65301))
+
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
         data[0::2, 0::2] = 4000
