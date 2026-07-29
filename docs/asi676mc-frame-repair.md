@@ -53,8 +53,9 @@ restoration and before applying the gain lookup tables:
 After gain correction and the original G1 interpolation,
 `_reconstruct_clipped_green()` handles only the jointly clipped cells. Because
 their true green values are no longer recoverable, it raises both corrected
-green values to at least the larger corrected red/blue value in the same Bayer
-cell. This neutralizes false magenta highlights while leaving all recoverable
+green values to at least the rounded mean of corrected red and blue in the same
+Bayer cell. This neutralizes false magenta highlights without forcing colored
+highlights to the stronger red/blue channel, while leaving all recoverable
 samples and all normal frames untouched.
 
 The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's

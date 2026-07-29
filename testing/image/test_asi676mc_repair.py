@@ -242,6 +242,31 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(numpy.all(data[0::2, 1::2] == 65535))
         self.assertTrue(numpy.all(data[1::2, 0::2] == 65535))
 
+    def test_colored_clipped_highlights_are_not_forced_to_strongest_channel(self):
+        height = 12
+        width = 20
+        data = numpy.zeros((height, width), dtype=numpy.uint16)
+
+        source_red = round(30000 * asi676mc.DEFAULT_SETTINGS['GAIN_R'])
+        source_blue = 65520
+        for source_row in range(1, height):
+            output_row = source_row - 1
+            if output_row % 2 == 0:
+                data[source_row, 0::2] = source_red
+                data[source_row, 1::2] = 65534
+            else:
+                data[source_row, 0::2] = 65534
+                data[source_row, 1::2] = source_blue
+
+        asi676mc.repair_in_place(data)
+
+        expected_green = round(
+            65534 / asi676mc.DEFAULT_SETTINGS['GAIN_G2']
+        )
+        self.assertTrue(numpy.all(data[0::2, 1::2] == expected_green))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == expected_green))
+        self.assertTrue(numpy.all(data[1::2, 1::2] == 65535))
+
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
         data[0::2, 0::2] = 4000

@@ -323,15 +323,17 @@ def _reconstruct_clipped_green(
         if not numpy.any(both_green_clipped):
             continue
 
-        # Both green values have lost their highlight information.  The
-        # corrected red/blue pair provides the remaining local lower bound;
-        # raising both greens to that level prevents a false magenta plateau.
-        # Reuse the interpolation buffer to keep peak memory bounded.
-        numpy.maximum(
-            red[row_start:row_stop],
-            blue[row_start:row_stop],
-            out=estimate,
-        )
+        # Both green values have lost their highlight information.  Raising
+        # them to at least the corrected red/blue mean prevents a false
+        # magenta plateau without forcing naturally colored highlights to the
+        # stronger of those two channels.  Reuse the uint32 neighbor buffer
+        # for the rounded mean and the interpolation buffer for its uint16
+        # result, keeping peak memory bounded.
+        upper[:] = red[row_start:row_stop]
+        upper += blue[row_start:row_stop]
+        upper += 1
+        upper //= 2
+        estimate[:] = upper
         numpy.maximum(
             target,
             estimate,
