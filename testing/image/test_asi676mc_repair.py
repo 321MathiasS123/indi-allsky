@@ -267,7 +267,44 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(numpy.all(data[1::2, 0::2] == expected_green))
         self.assertTrue(numpy.all(data[1::2, 1::2] == 65535))
 
-    def test_balanced_clipped_highlights_approach_strongest_channel(self):
+    def test_clipped_highlight_blend_uses_bounded_transition(self):
+        height = 12
+        width = 20
+        plane_shape = (height // 2, width // 2)
+        clipped = numpy.ones(plane_shape, dtype=numpy.bool_)
+        packed = numpy.packbits(clipped, axis=1)
+
+        cases = (
+            # low/high=0.55: retain the factor-two boundary estimate.
+            (33000, 60000, 53925),
+            # low/high=0.65: produce a bounded intermediate estimate.
+            (39000, 60000, 58429),
+            # low/high=0.75: reach the strongest channel.
+            (45000, 60000, 60000),
+        )
+        for low, high, expected_green in cases:
+            with self.subTest(low=low, high=high):
+                data = numpy.empty((height, width), dtype=numpy.uint16)
+                data[0::2, 0::2] = low
+                data[0::2, 1::2] = 10000
+                data[1::2, 0::2] = 10000
+                data[1::2, 1::2] = high
+
+                asi676mc._reconstruct_clipped_green(
+                    data,
+                    packed,
+                    packed,
+                    chunk_rows=4,
+                )
+
+                self.assertTrue(
+                    numpy.all(data[0::2, 1::2] == expected_green)
+                )
+                self.assertTrue(
+                    numpy.all(data[1::2, 0::2] == expected_green)
+                )
+
+    def test_balanced_clipped_highlights_reach_strongest_channel(self):
         height = 12
         width = 20
         data = numpy.empty((height, width), dtype=numpy.uint16)
@@ -287,10 +324,9 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
             chunk_rows=4,
         )
 
-        # high=65535, low=60000:
-        # 65535 - round((65535 - 60000)^2 / (2 * 65535)) = 65301.
-        self.assertTrue(numpy.all(data[0::2, 1::2] == 65301))
-        self.assertTrue(numpy.all(data[1::2, 0::2] == 65301))
+        # low/high is above the 0.75 upper blend boundary.
+        self.assertTrue(numpy.all(data[0::2, 1::2] == 65535))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == 65535))
 
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)

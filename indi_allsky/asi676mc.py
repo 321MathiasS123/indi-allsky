@@ -21,6 +21,19 @@ DEFAULT_SETTINGS = {
 }
 
 
+# Jointly clipped highlights retain useful red/blue color information after
+# gain repair.  Keep the factor-two estimate at strongly colored boundaries,
+# then blend to the maximum channel as the red/blue pair becomes more
+# balanced.  For the factor-two estimate, low/high ratios of 0.55 and 0.75 map
+# to base/high ratios of 719/800 and 775/800.  Using that equivalent ratio lets
+# the repair reuse values it has already calculated instead of reading the red
+# and blue planes again.
+_HIGHLIGHT_BLEND_BASE_SCALE = 800
+_HIGHLIGHT_BLEND_BASE_START = 719
+_HIGHLIGHT_BLEND_BASE_END = 775
+_HIGHLIGHT_BLEND_WEIGHT_MAX = 255
+
+
 DIAGNOSTIC_METADATA_KEY = 'asi676mc_diagnostic'
 DIAGNOSTIC_BAD_STATUSES = ('repaired', 'validation_failed')
 # Maintenance and removal guide: docs/asi676mc-frame-repair.md
@@ -323,17 +336,20 @@ def _reconstruct_clipped_green(
         if not numpy.any(both_green_clipped):
             continue
 
-        # Both green values have lost their highlight information.  Estimate a
-        # target between the corrected red/blue mean and their maximum.  When
-        # red and blue are similar the target approaches the maximum, removing
-        # a false magenta strip next to neutral saturation.  When they differ,
-        # it stays closer to the mean so naturally blue or red highlights do
-        # not acquire a hard cyan/green boundary:
+        # Both green values have lost their highlight information.  Start with
+        # the factor-two estimate, which preserves strongly colored highlight
+        # boundaries:
         #
-        #   target = high - ((high - low) ** 2 / (2 * high))
+        #   base = high - ((high - low) ** 2 / (2 * high))
         #
-        # Reuse the existing uint32 neighbor buffers and uint16 interpolation
-        # buffer so the adaptive calculation does not increase peak memory.
+        # The live FITS pairs show that this estimate leaves a narrow magenta
+        # fringe, while forcing every jointly clipped cell to ``high`` creates
+        # a hard cyan boundary.  Retain ``base`` while low/high <= 0.55, blend
+        # linearly toward ``high``, and reach it at low/high >= 0.75.  This
+        # bounds the transition instead of changing all clipped highlights.
+        #
+        # Reuse the existing uint32 buffers and an 8-bit fixed-point weight so
+        # the refinement does not allocate another image-sized plane.
         upper[:] = red[row_start:row_stop]
         numpy.maximum(upper, blue[row_start:row_stop], out=upper)
         lower[:] = red[row_start:row_stop]
@@ -355,6 +371,61 @@ def _reconstruct_clipped_green(
         upper[:] = estimate
         upper -= lower
         estimate[:] = upper
+
+        # Build an equivalent fixed-point blend weight from base/high:
+        #
+        #   weight = clamp(
+        #       (scale * base - start * high)
+        #       / ((end - start) * high),
+        #       0,
+        #       1,
+        #   )
+        #
+        # At this point ``upper`` is base and ``lower`` is high - base, so
+        # their sum reconstructs high without rereading the Bayer planes.  All
+        # intermediates fit safely in uint32.  ``mask`` is no longer needed
+        # for the earlier G1 interpolation and becomes the positive-weight
+        # mask.
+        lower += upper
+        upper *= _HIGHLIGHT_BLEND_BASE_SCALE
+        lower *= _HIGHLIGHT_BLEND_BASE_START
+        numpy.greater(upper, lower, out=mask)
+        numpy.subtract(upper, lower, out=upper, where=mask)
+        numpy.multiply(upper, mask, out=upper)
+
+        upper *= _HIGHLIGHT_BLEND_WEIGHT_MAX
+        lower //= _HIGHLIGHT_BLEND_BASE_START
+        lower *= (
+            _HIGHLIGHT_BLEND_BASE_END
+            - _HIGHLIGHT_BLEND_BASE_START
+        )
+        lower //= 2
+        numpy.add(upper, lower, out=upper, where=mask)
+        lower *= 2
+        numpy.floor_divide(
+            upper,
+            lower,
+            out=upper,
+            where=mask,
+        )
+        numpy.minimum(
+            upper,
+            _HIGHLIGHT_BLEND_WEIGHT_MAX,
+            out=upper,
+        )
+
+        # Blend from the factor-two estimate to the strongest channel.
+        lower //= (
+            _HIGHLIGHT_BLEND_BASE_END
+            - _HIGHLIGHT_BLEND_BASE_START
+        )
+        lower -= estimate
+        lower *= upper
+        lower += _HIGHLIGHT_BLEND_WEIGHT_MAX // 2
+        lower //= _HIGHLIGHT_BLEND_WEIGHT_MAX
+        lower += estimate
+        estimate[:] = lower
+
         numpy.maximum(
             target,
             estimate,
