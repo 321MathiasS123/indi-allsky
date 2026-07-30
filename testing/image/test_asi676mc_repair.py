@@ -288,9 +288,9 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         )
 
         # high=65535, low=60000:
-        # 65535 - round((65535 - 60000)^2 / (3 * 65535)) = 65379.
-        self.assertTrue(numpy.all(data[0::2, 1::2] == 65379))
-        self.assertTrue(numpy.all(data[1::2, 0::2] == 65379))
+        # 65535 - round((65535 - 60000)^2 / (2 * 65535)) = 65301.
+        self.assertTrue(numpy.all(data[0::2, 1::2] == 65301))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == 65301))
 
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
