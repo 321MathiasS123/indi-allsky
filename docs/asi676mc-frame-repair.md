@@ -20,6 +20,14 @@ commit `3d834018`:
 | `4e553308` | Save paired diagnostic FITS and add download controls |
 | `35e2969f` | Add this maintenance and removal guide |
 | `9909cc35` | Fix Image Viewer initialization with diagnostic downloads |
+| `d5d75f2b` | Method 1: reconstruct jointly clipped green from the strongest red/blue channel |
+| `f8cfbf22` | Keep diagnostic FITS downloads in the Image Viewer only |
+| `02e321ec` | Method 2: reconstruct jointly clipped green from the red/blue mean |
+| `ca835c21` | Method 3: use the adaptive factor-two highlight estimate |
+| `5a6e3ab0` | Method 4: change the adaptive estimate to factor three |
+| `c848d2fc` | Revert Method 4 and restore factor two |
+| `01238f25` | Document the factor-two rollback |
+| `71054af0` | Method 5: bound the factor-two-to-maximum transition |
 
 Use `git show <commit>` for the exact historical patch. When the branch has
 continued to evolve, use these commits as a map rather than blindly reverting
@@ -35,6 +43,46 @@ processing.
 
 The repair implementation is in `indi_allsky/asi676mc.py`; pipeline integration
 is in `indi_allsky/processing.py` and `indi_allsky/image.py`.
+
+### Test system and evidence package
+
+The Raspberry Pi is the live test system and the only source of untouched
+failure captures. Changes on this branch are therefore expected to be fetched
+by the Pi, observed in production processing, and either retained or reverted
+with a new commit. Do not rewrite or force-push this branch while the highlight
+repair is being evaluated; its commit history is the experiment ledger.
+
+Seven bad/following ASI676MC FITS pairs were used for offline comparison. The
+two clear-sky fringe pairs are:
+
+| Role | Pair 1 | Pair 2 |
+| --- | --- | --- |
+| Defective FITS | `fringe_bad_fits_1.fit` | `fringe_bad_fits_2.fit` |
+| Following normal FITS | `fringe_ next_fits_1.fit` | `fringe_next_fits_2.fit` |
+| Defective raw JPEG | `raw_ccd1_20260730_053431.jpg` | `raw_ccd1_20260730_054552.jpg` |
+| Following raw JPEG | `raw_ccd1_20260730_053451.jpg` | `raw_ccd1_20260730_054612.jpg` |
+| Defective finished JPEG | `ccd1_20260730_053431.jpg` | `ccd1_20260730_054552.jpg` |
+| Following finished JPEG | `ccd1_20260730_053451.jpg` | `ccd1_20260730_054612.jpg` |
+
+The redacted processing configuration is
+`indi-allsky_config_id-440_level-20260724-0_20260730_132945.json`. Relevant
+daytime settings were MTF stretch with shadows `0.03` and midtones `0.4`,
+manual RGB balance `1.28/1.0/0.98`, saturation `1.3`, gamma `1.22`, and
+sharpening `0.75`.
+
+The residual magenta error is already measurable in the raw JPEG exported
+before stretch, manual white balance, saturation, gamma, and sharpening. Those
+later operations make it approximately 15-20 percent more visible, but do not
+create it. Below about 240 in the 8-bit raw JPEG, paired repaired and following
+frames are effectively color-matched; the remaining error is concentrated in
+the brightest transition and clipped regions.
+
+Source green values cannot provide a useful feather signal. Of 120,890 jointly
+clipped Bayer cells in clear-sky pair 1, 119,061 already have a minimum source
+green value of 65534. Pair 2 has 100,352 such cells out of 101,906. More than
+98 percent of the affected cells have therefore lost their green brightness
+gradient completely. Transition logic must use the surviving red/blue
+relationship rather than the clipped green value.
 
 ### Saturated-highlight reconstruction
 
@@ -53,33 +101,87 @@ restoration and before applying the gain lookup tables:
 After gain correction and the original G1 interpolation,
 `_reconstruct_clipped_green()` handles only the jointly clipped cells. Because
 their true green values are no longer recoverable, it raises both corrected
-green values to at least an adaptive estimate calculated from corrected red and
-blue in the same Bayer cell. If `high` and `low` are the larger and smaller of
-those channels, the estimate is:
+green values from the corrected red and blue in the same Bayer cell. If `high`
+and `low` are the larger and smaller of those channels, the Method 3 boundary
+estimate is:
 
 ```text
-high - round((high - low)^2 / (2 * high))
+base = high - round((high - low)^2 / (2 * high))
 ```
 
-The estimate varies continuously from near the red/blue mean for strongly
-colored highlights to near their maximum when the channels are balanced. This
-removes the magenta strip next to neutral saturation without recreating the
-hard cyan transition seen when every clipped highlight was forced to the
-strongest channel. All recoverable samples and all normal frames remain
-untouched.
+Method 5, introduced by `71054af0`, retains `base` while `low/high` is at or
+below `0.55`, blends toward `high` between `0.55` and `0.75`, and uses `high`
+at or above `0.75`. The implementation calculates the equivalent `base/high`
+endpoints `719/800` and `775/800` with an 8-bit fixed-point weight:
 
-The denominator factor of two was restored after comparison with live
-ASI676MC captures. A factor of three made the transition smoother, but
-introduced a purple cast across a much larger part of the clipped-highlight
-region. Factor two is the best validated compromise currently: the remaining
-fringe is narrower while unaffected tones and fully clipped highlights remain
-closer to the following normal frame.
+```text
+weight = clamp(
+    (800 * base - 719 * high) / (56 * high),
+    0,
+    1
+)
+target = round(base + weight * (high - base))
+```
+
+This keeps the factor-two behavior at the colored outer boundary, but reaches
+the color of the strongest-channel method quickly enough to avoid carrying a
+purple deficit across the entire clipped region. The constants are internal
+model-specific values rather than new exposed settings. All recoverable
+samples and all normal frames remain untouched.
+
+Across the seven saved FITS pairs, equal-weighted mean transition chroma error
+was `0.026618` for factor two, `0.023337` for factor three, `0.028770` for the
+maximum-channel method, and `0.020675` for Method 5. These offline values are
+comparative diagnostics; visual results from the Pi remain the acceptance
+test.
 
 The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's
 3552-by-3552 resolution. Reconstruction remains chunked, and the adaptive
 calculation reuses the existing interpolation buffers instead of allocating
-another full image plane. It is only reached after a frame has been classified
-as bad, so normal-frame detection cost is unchanged.
+another full image plane. The new interpolation also reuses those buffers. On
+the Windows analysis system, median full-frame repair time for clear-sky pair 1
+changed from approximately 106 ms for factor two to 128 ms for Method 5. It is
+only reached after a frame has been classified as bad, so normal-frame
+detection cost is unchanged.
+
+### Highlight experiment ledger
+
+The observed results below are part of the implementation history, not a claim
+that clipped information can be recovered exactly:
+
+| Method | Commit | Reconstruction | Live observation |
+| --- | --- | --- | --- |
+| 1 | `d5d75f2b` | Set jointly clipped green to at least `max(red, blue)` | Closest interior color to following normal frames, but a hard cyan onset |
+| 2 | `02e321ec` | Set jointly clipped green to at least the red/blue mean | Smooth natural-color onset, but a broad purple band with a visible bright-side edge |
+| 3 | `ca835c21` | Adaptive factor-two estimate | Narrower purple band; both band edges remained visible |
+| 4 | `5a6e3ab0` | Adaptive factor-three estimate | Smooth transition, but a purple tinge extended across most of the clipped region |
+| 3 restored | `c848d2fc` | Revert Method 4 | Returned the Pi to the factor-two baseline for paired testing |
+| 5 | `71054af0` | Factor two at the boundary, bounded blend to maximum | Awaiting live Pi validation |
+
+To return from Method 5 to the immediately preceding factor-two implementation
+with a new commit:
+
+```text
+git revert 71054af0
+```
+
+After that revert, the older experiments can be restored with new commits:
+
+```text
+# Restore Method 4 (factor three)
+git revert c848d2fc
+
+# Or restore Method 2 from the factor-two baseline
+git revert ca835c21
+
+# Restore Method 1 after reverting Method 3
+git revert 02e321ec
+```
+
+Run only the path needed, in order, and inspect the staged patch before
+continuing if Git reports a conflict. Do not combine these with `git reset` or
+force-push the shared test branch. A dirty Pi worktree must first be committed
+or stashed before a revert or rebase can proceed.
 
 ### Diagnostic FITS pair capture
 
@@ -221,8 +323,9 @@ highlight refinement:
    delete the block beginning with its `numpy.unpackbits()` call.
 3. Remove `_pack_clipped_green_masks()`, restoring the original single-mask
    implementation inside `_pack_clipped_green_mask()`.
-4. Remove the jointly-clipped-green unit test and the joint-mask assertions
-   from the partial-byte test.
+4. Remove the `_HIGHLIGHT_BLEND_*` constants.
+5. Remove the jointly-clipped-green and bounded-transition unit tests and the
+   joint-mask assertions from the partial-byte test.
 
 This narrower removal does not affect configuration, database rows, gallery
 metadata, or diagnostic FITS capture.
