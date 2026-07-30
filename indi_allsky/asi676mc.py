@@ -330,7 +330,7 @@ def _reconstruct_clipped_green(
         # it stays closer to the mean so naturally blue or red highlights do
         # not acquire a hard cyan/green boundary:
         #
-        #   target = high - ((high - low) ** 2 / (2 * high))
+        #   target = high - ((high - low) ** 2 / (3 * high))
         #
         # Reuse the existing uint32 neighbor buffers and uint16 interpolation
         # buffer so the adaptive calculation does not increase peak memory.
@@ -345,7 +345,10 @@ def _reconstruct_clipped_green(
         lower *= lower
         upper[:] = estimate
         lower += upper
-        upper *= 2
+        upper //= 2
+        lower += upper
+        upper[:] = estimate
+        upper *= 3
         numpy.floor_divide(
             lower,
             upper,

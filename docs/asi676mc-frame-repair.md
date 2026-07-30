@@ -58,7 +58,7 @@ blue in the same Bayer cell. If `high` and `low` are the larger and smaller of
 those channels, the estimate is:
 
 ```text
-high - round((high - low)^2 / (2 * high))
+high - round((high - low)^2 / (3 * high))
 ```
 
 The estimate varies continuously from near the red/blue mean for strongly
@@ -67,6 +67,12 @@ removes the magenta strip next to neutral saturation without recreating the
 hard cyan transition seen when every clipped highlight was forced to the
 strongest channel. All recoverable samples and all normal frames remain
 untouched.
+
+The denominator factor of three was selected after comparison with seven paired
+bad/following ASI676MC FITS captures. It reduces the remaining green deficit in
+partially balanced clipped highlights by roughly half compared with the earlier
+factor of two. Larger factors approach the strongest-channel method too
+quickly and begin to over-correct strongly colored blue-sky transitions.
 
 The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's
 3552-by-3552 resolution. Reconstruction remains chunked, and the adaptive
