@@ -68,6 +68,13 @@ hard cyan transition seen when every clipped highlight was forced to the
 strongest channel. All recoverable samples and all normal frames remain
 untouched.
 
+The denominator factor of two was restored after comparison with live
+ASI676MC captures. A factor of three made the transition smoother, but
+introduced a purple cast across a much larger part of the clipped-highlight
+region. Factor two is the best validated compromise currently: the remaining
+fringe is narrower while unaffected tones and fully clipped highlights remain
+closer to the following normal frame.
+
 The joint mask is bit-packed and adds 394,272 bytes at the ASI676MC's
 3552-by-3552 resolution. Reconstruction remains chunked, and the adaptive
 calculation reuses the existing interpolation buffers instead of allocating
