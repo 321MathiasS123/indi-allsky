@@ -270,6 +270,8 @@ class IndiAllSkyConfigBase(object):
             "GAIN_G1"                     : 1.68652,
             "GAIN_G2"                     : 1.09238,
             "GAIN_B"                      : 0.59537,
+            "HIGHLIGHT_BLEND_START_RATIO" : 0.55,
+            "HIGHLIGHT_BLEND_END_RATIO"   : 0.75,
             "CHUNK_ROWS"                  : 128,
         },
         "IMAGE_CALIBRATE_DARK"          : True,

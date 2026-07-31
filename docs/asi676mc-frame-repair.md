@@ -111,12 +111,20 @@ base = high - round((high - low)^2 / (2 * high))
 
 Method 5, introduced by `71054af0`, retains `base` while `low/high` is at or
 below `0.55`, blends toward `high` between `0.55` and `0.75`, and uses `high`
-at or above `0.75`. The implementation calculates the equivalent `base/high`
-endpoints `719/800` and `775/800` with an 8-bit fixed-point weight:
+at or above `0.75`. These boundaries are exposed as
+`HIGHLIGHT_BLEND_START_RATIO` and `HIGHLIGHT_BLEND_END_RATIO`; `0.55` and
+`0.75` remain the defaults. The implementation converts them to equivalent
+`base/high` endpoints (the defaults become `719/800` and `775/800`) and uses
+an 8-bit fixed-point weight:
 
 ```text
+scale = 800
+start_base = round(scale * (1 - (1 - start_ratio)^2 / 2))
+end_base = round(scale * (1 - (1 - end_ratio)^2 / 2))
+
 weight = clamp(
-    (800 * base - 719 * high) / (56 * high),
+    (scale * base - start_base * high)
+        / ((end_base - start_base) * high),
     0,
     1
 )
@@ -126,8 +134,10 @@ target = round(base + weight * (high - base))
 This keeps the factor-two behavior at the colored outer boundary, but reaches
 the color of the strongest-channel method quickly enough to avoid carrying a
 purple deficit across the entire clipped region. The constants are internal
-model-specific values rather than new exposed settings. All recoverable
-samples and all normal frames remain untouched.
+model-specific values that can now be adjusted alongside the measured Bayer
+gains. The start ratio must be greater than zero and less than the end ratio;
+the end ratio may not exceed one. All recoverable samples and all normal
+frames remain untouched.
 
 Across the seven saved FITS pairs, equal-weighted mean transition chroma error
 was `0.026618` for factor two, `0.023337` for factor three, `0.028770` for the
@@ -156,7 +166,7 @@ that clipped information can be recovered exactly:
 | 3 | `ca835c21` | Adaptive factor-two estimate | Narrower purple band; both band edges remained visible |
 | 4 | `5a6e3ab0` | Adaptive factor-three estimate | Smooth transition, but a purple tinge extended across most of the clipped region |
 | 3 restored | `c848d2fc` | Revert Method 4 | Returned the Pi to the factor-two baseline for paired testing |
-| 5 | `71054af0` | Factor two at the boundary, bounded blend to maximum | Awaiting live Pi validation |
+| 5 | `71054af0` | Factor two at the boundary, bounded blend to maximum | Live Pi result accepted: smooth transitions, white clipping, and only a barely detectable residual tint |
 
 To return from Method 5 to the immediately preceding factor-two implementation
 with a new commit:

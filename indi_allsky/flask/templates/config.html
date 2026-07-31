@@ -2799,6 +2799,28 @@ var camera_id = {{ camera_id }};
 
     <div class="form-group row">
         <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO.label(class='col-form-label') }}
+        </div>
+        <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO(class='form-control bg-secondary') }}
+            <div id="IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO-error" class="invalid-feedback text-danger" style="display: none;"></div>
+        </div>
+        <div class="col-sm-8">Red/blue low-to-high ratio where clipped-highlight blending begins [default: 0.55]</div>
+    </div>
+
+    <div class="form-group row">
+        <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO.label(class='col-form-label') }}
+        </div>
+        <div class="col-sm-2">
+            {{ form_config.IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO(class='form-control bg-secondary') }}
+            <div id="IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO-error" class="invalid-feedback text-danger" style="display: none;"></div>
+        </div>
+        <div class="col-sm-8">Red/blue low-to-high ratio where clipped-highlight blending reaches the stronger channel [default: 0.75; must exceed start]</div>
+    </div>
+
+    <div class="form-group row">
+        <div class="col-sm-2">
             {{ form_config.IMAGE_ASI676MC_REPAIR__CHUNK_ROWS.label(class='col-form-label') }}
         </div>
         <div class="col-sm-2">
@@ -10086,6 +10108,8 @@ const field_names = [
     'IMAGE_ASI676MC_REPAIR__GAIN_G1',
     'IMAGE_ASI676MC_REPAIR__GAIN_G2',
     'IMAGE_ASI676MC_REPAIR__GAIN_B',
+    'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO',
+    'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO',
     'IMAGE_ASI676MC_REPAIR__CHUNK_ROWS',
     'IMAGE_CALIBRATE_MANUAL_OFFSET',
     'IMAGE_CALIBRATE_HOLE_THOLD',
@@ -11379,6 +11403,8 @@ var group_fields_asi676mc_repair = [
     'IMAGE_ASI676MC_REPAIR__GAIN_G1',
     'IMAGE_ASI676MC_REPAIR__GAIN_G2',
     'IMAGE_ASI676MC_REPAIR__GAIN_B',
+    'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO',
+    'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO',
     'IMAGE_ASI676MC_REPAIR__CHUNK_ROWS',
 ];
 

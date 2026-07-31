@@ -17,6 +17,8 @@ DEFAULT_SETTINGS = {
     'GAIN_G1': 1.68652,
     'GAIN_G2': 1.09238,
     'GAIN_B': 0.59537,
+    'HIGHLIGHT_BLEND_START_RATIO': 0.55,
+    'HIGHLIGHT_BLEND_END_RATIO': 0.75,
     'CHUNK_ROWS': 128,
 }
 
@@ -24,13 +26,10 @@ DEFAULT_SETTINGS = {
 # Jointly clipped highlights retain useful red/blue color information after
 # gain repair.  Keep the factor-two estimate at strongly colored boundaries,
 # then blend to the maximum channel as the red/blue pair becomes more
-# balanced.  For the factor-two estimate, low/high ratios of 0.55 and 0.75 map
-# to base/high ratios of 719/800 and 775/800.  Using that equivalent ratio lets
-# the repair reuse values it has already calculated instead of reading the red
-# and blue planes again.
+# balanced.  The configured low/high boundaries are converted to equivalent
+# base/high fixed-point values.  This lets the repair reuse values it has
+# already calculated instead of reading the red and blue planes again.
 _HIGHLIGHT_BLEND_BASE_SCALE = 800
-_HIGHLIGHT_BLEND_BASE_START = 719
-_HIGHLIGHT_BLEND_BASE_END = 775
 _HIGHLIGHT_BLEND_WEIGHT_MAX = 255
 
 
@@ -94,6 +93,12 @@ def normalize_settings(settings=None):
         'GAIN_G1': float(config['GAIN_G1']),
         'GAIN_G2': float(config['GAIN_G2']),
         'GAIN_B': float(config['GAIN_B']),
+        'HIGHLIGHT_BLEND_START_RATIO': float(
+            config['HIGHLIGHT_BLEND_START_RATIO']
+        ),
+        'HIGHLIGHT_BLEND_END_RATIO': float(
+            config['HIGHLIGHT_BLEND_END_RATIO']
+        ),
         'CHUNK_ROWS': int(config['CHUNK_ROWS']),
     }
 
@@ -109,6 +114,25 @@ def normalize_settings(settings=None):
         if normalized[key] <= 0:
             raise ValueError('{0:s} must be greater than zero'.format(key))
 
+    highlight_blend_start = normalized['HIGHLIGHT_BLEND_START_RATIO']
+    highlight_blend_end = normalized['HIGHLIGHT_BLEND_END_RATIO']
+    if highlight_blend_start <= 0 or highlight_blend_start >= 1:
+        raise ValueError(
+            'HIGHLIGHT_BLEND_START_RATIO must be greater than zero and less than one'
+        )
+    if highlight_blend_end <= 0 or highlight_blend_end > 1:
+        raise ValueError(
+            'HIGHLIGHT_BLEND_END_RATIO must be greater than zero and no more than one'
+        )
+    if highlight_blend_start >= highlight_blend_end:
+        raise ValueError(
+            'HIGHLIGHT_BLEND_START_RATIO must be less than HIGHLIGHT_BLEND_END_RATIO'
+        )
+    _highlight_blend_base_boundaries(
+        highlight_blend_start,
+        highlight_blend_end,
+    )
+
     if normalized['SAMPLE_STEP'] < 2 or normalized['SAMPLE_STEP'] % 2:
         raise ValueError('SAMPLE_STEP must be an even number of at least two')
 
@@ -120,6 +144,26 @@ def normalize_settings(settings=None):
         raise ValueError('CHUNK_ROWS must be an even number of at least two')
 
     return normalized
+
+
+@lru_cache(maxsize=32)
+def _highlight_blend_base_boundaries(start_ratio, end_ratio):
+    """Map configured low/high ratios to factor-two base/high fixed points."""
+    def base_ratio(channel_ratio):
+        return 1.0 - (((1.0 - channel_ratio) ** 2) / 2.0)
+
+    base_start = round(
+        base_ratio(start_ratio) * _HIGHLIGHT_BLEND_BASE_SCALE
+    )
+    base_end = round(
+        base_ratio(end_ratio) * _HIGHLIGHT_BLEND_BASE_SCALE
+    )
+    if base_start >= base_end:
+        raise ValueError(
+            'Highlight blend ratios are too close at fixed-point precision'
+        )
+
+    return base_start, base_end
 
 
 def audit_metadata(
@@ -291,6 +335,12 @@ def _reconstruct_clipped_green(
     green1_clipped_packed,
     both_green_clipped_packed,
     chunk_rows,
+    highlight_blend_start_ratio=DEFAULT_SETTINGS[
+        'HIGHLIGHT_BLEND_START_RATIO'
+    ],
+    highlight_blend_end_ratio=DEFAULT_SETTINGS[
+        'HIGHLIGHT_BLEND_END_RATIO'
+    ],
 ):
     red = data[0::2, 0::2]
     green1 = data[0::2, 1::2]
@@ -298,6 +348,12 @@ def _reconstruct_clipped_green(
     blue = data[1::2, 1::2]
     plane_height, plane_width = green1.shape
     plane_chunk_rows = max(1, chunk_rows // 2)
+    highlight_blend_base_start, highlight_blend_base_end = (
+        _highlight_blend_base_boundaries(
+            highlight_blend_start_ratio,
+            highlight_blend_end_ratio,
+        )
+    )
 
     for row_start in range(0, plane_height, plane_chunk_rows):
         row_stop = min(row_start + plane_chunk_rows, plane_height)
@@ -344,9 +400,10 @@ def _reconstruct_clipped_green(
         #
         # The live FITS pairs show that this estimate leaves a narrow magenta
         # fringe, while forcing every jointly clipped cell to ``high`` creates
-        # a hard cyan boundary.  Retain ``base`` while low/high <= 0.55, blend
-        # linearly toward ``high``, and reach it at low/high >= 0.75.  This
-        # bounds the transition instead of changing all clipped highlights.
+        # a hard cyan boundary.  Retain ``base`` through the configured start
+        # ratio, blend linearly toward ``high``, and reach it at the configured
+        # end ratio.  This bounds the transition instead of changing all
+        # clipped highlights.
         #
         # Reuse the existing uint32 buffers and an 8-bit fixed-point weight so
         # the refinement does not allocate another image-sized plane.
@@ -388,16 +445,16 @@ def _reconstruct_clipped_green(
         # mask.
         lower += upper
         upper *= _HIGHLIGHT_BLEND_BASE_SCALE
-        lower *= _HIGHLIGHT_BLEND_BASE_START
+        lower *= highlight_blend_base_start
         numpy.greater(upper, lower, out=mask)
         numpy.subtract(upper, lower, out=upper, where=mask)
         numpy.multiply(upper, mask, out=upper)
 
         upper *= _HIGHLIGHT_BLEND_WEIGHT_MAX
-        lower //= _HIGHLIGHT_BLEND_BASE_START
+        lower //= highlight_blend_base_start
         lower *= (
-            _HIGHLIGHT_BLEND_BASE_END
-            - _HIGHLIGHT_BLEND_BASE_START
+            highlight_blend_base_end
+            - highlight_blend_base_start
         )
         lower //= 2
         numpy.add(upper, lower, out=upper, where=mask)
@@ -416,8 +473,8 @@ def _reconstruct_clipped_green(
 
         # Blend from the factor-two estimate to the strongest channel.
         lower //= (
-            _HIGHLIGHT_BLEND_BASE_END
-            - _HIGHLIGHT_BLEND_BASE_START
+            highlight_blend_base_end
+            - highlight_blend_base_start
         )
         lower -= estimate
         lower *= upper
@@ -489,6 +546,8 @@ def _repair_in_place(data, config):
         green1_clipped_packed,
         both_green_clipped_packed,
         chunk_rows,
+        config['HIGHLIGHT_BLEND_START_RATIO'],
+        config['HIGHLIGHT_BLEND_END_RATIO'],
     )
     return data
 

@@ -509,6 +509,30 @@ def IMAGE_ASI676MC_REPAIR__GAIN_validator(form, field):
         raise ValidationError('Gain must be 10 or less')
 
 
+def IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_RATIO_validator(form, field):
+    if not isinstance(field.data, (int, float)):
+        raise ValidationError('Please enter valid number')
+
+    if field.data <= 0 or field.data > 1:
+        raise ValidationError('Ratio must be greater than 0 and no more than 1')
+
+
+def IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO_validator(form, field):
+    IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_RATIO_validator(form, field)
+
+    start_ratio = form.IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO.data
+    if isinstance(start_ratio, (int, float)) and field.data <= start_ratio:
+        raise ValidationError('End ratio must be greater than start ratio')
+    if isinstance(start_ratio, (int, float)):
+        try:
+            asi676mc.normalize_settings({
+                'HIGHLIGHT_BLEND_START_RATIO': start_ratio,
+                'HIGHLIGHT_BLEND_END_RATIO': field.data,
+            })
+        except ValueError as error:
+            raise ValidationError(str(error)) from error
+
+
 def IMAGE_ASI676MC_REPAIR__CHUNK_ROWS_validator(form, field):
     if not isinstance(field.data, int):
         raise ValidationError('Please enter valid number')
@@ -4582,6 +4606,8 @@ class IndiAllskyConfigForm(FlaskForm):
     IMAGE_ASI676MC_REPAIR__GAIN_G1                     = FloatField('Bad-frame Gain G1', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
     IMAGE_ASI676MC_REPAIR__GAIN_G2                     = FloatField('Bad-frame Gain G2', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
     IMAGE_ASI676MC_REPAIR__GAIN_B                      = FloatField('Bad-frame Gain B', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__GAIN_validator], widget=NumberInput(step=0.00001))
+    IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO = FloatField('Highlight Blend Start Ratio', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_RATIO_validator], widget=NumberInput(step=0.01))
+    IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO   = FloatField('Highlight Blend End Ratio', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO_validator], widget=NumberInput(step=0.01))
     IMAGE_ASI676MC_REPAIR__CHUNK_ROWS                  = IntegerField('Repair Chunk Rows', validators=[DataRequired(), IMAGE_ASI676MC_REPAIR__CHUNK_ROWS_validator])
     IMAGE_CALIBRATE_DARK             = BooleanField('Apply Dark Calibration Frames')
     IMAGE_CALIBRATE_BPM              = BooleanField('Apply Bad Pixel Map Frames')

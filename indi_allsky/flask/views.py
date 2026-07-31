@@ -2433,6 +2433,8 @@ class ConfigView(FormView):
             'IMAGE_ASI676MC_REPAIR__GAIN_G1'                     : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_G1', 1.68652),
             'IMAGE_ASI676MC_REPAIR__GAIN_G2'                     : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_G2', 1.09238),
             'IMAGE_ASI676MC_REPAIR__GAIN_B'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GAIN_B', 0.59537),
+            'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO' : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('HIGHLIGHT_BLEND_START_RATIO', 0.55),
+            'IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO'   : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('HIGHLIGHT_BLEND_END_RATIO', 0.75),
             'IMAGE_ASI676MC_REPAIR__CHUNK_ROWS'                  : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('CHUNK_ROWS', 128),
             'IMAGE_CALIBRATE_DARK'           : self.indi_allsky_config.get('IMAGE_CALIBRATE_DARK', True),
             'IMAGE_CALIBRATE_BPM'            : self.indi_allsky_config.get('IMAGE_CALIBRATE_BPM', False),
@@ -3484,6 +3486,8 @@ class AjaxConfigView(BaseView):
         asi676mc_repair_config['GAIN_G1']                     = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_G1'])
         asi676mc_repair_config['GAIN_G2']                     = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_G2'])
         asi676mc_repair_config['GAIN_B']                      = float(request.json['IMAGE_ASI676MC_REPAIR__GAIN_B'])
+        asi676mc_repair_config['HIGHLIGHT_BLEND_START_RATIO'] = float(request.json['IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_START_RATIO'])
+        asi676mc_repair_config['HIGHLIGHT_BLEND_END_RATIO']   = float(request.json['IMAGE_ASI676MC_REPAIR__HIGHLIGHT_BLEND_END_RATIO'])
         asi676mc_repair_config['CHUNK_ROWS']                  = int(request.json['IMAGE_ASI676MC_REPAIR__CHUNK_ROWS'])
         self.indi_allsky_config['IMAGE_CALIBRATE_DARK']                 = bool(request.json['IMAGE_CALIBRATE_DARK'])
         self.indi_allsky_config['IMAGE_CALIBRATE_BPM']                  = bool(request.json['IMAGE_CALIBRATE_BPM'])

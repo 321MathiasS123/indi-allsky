@@ -268,6 +268,11 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(numpy.all(data[1::2, 1::2] == 65535))
 
     def test_clipped_highlight_blend_uses_bounded_transition(self):
+        self.assertEqual(
+            asi676mc._highlight_blend_base_boundaries(0.55, 0.75),
+            (719, 775),
+        )
+
         height = 12
         width = 20
         plane_shape = (height // 2, width // 2)
@@ -328,6 +333,32 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
         self.assertTrue(numpy.all(data[0::2, 1::2] == 65535))
         self.assertTrue(numpy.all(data[1::2, 0::2] == 65535))
 
+    def test_configured_highlight_blend_boundaries_change_transition(self):
+        height = 12
+        width = 20
+        data = numpy.empty((height, width), dtype=numpy.uint16)
+        data[0::2, 0::2] = 39000
+        data[0::2, 1::2] = 10000
+        data[1::2, 0::2] = 10000
+        data[1::2, 1::2] = 60000
+
+        plane_shape = (height // 2, width // 2)
+        clipped = numpy.ones(plane_shape, dtype=numpy.bool_)
+        packed = numpy.packbits(clipped, axis=1)
+
+        asi676mc._reconstruct_clipped_green(
+            data,
+            packed,
+            packed,
+            chunk_rows=4,
+            highlight_blend_start_ratio=0.65,
+            highlight_blend_end_ratio=0.85,
+        )
+
+        # low/high=0.65 is now the start boundary, so retain factor two.
+        self.assertTrue(numpy.all(data[0::2, 1::2] == 56325))
+        self.assertTrue(numpy.all(data[1::2, 0::2] == 56325))
+
     def test_configured_threshold_can_leave_frame_untouched(self):
         data = numpy.empty((64, 64), dtype=numpy.uint16)
         data[0::2, 0::2] = 4000
@@ -374,6 +405,29 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             asi676mc.normalize_settings({'CHUNK_ROWS': 3})
+
+    def test_highlight_blend_ratios_must_be_ordered(self):
+        with self.assertRaises(ValueError):
+            asi676mc.normalize_settings({
+                'HIGHLIGHT_BLEND_START_RATIO': 0.0,
+            })
+
+        with self.assertRaises(ValueError):
+            asi676mc.normalize_settings({
+                'HIGHLIGHT_BLEND_END_RATIO': 1.01,
+            })
+
+        with self.assertRaises(ValueError):
+            asi676mc.normalize_settings({
+                'HIGHLIGHT_BLEND_START_RATIO': 0.75,
+                'HIGHLIGHT_BLEND_END_RATIO': 0.55,
+            })
+
+        with self.assertRaises(ValueError):
+            asi676mc.normalize_settings({
+                'HIGHLIGHT_BLEND_START_RATIO': 0.98,
+                'HIGHLIGHT_BLEND_END_RATIO': 0.99,
+            })
 
     def test_packed_clipping_mask_preserves_partial_final_byte(self):
         data = numpy.arange(12 * 20, dtype=numpy.uint16).reshape((12, 20))
