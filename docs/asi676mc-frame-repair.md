@@ -44,6 +44,20 @@ processing.
 The repair implementation is in `indi_allsky/asi676mc.py`; pipeline integration
 is in `indi_allsky/processing.py` and `indi_allsky/image.py`.
 
+`IMAGE_ASI676MC_REPAIR.EXCLUDE_ONLY` selects a detection-only alternative while
+the main feature remains enabled. A matching bad frame is left byte-for-byte
+unchanged, passes through the normal image pipeline, and is saved as the usual
+bad JPEG. When that saved image is added to the database, its existing
+`exclude` field is set so timelapse and star-trail queries omit it. The gallery
+shows the orange **Purple frame excluded** badge when gallery status display is
+enabled. Normal frames and frames from other camera models are unaffected.
+
+The default is `false`, so existing installations continue to repair detected
+frames. The runtime statuses stored with affected images are `repaired`,
+`validation_failed`, and `excluded`; exclude-only mode does not run repair or
+post-repair validation and therefore adds only the detector's usual
+sub-millisecond overhead.
+
 ### Test system and evidence package
 
 The Raspberry Pi is the live test system and the only source of untouched
@@ -198,8 +212,8 @@ or stashed before a revert or rebase can proceed.
 Commit `4e553308` added the independently selectable
 `IMAGE_ASI676MC_REPAIR.SAVE_DIAGNOSTIC_FITS` option. When enabled:
 
-1. A frame classified as `repaired` or `validation_failed` causes the untouched
-   incoming FITS file to be copied before the source is removed.
+1. A frame classified as `repaired`, `validation_failed`, or `excluded` causes
+   the untouched incoming FITS file to be copied before the source is removed.
 2. The immediately following successfully ingested frame for the same camera is
    copied as the comparison FITS.
 3. Consecutive bad frames share one physical file where appropriate: a frame
@@ -242,6 +256,84 @@ Downloads appear as `Bad FITS` and `Next FITS` in the standard Image Viewer
 download strip. The gallery deliberately exposes no diagnostic FITS controls
 or URLs, including in its enlarged PhotoSwipe view, so its toolbar cannot cover
 the timestamp or other image annotations.
+
+### Standalone repair and calibration tool
+
+`misc/asi676mc_frame_repair.py` is the publishable, self-contained companion
+to the live feature. It depends only on NumPy and Astropy and contains the same
+Method 5 repair mathematics as `indi_allsky/asi676mc.py`. Every adjustable
+detection, gain, saturation, highlight, and calibration constant is grouped at
+the top of the file.
+
+The original single-file workflow remains available:
+
+```text
+# Classify without writing anything
+python misc/asi676mc_frame_repair.py bad.fit --check-only
+
+# Write bad_corrected.fit only when the failure is detected
+python misc/asi676mc_frame_repair.py bad.fit
+```
+
+Folder calibration is explicit:
+
+```text
+python misc/asi676mc_frame_repair.py /path/to/fits --calibrate
+```
+
+It recursively inspects RAW16 RGGB FITS files, classifies each from its own
+pixels, and matches every bad frame to the closest normal frame before and/or
+after it. A match must have the same dimensions, Bayer pattern, exposure,
+gain, binning, and compatible camera identity, and must fall within 90 seconds
+by default. Filenames are not used for classification or pairing when the FITS
+timestamp is available.
+
+Calibration refuses to produce settings unless all of these conditions hold:
+
+- at least seven independently detected bad frames have compatible matches;
+- every detected bad frame has at least one matched normal frame;
+- distinct matched normal frames provide a minimum normal/bad ratio of `1:1`;
+- at least two exposure levels are represented;
+- normal and failed signatures are cleanly separated by the detector;
+- sufficient stable, jointly clipped daylight highlight samples are present;
+- no conflicting explicit camera identity is found.
+
+A normal capture on both sides of every failure gives the preferred `2:1`
+ratio. The tool reports a warning, but does not fail, when only the required
+`1:1` evidence is available.
+
+The four Bayer gains are measured from stable, unsaturated sparse samples after
+accounting for the one-row displacement. Before/after references are
+interpolated to the failure timestamp. The source-green ceiling is measured
+separately. Highlight start/end ratios are grid-searched using chromaticity
+error rather than absolute brightness; fully clipped normal references are
+excluded because they contain no target color. A neighboring grid result must
+improve the proven `0.55/0.75` score by more than two percent before replacing
+those defaults.
+
+Finally, the rounded recommendations are applied in memory to every matched
+bad FITS and every distinct matched normal FITS. Calibration fails if a bad
+repair retains the signature, a normal frame is classified as bad, or any
+normal-frame data changes.
+
+The only calibration output is `asi676mc_calibration_report.txt`. Its first
+section is headed `TYPE THESE VALUES INTO YOUR CONFIG` and uses the exact field
+labels shown under **Configuration > Image > ASI676MC RAW16 Frame Repair**.
+Values must be typed into that normal settings form and reviewed before repair
+is enabled. The standalone tool neither reads nor writes installation
+configuration files; its only calibration output is the text report.
+
+The report continues with human-readable evidence, stability, signature, and
+highlight-fit details for auditing. The tool never edits the live indi-allsky
+configuration and never overwrites source FITS. An existing report also
+requires `--overwrite`.
+
+Against the complete saved development collection, the tool found 14 matched
+bad frames and 21 distinct normal references across 14 exposure levels. Seven
+failures had both a preceding and following reference. It reproduced the
+accepted `0.55/0.75` highlight boundaries after overfit protection, measured a
+source-green plateau of `65534`, and estimated gains within roughly one percent
+of the live defaults.
 
 ## Files involved in diagnostic capture
 
@@ -306,17 +398,20 @@ If the camera issue is fixed upstream or this customization is no longer
 wanted, first follow the diagnostic-removal steps above, then:
 
 1. Remove `indi_allsky/asi676mc.py` and its test module.
-2. Remove the ASI676MC result property from the processing image-reference
+2. Remove `misc/asi676mc_frame_repair.py` and
+   `testing/image/test_asi676mc_standalone.py` if the standalone detector,
+   repairer, and calibration workflow is no longer wanted.
+3. Remove the ASI676MC result property from the processing image-reference
    object.
-3. Remove `correct_asi676mc_frame()`, its helper, and the early pipeline call.
-4. Remove the complete `IMAGE_ASI676MC_REPAIR` configuration block and all
+4. Remove `correct_asi676mc_frame()`, its helper, and the early pipeline call.
+5. Remove the complete `IMAGE_ASI676MC_REPAIR` configuration block and all
    corresponding form validators, fields, view wiring, camera-support checks,
    and Image-tab controls.
-5. Remove repair metadata persistence and all gallery repair status, outline,
+6. Remove repair metadata persistence and all gallery repair status, outline,
    badge, tooltip, and filter code.
-6. Search the tree for both `asi676mc` and `IMAGE_ASI676MC_REPAIR`; no runtime
+7. Search the tree for both `asi676mc` and `IMAGE_ASI676MC_REPAIR`; no runtime
    references should remain.
-7. Compare the final result against the commit series above and run the
+8. Compare the final result against the commit series above and run the
    relevant image and web-template checks.
 
 Stored JSON audit data does not require cleanup when the complete feature is

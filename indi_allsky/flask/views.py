@@ -2421,6 +2421,7 @@ class ConfigView(FormView):
             'STARTRAILS__IMAGE_CIRCLE_MASK_BLUR'    : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_BLUR', 35),
             'STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY' : self.indi_allsky_config.get('STARTRAILS', {}).get('IMAGE_CIRCLE_MASK_OPACITY', 100),
             'IMAGE_ASI676MC_REPAIR__ENABLE'                      : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('ENABLE', False) and asi676mc_repair_supported,
+            'IMAGE_ASI676MC_REPAIR__EXCLUDE_ONLY'                : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('EXCLUDE_ONLY', False),
             'IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'             : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('LOG_EVERY_FRAME', False),
             'IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'              : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('GALLERY_ENABLE', True),
             'IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS'         : self.indi_allsky_config.get('IMAGE_ASI676MC_REPAIR', {}).get('SAVE_DIAGNOSTIC_FITS', False),
@@ -3474,6 +3475,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['STARTRAILS']['IMAGE_CIRCLE_MASK_OPACITY']  = int(request.json['STARTRAILS__IMAGE_CIRCLE_MASK_OPACITY'])
         asi676mc_repair_config = self.indi_allsky_config.setdefault('IMAGE_ASI676MC_REPAIR', {})
         asi676mc_repair_config['ENABLE']                      = bool(request.json['IMAGE_ASI676MC_REPAIR__ENABLE'])
+        asi676mc_repair_config['EXCLUDE_ONLY']                = bool(request.json['IMAGE_ASI676MC_REPAIR__EXCLUDE_ONLY'])
         asi676mc_repair_config['LOG_EVERY_FRAME']             = bool(request.json['IMAGE_ASI676MC_REPAIR__LOG_EVERY_FRAME'])
         asi676mc_repair_config['GALLERY_ENABLE']              = bool(request.json['IMAGE_ASI676MC_REPAIR__GALLERY_ENABLE'])
         asi676mc_repair_config['SAVE_DIAGNOSTIC_FITS']         = bool(request.json['IMAGE_ASI676MC_REPAIR__SAVE_DIAGNOSTIC_FITS'])

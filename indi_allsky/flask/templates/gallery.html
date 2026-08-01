@@ -252,9 +252,10 @@ function populate_gallery(gallery_data) {
         );
         const repair_applied = repair_status === 'repaired';
         const repair_validation_failed = repair_status === 'validation_failed';
+        const repair_excluded = repair_status === 'excluded';
         var repair_title = '';
         if (repair_applied) {
-            repair_title = 'ASI676MC frame repaired';
+            repair_title = 'Purple frame repaired';
             if (
                 item['asi676mc_purple_ratio_before'] !== null
                 && item['asi676mc_purple_ratio_after'] !== null
@@ -266,6 +267,8 @@ function populate_gallery(gallery_data) {
             }
         } else if (repair_validation_failed) {
             repair_title = 'ASI676MC repair validation failed; original frame retained';
+        } else if (repair_excluded) {
+            repair_title = 'Purple frame detected; original frame retained and excluded from timelapses';
         }
 
         var a_tag = $('<a />', {
@@ -288,7 +291,7 @@ function populate_gallery(gallery_data) {
             'loading'   : 'lazy',
             'alt'       : item['date'],
             'class'     : (
-                repair_applied
+                (repair_applied || repair_excluded)
                 ? 'asi676mc-repaired-thumbnail'
                 : (
                     repair_validation_failed
@@ -299,14 +302,18 @@ function populate_gallery(gallery_data) {
         });
         img_tag.appendTo(a_tag);
 
-        if (repair_applied || repair_validation_failed) {
+        if (repair_applied || repair_validation_failed || repair_excluded) {
             var badge_tag = $('<span />', {
                 'class' : (
                     repair_validation_failed
                     ? 'asi676mc-repair-badge validation-failed'
                     : 'asi676mc-repair-badge'
                 ),
-                'text' : repair_validation_failed ? 'repair failed' : 'ASI676MC repaired',
+                'text' : (
+                    repair_validation_failed
+                    ? 'repair failed'
+                    : (repair_excluded ? 'Purple frame excluded' : 'Purple frame repaired')
+                ),
             });
             badge_tag.appendTo(a_tag);
         }

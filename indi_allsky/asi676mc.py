@@ -34,7 +34,7 @@ _HIGHLIGHT_BLEND_WEIGHT_MAX = 255
 
 
 DIAGNOSTIC_METADATA_KEY = 'asi676mc_diagnostic'
-DIAGNOSTIC_BAD_STATUSES = ('repaired', 'validation_failed')
+DIAGNOSTIC_BAD_STATUSES = ('repaired', 'validation_failed', 'excluded')
 # Maintenance and removal guide: docs/asi676mc-frame-repair.md
 
 
@@ -227,6 +227,27 @@ def frame_signature(data, settings=None):
     validate_raw_mosaic(data)
     config = normalize_settings(settings)
     return _frame_signature(data, config)
+
+
+def detect_frame(data, settings=None):
+    """Classify one frame without changing it and include detector timing."""
+    total_start = time.perf_counter()
+    config = normalize_settings(settings)
+    validate_raw_mosaic(data)
+
+    detection_start = time.perf_counter()
+    signature = _frame_signature(data, config)
+    detection_elapsed_s = time.perf_counter() - detection_start
+
+    return {
+        'is_bad': signature['is_bad'],
+        'signature': signature,
+        'timing': {
+            'detection_s': detection_elapsed_s,
+            'repair_s': 0.0,
+            'total_s': time.perf_counter() - total_start,
+        },
+    }
 
 
 def _frame_signature(data, config):

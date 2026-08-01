@@ -309,6 +309,33 @@ class TestAsi676mcFrameRepair(unittest.TestCase):
                     numpy.all(data[1::2, 0::2] == expected_green)
                 )
 
+    def test_diagnostic_capture_plan_includes_exclude_only_frames(self):
+        roles, pending_id = asi676mc.diagnostic_capture_plan(
+            None,
+            'excluded',
+            new_capture_id='pair-excluded',
+        )
+        self.assertEqual(
+            roles,
+            [{'capture_id': 'pair-excluded', 'role': 'bad'}],
+        )
+        self.assertEqual(pending_id, 'pair-excluded')
+
+    def test_detect_frame_classifies_without_mutating_source(self):
+        data = numpy.empty((64, 64), dtype=numpy.uint16)
+        data[0::2, 0::2] = 4000
+        data[0::2, 1::2] = 1000
+        data[1::2, 0::2] = 1000
+        data[1::2, 1::2] = 4000
+        original = data.copy()
+
+        result = asi676mc.detect_frame(data)
+
+        self.assertTrue(result['is_bad'])
+        self.assertTrue(result['signature']['is_bad'])
+        self.assertEqual(result['timing']['repair_s'], 0.0)
+        numpy.testing.assert_array_equal(data, original)
+
     def test_balanced_clipped_highlights_reach_strongest_channel(self):
         height = 12
         width = 20

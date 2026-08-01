@@ -1010,6 +1010,61 @@ class ImageProcessor(object):
             )
             return self._set_asi676mc_repair_result(i_ref, 'skipped', reason=reason)
 
+        if repair_config.get('EXCLUDE_ONLY', False):
+            try:
+                result = asi676mc.detect_frame(
+                    i_ref.hdulist[0].data,
+                    repair_config,
+                )
+            except (TypeError, ValueError) as e:
+                reason = str(e)
+                logger.error('ASI676MC purple-frame detection skipped: %s', reason)
+                return self._set_asi676mc_repair_result(i_ref, 'skipped', reason=reason)
+
+            signature_before = result['signature']
+            timing = result['timing']
+            if result['is_bad']:
+                logger.warning(
+                    'ASI676MC purple-frame failure detected; original frame retained '
+                    'and excluded from timelapses '
+                    '(purple ratio: %0.3f, red-side ratio: %0.3f, '
+                    'blue-side ratio: %0.3f, detection: %0.3f ms, total: %0.3f ms)',
+                    signature_before['purple_ratio'],
+                    signature_before['red_side_ratio'],
+                    signature_before['blue_side_ratio'],
+                    timing['detection_s'] * 1000,
+                    timing['total_s'] * 1000,
+                )
+                return self._set_asi676mc_repair_result(
+                    i_ref,
+                    'excluded',
+                    reason='exclude-only mode retained the detected purple frame',
+                    signature_before=signature_before,
+                    timing=timing,
+                )
+
+            log_method = (
+                logger.info
+                if repair_config.get('LOG_EVERY_FRAME', False)
+                else logger.debug
+            )
+            log_method(
+                'ASI676MC purple-frame check: normal '
+                '(purple ratio: %0.3f, red-side ratio: %0.3f, '
+                'blue-side ratio: %0.3f, detection: %0.3f ms, total: %0.3f ms)',
+                signature_before['purple_ratio'],
+                signature_before['red_side_ratio'],
+                signature_before['blue_side_ratio'],
+                timing['detection_s'] * 1000,
+                timing['total_s'] * 1000,
+            )
+            return self._set_asi676mc_repair_result(
+                i_ref,
+                'normal',
+                signature_before=signature_before,
+                timing=timing,
+            )
+
         try:
             result = asi676mc.repair_if_needed(
                 i_ref.hdulist[0].data,

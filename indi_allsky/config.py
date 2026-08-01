@@ -258,6 +258,7 @@ class IndiAllSkyConfigBase(object):
         },
         "IMAGE_ASI676MC_REPAIR" : {
             "ENABLE"                      : False,
+            "EXCLUDE_ONLY"                : False,
             "LOG_EVERY_FRAME"             : False,
             "GALLERY_ENABLE"              : True,
             "SAVE_DIAGNOSTIC_FITS"         : False,

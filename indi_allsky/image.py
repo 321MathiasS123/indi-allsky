@@ -808,6 +808,14 @@ class ImageWorker(Process):
             asi676mc_repair_result = i_ref.asi676mc_repair_result
             if (
                 asi676mc_repair_result
+                and asi676mc_repair_result['status'] == 'excluded'
+            ):
+                # The processed JPEG has already been written.  Mark its new
+                # database row so existing timelapse queries skip it.
+                image_metadata['exclude'] = True
+
+            if (
+                asi676mc_repair_result
                 and asi676mc_repair_result.get('diagnostic_fits')
             ):
                 image_add_data['asi676mc_diagnostic_fits'] = dict(
@@ -819,6 +827,7 @@ class ImageWorker(Process):
                 and asi676mc_repair_result['status'] in (
                     'repaired',
                     'validation_failed',
+                    'excluded',
                 )
             ):
                 image_add_data['asi676mc_repair_status'] = asi676mc_repair_result['status']
