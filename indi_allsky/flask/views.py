@@ -30,6 +30,8 @@ from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
 from ..lens_solver import applySolvedValuesToConfig
+from ..panorama import buildPanoramaCropFilter
+from ..panorama import validatePanoramaAspectRatio
 
 from cryptography.fernet import InvalidToken
 
@@ -11082,14 +11084,59 @@ class MiniTimelapseGeneratorView(TemplateView):
                 .first()
 
 
+        panorama_image_entry = IndiAllSkyDbPanoramaImageTable.query\
+            .join(IndiAllSkyDbPanoramaImageTable.camera)\
+            .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
+            .filter(IndiAllSkyDbPanoramaImageTable.createDate == image_entry.createDate)\
+            .order_by(IndiAllSkyDbPanoramaImageTable.id.desc())\
+            .first()
+
+
+        panorama_data = {
+            'available' : False,
+            'id'        : 0,
+            'url'       : '',
+            'width'     : 0,
+            'height'    : 0,
+        }
+
+        if panorama_image_entry:
+            local = True
+            if self.web_nonlocal_images:
+                if self.web_local_images_admin and self.verify_admin_network():
+                    pass
+                else:
+                    local = False
+
+            try:
+                panorama_url = panorama_image_entry.getUrl(
+                    s3_prefix=self.s3_prefix,
+                    local=local,
+                )
+            except ValueError:
+                panorama_url = ''
+
+            if panorama_url:
+                panorama_data = {
+                    'available' : True,
+                    'id'        : panorama_image_entry.id,
+                    'url'       : str(panorama_url),
+                    'width'     : panorama_image_entry.width,
+                    'height'    : panorama_image_entry.height,
+                }
+
+
         context['image_loop_view'] = self.image_loop_view
+        context['panorama_image_loop_view'] = 'indi_allsky.js_panorama_loop_view'
 
         context['timestamp'] = int(image_entry.createDate.timestamp())
+        context['panorama'] = panorama_data
+        context['source_type'] = request.args.get('source', 'standard')
 
 
         form_data = {
             'CAMERA_ID'             : self.camera.id,
-            'IMAGE_ID'              : image_id,
+            'IMAGE_ID'              : image_entry.id,
             'PRE_SECONDS_SELECT'    : '240',
             'POST_SECONDS_SELECT'   : '120',
             'FRAMERATE_SELECT'      : '10',
@@ -11117,7 +11164,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             return jsonify(json_data), 400
 
 
-        image_id = int(request.json['IMAGE_ID'])
+        source_type = str(request.json.get('SOURCE_TYPE', 'standard'))
         camera_id = int(request.json['CAMERA_ID'])
         pre_seconds = int(request.json['PRE_SECONDS'])
         post_seconds = int(request.json['POST_SECONDS'])
@@ -11125,25 +11172,79 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         note = str(request.json['NOTE'])
 
 
-        # sanity check
-        IndiAllSkyDbImageTable.query\
-            .join(IndiAllSkyDbImageTable.camera)\
-            .filter(IndiAllSkyDbCameraTable.id == camera_id)\
-            .filter(IndiAllSkyDbImageTable.id == image_id)\
-            .one()
+        if source_type == 'standard':
+            image_id = int(request.json['IMAGE_ID'])
 
+            # sanity check
+            IndiAllSkyDbImageTable.query\
+                .join(IndiAllSkyDbImageTable.camera)\
+                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+                .filter(IndiAllSkyDbImageTable.id == image_id)\
+                .one()
 
-        jobdata = {
-            'action' : 'generateMiniVideo',
-            'kwargs' : {
-                'image_id'      : image_id,
-                'camera_id'     : camera_id,
-                'pre_seconds'   : pre_seconds,
-                'post_seconds'  : post_seconds,
-                'framerate'     : framerate,
-                'note'          : note,
-            },
-        }
+            jobdata = {
+                'action' : 'generateMiniVideo',
+                'kwargs' : {
+                    'image_id'      : image_id,
+                    'camera_id'     : camera_id,
+                    'pre_seconds'   : pre_seconds,
+                    'post_seconds'  : post_seconds,
+                    'framerate'     : framerate,
+                    'note'          : note,
+                },
+            }
+        elif source_type == 'panorama':
+            panorama_image_id = int(request.json['PANORAMA_IMAGE_ID'])
+
+            panorama_image_entry = IndiAllSkyDbPanoramaImageTable.query\
+                .join(IndiAllSkyDbPanoramaImageTable.camera)\
+                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+                .filter(IndiAllSkyDbPanoramaImageTable.id == panorama_image_id)\
+                .one()
+
+            crop_x = int(request.json['CROP_X'])
+            crop_y = int(request.json['CROP_Y'])
+            crop_width = int(request.json['CROP_WIDTH'])
+            crop_height = int(request.json['CROP_HEIGHT'])
+            aspect_ratio = str(request.json.get('ASPECT_RATIO', 'free'))
+
+            try:
+                buildPanoramaCropFilter(
+                    panorama_image_entry.width,
+                    panorama_image_entry.height,
+                    crop_x,
+                    crop_y,
+                    crop_width,
+                    crop_height,
+                )
+                validatePanoramaAspectRatio(aspect_ratio, crop_width, crop_height)
+            except (TypeError, ValueError) as e:
+                json_data = {
+                    'failure-message' : 'Invalid panorama selection: {0:s}'.format(str(e)),
+                }
+                return jsonify(json_data), 400
+
+            jobdata = {
+                'action' : 'generatePanoramaMiniVideo',
+                'kwargs' : {
+                    'panorama_image_id': panorama_image_id,
+                    'camera_id'         : camera_id,
+                    'pre_seconds'       : pre_seconds,
+                    'post_seconds'      : post_seconds,
+                    'framerate'         : framerate,
+                    'note'              : note,
+                    'crop_x'            : crop_x,
+                    'crop_y'            : crop_y,
+                    'crop_width'        : crop_width,
+                    'crop_height'       : crop_height,
+                    'aspect_ratio'      : aspect_ratio,
+                },
+            }
+        else:
+            json_data = {
+                'failure-message' : 'Invalid mini timelapse source',
+            }
+            return jsonify(json_data), 400
 
 
         task_mini_video = IndiAllSkyDbTaskQueueTable(

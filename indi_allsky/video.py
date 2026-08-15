@@ -23,6 +23,8 @@ from . import asi676mc
 from . import asi676mc_calibration
 
 from .timelapse import TimelapseGenerator
+from .panorama import buildPanoramaCropFilter
+from .panorama import validatePanoramaAspectRatio
 from .keogram import KeogramGenerator
 from .starTrails import StarTrailGenerator
 from .miscUpload import miscUpload
@@ -1068,6 +1070,329 @@ class VideoWorker(Process):
 
 
         self._miscUpload.syncapi_mini_video(mini_video_entry, mini_video_metadata)  # syncapi before s3
+        self._miscUpload.s3_upload_mini_video(mini_video_entry, mini_video_metadata)
+        self._miscUpload.upload_mini_video(mini_video_entry)
+        self._miscUpload.youtube_upload_mini_video(mini_video_entry, mini_video_metadata)
+
+
+    def generatePanoramaMiniVideo(self, task, **kwargs):
+        panorama_image_id = kwargs['panorama_image_id']
+        camera_id = kwargs['camera_id']
+        pre_seconds = int(kwargs['pre_seconds'])
+        post_seconds = int(kwargs['post_seconds'])
+        framerate = float(kwargs['framerate'])
+        note = str(kwargs['note'])
+
+
+        task.setRunning()
+
+
+        now = datetime.now()
+
+        camera = IndiAllSkyDbCameraTable.query\
+            .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+            .one()
+
+        panorama_image_entry = db.session.query(
+            IndiAllSkyDbPanoramaImageTable,
+        )\
+            .join(IndiAllSkyDbPanoramaImageTable.camera)\
+            .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+            .filter(IndiAllSkyDbPanoramaImageTable.id == panorama_image_id)\
+            .one()
+
+
+        try:
+            source_width = int(panorama_image_entry.width)
+            source_height = int(panorama_image_entry.height)
+            crop_x = int(kwargs['crop_x'])
+            crop_y = int(kwargs['crop_y'])
+            crop_width = int(kwargs['crop_width'])
+            crop_height = int(kwargs['crop_height'])
+            aspect_ratio = str(kwargs.get('aspect_ratio', 'free'))
+
+            video_filter = buildPanoramaCropFilter(
+                source_width,
+                source_height,
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+            )
+            validatePanoramaAspectRatio(aspect_ratio, crop_width, crop_height)
+        except (TypeError, ValueError) as e:
+            logger.error('Invalid panorama crop: %s', str(e))
+            task.setFailed('Invalid panorama crop: {0:s}'.format(str(e)))
+            return
+
+
+        targetDate = panorama_image_entry.createDate
+        startDate = targetDate - timedelta(seconds=pre_seconds)
+        endDate = targetDate + timedelta(seconds=post_seconds)
+
+        d_dayDate = panorama_image_entry.dayDate
+        night = panorama_image_entry.night
+
+        if night:
+            timeofday = 'night'
+        else:
+            timeofday = 'day'
+
+
+        if self.config['FFMPEG_CODEC'] in ['libx264', 'libx265', 'h264_qsv', 'h264_omx', 'h264_v4l2m2m', 'hevc_v4l2m2m']:
+            video_format = 'mp4'
+        elif self.config['FFMPEG_CODEC'] in ['libvpx']:
+            video_format = 'webm'
+        else:
+            logger.error('Invalid codec in config, panorama mini timelapse generation failed')
+            task.setFailed('Invalid codec in config, panorama mini timelapse generation failed')
+            return
+
+        # QSV does not support the large resolutions commonly used by panoramas.
+        codec = self.config['FFMPEG_CODEC']
+        if codec == 'h264_qsv':
+            codec = 'libx264'
+
+
+        vid_folder = self._getVideoFolder(d_dayDate, camera)
+
+        video_file = vid_folder.joinpath(
+            'allsky-panorama_minitimelapse_ccd{0:d}_{1:s}_{2:s}_{3:d}.{4:s}'.format(
+                camera.id,
+                d_dayDate.strftime('%Y%m%d'),
+                timeofday,
+                int(now.timestamp()),
+                video_format,
+            )
+        )
+
+
+        try:
+            old_mini_video_entry = IndiAllSkyDbMiniVideoTable.query\
+                .join(IndiAllSkyDbMiniVideoTable.camera)\
+                .filter(IndiAllSkyDbCameraTable.id == camera.id)\
+                .filter(
+                    or_(
+                        IndiAllSkyDbMiniVideoTable.filename == str(video_file),
+                        IndiAllSkyDbMiniVideoTable.filename == str(video_file.relative_to(self.image_dir)),
+                    )
+                )\
+                .one()
+
+            if not self.config.get('TIMELAPSE_OVERWRITE'):
+                logger.error('Panorama Mini Timelapse already exists, overwrite not permitted')
+                task.setFailed('Panorama Mini Timelapse already exists, overwrite not permitted')
+                return
+
+            logger.warning('Removing old panorama mini video db entry')
+            old_mini_video_entry.deleteAsset()
+            db.session.delete(old_mini_video_entry)
+            db.session.commit()
+        except NoResultFound:
+            pass
+
+
+        if video_file.exists():
+            logger.warning('Removing orphaned panorama mini video file: %s', video_file)
+            video_file.unlink()
+
+
+        timelapse_files_entries = IndiAllSkyDbPanoramaImageTable.query\
+            .join(IndiAllSkyDbPanoramaImageTable.camera)\
+            .filter(IndiAllSkyDbCameraTable.id == camera.id)\
+            .filter(IndiAllSkyDbPanoramaImageTable.createDate >= startDate)\
+            .filter(IndiAllSkyDbPanoramaImageTable.createDate <= endDate)\
+            .filter(IndiAllSkyDbPanoramaImageTable.exclude == sa_false())\
+            .order_by(IndiAllSkyDbPanoramaImageTable.createDate.asc())
+
+        logger.info('Found %d panorama images for mini timelapse', timelapse_files_entries.count())
+
+
+        timelapse_files = list()
+        for entry in timelapse_files_entries:
+            if entry.width != source_width or entry.height != source_height:
+                message = 'Panorama dimensions changed within the selected time range'
+                logger.error('%s: expected %dx%d, found %sx%s', message, source_width, source_height, entry.width, entry.height)
+                task.setFailed(message)
+                return
+
+            p_entry = Path(entry.getFilesystemPath())
+
+            if not p_entry.exists():
+                logger.error('File not found: %s', p_entry)
+                continue
+
+            if p_entry.stat().st_size == 0:
+                continue
+
+            timelapse_files.append(p_entry)
+
+
+        if len(timelapse_files) < 2:
+            message = 'Not enough panorama images were found to generate a mini timelapse'
+            logger.error(message)
+            task.setFailed(message)
+            return
+
+
+        timelapse_data = IndiAllSkyDbImageTable.query\
+            .add_columns(
+                func.max(IndiAllSkyDbImageTable.kpindex).label('image_max_kpindex'),
+                func.max(IndiAllSkyDbImageTable.ovation_max).label('image_max_ovation_max'),
+                func.max(IndiAllSkyDbImageTable.smoke_rating).label('image_max_smoke_rating'),
+                func.max(IndiAllSkyDbImageTable.stars).label('image_max_stars'),
+                func.avg(IndiAllSkyDbImageTable.stars).label('image_avg_stars'),
+                func.max(IndiAllSkyDbImageTable.moonphase).label('image_max_moonphase'),
+                func.avg(IndiAllSkyDbImageTable.sqm).label('image_avg_sqm'),
+            )\
+            .join(IndiAllSkyDbImageTable.camera)\
+            .filter(IndiAllSkyDbCameraTable.id == camera.id)\
+            .filter(IndiAllSkyDbImageTable.createDate >= startDate)\
+            .filter(IndiAllSkyDbImageTable.createDate <= endDate)\
+            .filter(IndiAllSkyDbImageTable.exclude == sa_false())\
+            .first()
+
+        try:
+            max_kpindex = float(timelapse_data.image_max_kpindex)
+            max_ovation_max = int(timelapse_data.image_max_ovation_max)
+            max_stars = int(timelapse_data.image_max_stars)
+            avg_stars = float(timelapse_data.image_avg_stars)
+            max_moonphase = float(timelapse_data.image_max_moonphase)
+            avg_sqm = float(timelapse_data.image_avg_sqm)
+        except TypeError:
+            max_kpindex = 0.0
+            max_ovation_max = 0
+            max_stars = 0
+            avg_stars = 0.0
+            max_moonphase = -1.0
+            avg_sqm = 0.0
+
+        try:
+            max_smoke_rating = int(timelapse_data.image_max_smoke_rating)
+        except (TypeError, ValueError):
+            max_smoke_rating = constants.SMOKE_RATING_NODATA
+
+
+        mini_video_metadata = {
+            'type'          : constants.MINI_VIDEO,
+            'createDate'    : int(now.timestamp()),
+            'utc_offset'    : now.astimezone().utcoffset().total_seconds(),
+            'dayDate'       : d_dayDate.strftime('%Y%m%d'),
+            'targetDate'    : targetDate.timestamp(),
+            'startDate'     : startDate.timestamp(),
+            'endDate'       : endDate.timestamp(),
+            'night'         : night,
+            'framerate'     : framerate,
+            'frames'        : len(timelapse_files),
+            'width'         : crop_width,
+            'height'        : crop_height,
+            'note'          : note,
+            'camera_uuid'   : camera.uuid,
+        }
+
+        mini_video_metadata['data'] = {
+            'source'          : 'panorama',
+            'source_width'    : source_width,
+            'source_height'   : source_height,
+            'crop_x'          : crop_x,
+            'crop_y'          : crop_y,
+            'crop_width'      : crop_width,
+            'crop_height'     : crop_height,
+            'aspect_ratio'    : aspect_ratio,
+            'max_kpindex'     : max_kpindex,
+            'max_ovation_max' : max_ovation_max,
+            'max_smoke_rating': max_smoke_rating,
+            'max_stars'       : max_stars,
+            'avg_stars'       : avg_stars,
+            'max_moonphase'   : max_moonphase,
+            'avg_sqm'         : avg_sqm,
+        }
+
+
+        mini_video_entry = self._miscDb.addMiniVideo(
+            video_file.relative_to(self.image_dir),
+            camera.id,
+            mini_video_metadata,
+        )
+
+        mini_video_thumbnail_metadata = {
+            'type'       : constants.THUMBNAIL,
+            'origin'     : constants.MINI_VIDEO,
+            'createDate' : int(now.timestamp()),
+            'dayDate'    : d_dayDate.strftime('%Y%m%d'),
+            'utc_offset' : now.astimezone().utcoffset().total_seconds(),
+            'night'      : night,
+            'camera_uuid': camera.uuid,
+        }
+
+        mini_video_thumbnail_entry = self._miscDb.addThumbnail(
+            mini_video_entry,
+            mini_video_metadata,
+            camera.id,
+            mini_video_thumbnail_metadata,
+            new_width=self.thumbnail_mini_timelapse_width,
+            opt_height=self.thumbnail_mini_timelapse_height_opt,
+            image_entry=panorama_image_entry,
+        )
+
+        if mini_video_thumbnail_entry:
+            mini_video_thumbnail_metadata['fileSize'] = mini_video_thumbnail_entry.fileSize
+
+
+        if self.config.get('TIMELAPSE', {}).get('USE_NIGHT_CONFIG', True):
+            bitrate = self.config.get('FFMPEG_BITRATE', '5000k')
+            ffmpeg_extra_options = self.config.get('FFMPEG_EXTRA_OPTIONS', '')
+        else:
+            if night:
+                bitrate = self.config.get('FFMPEG_BITRATE', '5000k')
+                ffmpeg_extra_options = self.config.get('FFMPEG_EXTRA_OPTIONS', '')
+            else:
+                bitrate = self.config.get('FFMPEG_BITRATE_DAY', '5000k')
+                ffmpeg_extra_options = self.config.get('FFMPEG_EXTRA_OPTIONS_DAY', '')
+
+
+        try:
+            mini_tg = TimelapseGenerator(
+                self.config,
+                skip_frames=0,
+            )
+
+            mini_tg.codec = codec
+            mini_tg.framerate = framerate
+            mini_tg.bitrate = bitrate
+            mini_tg.video_filter = video_filter
+            mini_tg.ffmpeg_extra_options = ffmpeg_extra_options
+
+            mini_tg.generate(video_file, timelapse_files)
+
+            try:
+                fileSize = video_file.stat().st_size
+            except FileNotFoundError:
+                fileSize = None
+
+            mini_video_entry.fileSize = fileSize
+            mini_video_metadata['fileSize'] = fileSize
+            mini_video_entry.success = True
+            db.session.commit()
+        except TimelapseException:
+            self._miscDb.addNotification(
+                NotificationCategory.MEDIA,
+                'mini_timelapse_video',
+                'Panorama mini timelapse video failed to generate',
+                expire=timedelta(hours=12),
+            )
+
+            task.setFailed('Failed to generate panorama mini timelapse: {0:s}'.format(str(video_file)))
+            return
+
+
+        task.setSuccess('Generated panorama mini timelapse: {0:s}'.format(str(video_file)))
+
+        if mini_video_thumbnail_entry:
+            self._miscUpload.syncapi_thumbnail(mini_video_thumbnail_entry, mini_video_thumbnail_metadata)
+            self._miscUpload.s3_upload_thumbnail(mini_video_thumbnail_entry, mini_video_thumbnail_metadata)
+
+        self._miscUpload.syncapi_mini_video(mini_video_entry, mini_video_metadata)
         self._miscUpload.s3_upload_mini_video(mini_video_entry, mini_video_metadata)
         self._miscUpload.upload_mini_video(mini_video_entry)
         self._miscUpload.youtube_upload_mini_video(mini_video_entry, mini_video_metadata)
