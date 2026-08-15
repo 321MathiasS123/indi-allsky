@@ -289,9 +289,19 @@ function drawPanoramaOutputPreview() {
     var context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
 
+    var segments = panoramaSegments();
+    var source_width_drawn = 0;
     var destination_x = 0;
-    panoramaSegments().forEach(function(segment) {
-        var destination_width = canvas.width * segment['width'] / panorama_selection['width'];
+    segments.forEach(function(segment, index) {
+        source_width_drawn += segment['width'];
+
+        // Give adjacent sections one shared whole-pixel boundary. Drawing
+        // each section at its fractional width can leave a dark sub-pixel gap
+        // in the canvas even though the generated video has no gap.
+        var destination_end = index === segments.length - 1
+            ? canvas.width
+            : Math.round(canvas.width * source_width_drawn / panorama_selection['width']);
+        var destination_width = destination_end - destination_x;
         context.drawImage(
             panorama_image,
             segment['x'],
@@ -303,7 +313,7 @@ function drawPanoramaOutputPreview() {
             destination_width,
             canvas.height
         );
-        destination_x += destination_width;
+        destination_x = destination_end;
     });
 }
 
