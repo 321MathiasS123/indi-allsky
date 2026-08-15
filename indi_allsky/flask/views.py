@@ -11031,6 +11031,7 @@ class TimelapseVideoView(TemplateView):
     model = IndiAllSkyDbVideoTable
     page_title = 'Timelapse Video'
     file_view = 'indi_allsky.timelapse_video_view'
+    individual_delete = False
     decorators = [login_optional_media]
 
 
@@ -11038,6 +11039,8 @@ class TimelapseVideoView(TemplateView):
         context = super(TimelapseVideoView, self).get_context()
 
         context['file_view'] = self.file_view
+        context['video_delete_allowed'] = False
+        context['video_camera_id'] = self.camera.id
 
         video_id = int(request.args.get('id', -1))
 
@@ -11093,6 +11096,11 @@ class TimelapseVideoView(TemplateView):
 
         context['dayDate_full'] = video.dayDate.strftime('%B %d, %Y')
         context['video_url'] = video.getUrl(s3_prefix=self.s3_prefix, local=local)
+        context['video_camera_id'] = video.camera_id
+        context['video_delete_allowed'] = bool(
+            self.individual_delete
+            and _can_save_standard_configuration()
+        )
 
 
         return context
@@ -11102,6 +11110,7 @@ class MiniTimelapseVideoView(TimelapseVideoView):
     model = IndiAllSkyDbMiniVideoTable
     page_title = 'Mini Timelapse'
     file_view = 'indi_allsky.mini_timelapse_video_view'
+    individual_delete = True
 
 
 class StartrailVideoView(TimelapseVideoView):
@@ -11217,7 +11226,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
     def dispatch_request(self):
         if not current_user.is_admin:
             json_data = {
-                'failure-message' : 'User does not have permission to generate content',
+                'failure-message' : 'You do not have permission to create mini timelapses.',
             }
             return jsonify(json_data), 400
 
@@ -11277,8 +11286,9 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
                 )
                 validatePanoramaAspectRatio(aspect_ratio, crop_width, crop_height)
             except (TypeError, ValueError) as e:
+                app.logger.warning('Invalid panorama mini timelapse selection: %s', str(e))
                 json_data = {
-                    'failure-message' : 'Invalid panorama selection: {0:s}'.format(str(e)),
+                    'failure-message' : 'The selected panorama area is not valid. Reset the area and try again.',
                 }
                 return jsonify(json_data), 400
 
@@ -11300,7 +11310,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             }
         else:
             json_data = {
-                'failure-message' : 'Invalid mini timelapse source',
+                'failure-message' : 'Choose all-sky images or panorama images.',
             }
             return jsonify(json_data), 400
 
@@ -11316,7 +11326,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         db.session.commit()
 
         message = {
-            'success-message' : 'Job Submitted - Check the Mini Timelapses view in a few minutes',
+            'success-message' : 'Your mini timelapse is being created. Check Mini Timelapses in a few minutes.',
         }
 
         return jsonify(message)
