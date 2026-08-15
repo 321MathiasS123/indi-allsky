@@ -1,7 +1,43 @@
+import shutil
+import subprocess
+
+import numpy
 import pytest
 
 from indi_allsky.panorama import buildPanoramaCropFilter
+from indi_allsky.panorama import cropPanoramaArray
+from indi_allsky.panorama import panoramaSourceCircleClipped
 from indi_allsky.panorama import validatePanoramaAspectRatio
+from indi_allsky.panorama import validatePanoramaMiniTimelapseRequest
+
+
+FFMPEG_PATH = shutil.which('ffmpeg')
+
+
+def _run_ffmpeg_filter(source, filter_graph, output_shape):
+    source_height, source_width = source.shape[:2]
+    command = (
+        FFMPEG_PATH,
+        '-v', 'error',
+        '-f', 'rawvideo',
+        '-pixel_format', 'gray',
+        '-video_size', '{0:d}x{1:d}'.format(source_width, source_height),
+        '-i', 'pipe:0',
+        '-vf', filter_graph,
+        '-frames:v', '1',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'gray',
+        'pipe:1',
+    )
+    result = subprocess.run(
+        command,
+        input=source.tobytes(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+
+    return numpy.frombuffer(result.stdout, dtype=numpy.uint8).reshape(output_shape)
 
 
 def test_full_panorama_needs_no_filter():
@@ -86,3 +122,134 @@ def test_fixed_aspect_ratio_rejects_mismatched_dimensions():
 def test_unknown_aspect_ratio_is_rejected():
     with pytest.raises(ValueError, match='Unsupported'):
         validatePanoramaAspectRatio('2.39:1', 1920, 804)
+
+
+def test_thumbnail_crop_inside_saved_panorama_edges():
+    panorama = numpy.arange(4 * 8).reshape((4, 8))
+
+    cropped = cropPanoramaArray(panorama, 2, 0, 4, 2)
+
+    numpy.testing.assert_array_equal(cropped, panorama[0:2, 2:6])
+
+
+def test_thumbnail_crop_wraps_saved_panorama_edge():
+    panorama = numpy.arange(4 * 8).reshape((4, 8))
+
+    cropped = cropPanoramaArray(panorama, 6, 0, 4, 2)
+
+    expected = numpy.concatenate((panorama[0:2, 6:8], panorama[0:2, 0:2]), axis=1)
+    numpy.testing.assert_array_equal(cropped, expected)
+
+
+def test_thumbnail_crop_can_move_full_width_seam():
+    panorama = numpy.arange(4 * 8).reshape((4, 8))
+
+    cropped = cropPanoramaArray(panorama, 2, 0, 8, 4)
+
+    expected = numpy.concatenate((panorama[:, 2:8], panorama[:, 0:2]), axis=1)
+    numpy.testing.assert_array_equal(cropped, expected)
+
+
+def test_panorama_source_circle_that_fits_is_not_clipped():
+    assert panoramaSourceCircleClipped(400, 300, 300) is False
+
+
+@pytest.mark.parametrize(
+    'source_width,source_height,diameter,offset_x,offset_y',
+    (
+        (400, 300, 302, 0, 0),
+        (400, 300, 300, 0, 2),
+        (400, 300, 360, 30, 0),
+    ),
+)
+def test_panorama_source_circle_clipping_is_detected(
+    source_width,
+    source_height,
+    diameter,
+    offset_x,
+    offset_y,
+):
+    assert panoramaSourceCircleClipped(
+        source_width,
+        source_height,
+        diameter,
+        offset_x,
+        offset_y,
+    ) is True
+
+
+def test_panorama_route_validation_normalizes_selection():
+    selection = validatePanoramaMiniTimelapseRequest(
+        4096,
+        1024,
+        {
+            'CROP_X'      : '3600',
+            'CROP_Y'      : '100',
+            'CROP_WIDTH'  : '1000',
+            'CROP_HEIGHT' : '600',
+            'ASPECT_RATIO': 'free',
+        },
+    )
+
+    assert selection == {
+        'crop_x'      : 3600,
+        'crop_y'      : 100,
+        'crop_width'  : 1000,
+        'crop_height' : 600,
+        'aspect_ratio': 'free',
+    }
+
+
+@pytest.mark.parametrize(
+    'selection',
+    (
+        {
+            'CROP_X'      : 0,
+            'CROP_Y'      : 0,
+            'CROP_WIDTH'  : 1920,
+            'ASPECT_RATIO': '16:9',
+        },
+        {
+            'CROP_X'      : 'left',
+            'CROP_Y'      : 0,
+            'CROP_WIDTH'  : 1920,
+            'CROP_HEIGHT' : 1080,
+            'ASPECT_RATIO': '16:9',
+        },
+        {
+            'CROP_X'      : 0,
+            'CROP_Y'      : 0,
+            'CROP_WIDTH'  : 1920,
+            'CROP_HEIGHT' : 1082,
+            'ASPECT_RATIO': '16:9',
+        },
+        {
+            'CROP_X'      : 0,
+            'CROP_Y'      : 0,
+            'CROP_WIDTH'  : 1920,
+            'CROP_HEIGHT' : 1080,
+            'ASPECT_RATIO': '2.39:1',
+        },
+    ),
+)
+def test_panorama_route_validation_rejects_bad_selection(selection):
+    with pytest.raises(ValueError):
+        validatePanoramaMiniTimelapseRequest(4096, 2160, selection)
+
+
+@pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
+@pytest.mark.parametrize(
+    'crop',
+    (
+        (2, 2, 4, 2),
+        (6, 0, 4, 2),
+        (2, 0, 8, 4),
+    ),
+)
+def test_ffmpeg_filter_graph_matches_panorama_crop(crop):
+    source = numpy.arange(4 * 8, dtype=numpy.uint8).reshape((4, 8))
+    filter_graph = buildPanoramaCropFilter(8, 4, *crop)
+    expected = cropPanoramaArray(source, *crop)
+    actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
+
+    numpy.testing.assert_array_equal(actual, expected)

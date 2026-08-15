@@ -23,7 +23,12 @@ var file_view = "{{ file_view }}";
             <div class="tw:flex tw:items-center tw:gap-3">
                 <i class="tw:icon-[lucide--video] tw:w-6 tw:h-6 tw:text-primary"></i>
                 <div>
-                    <h1 class="tw:text-lg tw:font-bold tw:text-base-content">{{ dayDate_full }}</h1>
+                    <div class="tw:flex tw:flex-wrap tw:items-center tw:gap-2">
+                        <h1 class="tw:text-lg tw:font-bold tw:text-base-content">{{ dayDate_full }}</h1>
+                        {% if video_source == 'panorama' %}
+                        <span class="tw:badge tw:badge-info tw:badge-sm tw:font-bold">Panorama</span>
+                        {% endif %}
+                    </div>
                     <p class="tw:text-xs tw:text-base-content/60 tw:capitalize">{{ timeofday }} Timelapse Video</p>
                 </div>
             </div>

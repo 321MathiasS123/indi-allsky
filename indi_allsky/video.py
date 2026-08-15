@@ -24,6 +24,7 @@ from . import asi676mc_calibration
 
 from .timelapse import TimelapseGenerator
 from .panorama import buildPanoramaCropFilter
+from .panorama import cropPanoramaArray
 from .panorama import validatePanoramaAspectRatio
 from .keogram import KeogramGenerator
 from .starTrails import StarTrailGenerator
@@ -1101,6 +1102,26 @@ class VideoWorker(Process):
             .filter(IndiAllSkyDbPanoramaImageTable.id == panorama_image_id)\
             .one()
 
+        image_id = kwargs.get('image_id')
+        if image_id:
+            try:
+                target_image_entry = db.session.query(
+                    IndiAllSkyDbImageTable,
+                )\
+                    .join(IndiAllSkyDbImageTable.camera)\
+                    .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+                    .filter(IndiAllSkyDbImageTable.id == int(image_id))\
+                    .one()
+            except (NoResultFound, TypeError, ValueError):
+                message = 'The selected all-sky image is no longer available'
+                logger.error(message)
+                task.setFailed(message)
+                return
+        else:
+            # Backward compatibility for panorama mini-timelapse jobs queued
+            # before the all-sky anchor was included in the task data.
+            target_image_entry = panorama_image_entry
+
 
         try:
             source_width = int(panorama_image_entry.width)
@@ -1126,12 +1147,12 @@ class VideoWorker(Process):
             return
 
 
-        targetDate = panorama_image_entry.createDate
+        targetDate = target_image_entry.createDate
         startDate = targetDate - timedelta(seconds=pre_seconds)
         endDate = targetDate + timedelta(seconds=post_seconds)
 
-        d_dayDate = panorama_image_entry.dayDate
-        night = panorama_image_entry.night
+        d_dayDate = target_image_entry.dayDate
+        night = target_image_entry.night
 
         if night:
             timeofday = 'night'
@@ -1210,6 +1231,8 @@ class VideoWorker(Process):
 
         timelapse_files = list()
         for entry in timelapse_files_entries:
+            # One crop is applied to every frame, so mixed panorama dimensions
+            # cannot be rendered safely in a single video.
             if entry.width != source_width or entry.height != source_height:
                 message = 'Panorama dimensions changed within the selected time range'
                 logger.error('%s: expected %dx%d, found %sx%s', message, source_width, source_height, entry.width, entry.height)
@@ -1301,7 +1324,7 @@ class VideoWorker(Process):
             'aspect_ratio'    : aspect_ratio,
             'max_kpindex'     : max_kpindex,
             'max_ovation_max' : max_ovation_max,
-            'max_smoke_rating': max_smoke_rating,
+            'max_smoke_rating' : max_smoke_rating,
             'max_stars'       : max_stars,
             'avg_stars'       : avg_stars,
             'max_moonphase'   : max_moonphase,
@@ -1325,6 +1348,30 @@ class VideoWorker(Process):
             'camera_uuid': camera.uuid,
         }
 
+        thumbnail_data = None
+        if video_filter:
+            # Keep the poster image consistent with the crop and seam chosen
+            # for the video. An unmodified panorama can use the DB image entry.
+            panorama_image_path = Path(panorama_image_entry.getFilesystemPath())
+            panorama_image_data = cv2.imread(str(panorama_image_path), cv2.IMREAD_COLOR)
+
+            if panorama_image_data is None:
+                logger.warning(
+                    'Unable to read panorama for crop-aware thumbnail: %s',
+                    panorama_image_path,
+                )
+            else:
+                try:
+                    thumbnail_data = cropPanoramaArray(
+                        panorama_image_data,
+                        crop_x,
+                        crop_y,
+                        crop_width,
+                        crop_height,
+                    )
+                except (TypeError, ValueError) as e:
+                    logger.warning('Unable to crop panorama thumbnail: %s', str(e))
+
         mini_video_thumbnail_entry = self._miscDb.addThumbnail(
             mini_video_entry,
             mini_video_metadata,
@@ -1332,6 +1379,7 @@ class VideoWorker(Process):
             mini_video_thumbnail_metadata,
             new_width=self.thumbnail_mini_timelapse_width,
             opt_height=self.thumbnail_mini_timelapse_height_opt,
+            numpy_data=thumbnail_data,
             image_entry=panorama_image_entry,
         )
 

@@ -145,12 +145,20 @@ function populate_videos(video_list) {
             'rel'    : "noopener noreferrer",
             'class'  : "tw:group tw:relative tw:block tw:rounded-[var(--radius-box)] tw:overflow-hidden tw:border tw:border-base-300 tw:aspect-video tw:bg-neutral-950",
         }).appendTo(minivideo_div);
+        var thumbnail_fit = item['source'] === 'panorama' ? "tw:object-contain" : "tw:object-cover";
 
         $('<img />', {
             'src'   : item['thumbnail_url'],
-            'class' : "tw:w-full tw:h-full tw:object-cover group-hover:tw:scale-105 tw:transition-transform",
+            'class' : "tw:w-full tw:h-full " + thumbnail_fit + " group-hover:tw:scale-105 tw:transition-transform",
             'alt'   : "Thumbnail",
         }).appendTo(m_a);
+
+        if(item['source'] === 'panorama') {
+            $('<span />', {
+                'text'  : 'Panorama',
+                'class' : "tw:badge tw:badge-info tw:badge-sm tw:absolute tw:top-2 tw:left-2 tw:z-10 tw:font-bold",
+            }).appendTo(m_a);
+        }
         
         $('<div />', {
             'class' : "tw:absolute tw:inset-0 tw:flex tw:items-center tw:justify-center tw:bg-black/20 group-hover:tw:bg-black/0 tw:transition-colors",

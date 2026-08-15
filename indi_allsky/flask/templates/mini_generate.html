@@ -26,6 +26,9 @@ var panorama_selection = {
     'height' : panorama_data['height'],
 };
 var panorama_drag = null;
+// The animation preview stays bounded, while panorama preflight checks the
+// complete generation period on the server.
+var preview_history_limit_seconds = 14400;
 
 var framerate_delay_lut = {
     '0.25' : 4000,
@@ -101,11 +104,18 @@ function showImage(entry) {
 function loadImages() {
     console.log('Loading next images');
     var image_loop_url = "{{ url_for(image_loop_view) }}";
+    var request_data = {
+        'camera_id' : camera_id,
+        'limit_s' : history_seconds,
+        'timestamp' : endDate_timestamp,
+    };
     if(source_type === 'panorama') {
         image_loop_url = "{{ url_for(panorama_image_loop_view) }}";
+        request_data['source_width'] = panorama_data['width'];
+        request_data['source_height'] = panorama_data['height'];
     }
 
-    loadJS(image_loop_url, {'camera_id' : camera_id, 'limit_s' : history_seconds, 'timestamp' : endDate_timestamp}, function() {});
+    loadJS(image_loop_url, request_data, function() {});
 }
 
 function sleep(time) {
@@ -588,6 +598,74 @@ function updateSourceDisplay() {
         $('#panorama-controls').hide();
         $('#standard-preview').show();
     }
+
+    updatePanoramaNotices();
+}
+
+function updatePanoramaNotices() {
+    var notice_container = $('#panorama-notices');
+    var notice_list = $('#panorama-notices-list');
+    notice_list.empty();
+
+    if(source_type !== 'panorama') {
+        notice_container.hide();
+        $('#create-video').prop('disabled', false);
+        return;
+    }
+
+    var notices = [];
+    var blocking_problem = false;
+
+    if(history_seconds > preview_history_limit_seconds) {
+        notices.push('The preview shows up to 4 hours. The finished video will still use the full selected period.');
+    }
+
+    if(panorama_data['circle_clipped']) {
+        notices.push('Part of the configured fisheye circle is outside the camera frame. The horizon may look incomplete or distorted.');
+    }
+
+    var preflight = json_data['panorama_preflight'];
+    if(preflight) {
+        if(!preflight['dimensions_match']) {
+            notices.push('Some panorama images in this period have a different size. Choose another period before creating the video.');
+            blocking_problem = true;
+        }
+
+        if(!preflight['has_enough_local_frames']) {
+            notices.push('At least two panorama images stored on this device are needed. Choose a longer period or another image.');
+            blocking_problem = true;
+        }
+    }
+
+    if(!notices.length) {
+        notice_container.hide();
+        $('#create-video').prop('disabled', false);
+        return;
+    }
+
+    notices.forEach(function(notice) {
+        $('<li />', { 'text' : notice }).appendTo(notice_list);
+    });
+
+    notice_container
+        .removeClass('tw:alert-warning tw:alert-error')
+        .addClass(blocking_problem ? 'tw:alert-error' : 'tw:alert-warning')
+        .show();
+    $('#create-video').prop('disabled', blocking_problem);
+}
+
+function generationFrameCount() {
+    // The preview may be capped, so panorama duration uses the full-period
+    // database count returned by the preflight request.
+    if(
+        source_type === 'panorama'
+        && json_data['panorama_preflight']
+        && typeof json_data['panorama_preflight']['frame_count'] !== 'undefined'
+    ) {
+        return json_data['panorama_preflight']['frame_count'];
+    }
+
+    return json_data['image_list'].length;
 }
 
 function loadJS(url, data, onDone, onError) {
@@ -605,20 +683,23 @@ function loadJS(url, data, onDone, onError) {
             $("#loader_generate").hide();
             json_data = rdata
 
-            var image_count = rdata['image_list'].length;
+            var image_count = generationFrameCount();
             $('#video_length').html(image_count + ' frames - about ' + image_count / parseFloat(framerate) + 's');
 
-            if(image_count) {
+            if(rdata['image_list'].length) {
                 $('#message').html(json_data['message']);
             } else {
                 $('#message').text('No images are available for the selected time range.');
             }
+            updatePanoramaNotices();
+            onDone();
         },
         error: function(rdata){
             $("#loader_generate").hide();
             onError(rdata.status);
             $('#message').text('Could not load the preview images. Try again or check the logs.');
             $('#video_length').html('');
+            updatePanoramaNotices();
         },
     });
 
@@ -690,6 +771,7 @@ $( document ).ready(function() {
             {{ form_mini_timelapse.CAMERA_ID() }}
             {{ form_mini_timelapse.IMAGE_ID() }}
 
+            {% if panorama.available %}
             <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-3 tw:items-center">
                 <label for="SOURCE_TYPE" class="md:tw:col-span-2 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
                     Images to use
@@ -697,13 +779,33 @@ $( document ).ready(function() {
                 <div class="md:tw:col-span-4">
                     <select id="SOURCE_TYPE" class="tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary">
                         <option value="standard">All-sky images</option>
-                        <option value="panorama"{% if not panorama.available %} disabled{% endif %}>Panorama images{% if not panorama.available %} (not available for this image){% endif %}</option>
+                        <option value="panorama">Panorama images</option>
                     </select>
                 </div>
                 <div class="md:tw:col-span-6 tw:text-xs tw:text-base-content/60">
                     Choose all-sky images for the usual full-sky view. Choose panorama images to select the area shown in the video.
                 </div>
             </div>
+            {% elif panorama_enabled %}
+            <div class="tw:alert tw:alert-info tw:flex tw:flex-col sm:tw:flex-row tw:items-start sm:tw:items-center tw:gap-3 tw:text-xs" role="status">
+                <i class="tw:icon-[lucide--image-off] tw:w-4 tw:h-4 tw:shrink-0"></i>
+                <div class="tw:flex-1">
+                    <div class="tw:font-bold">No panorama was saved for this image.</div>
+                    {% if panorama_suggestions %}
+                    <div>Choose a nearby panorama to use as the base image.</div>
+                    {% endif %}
+                </div>
+                {% if panorama_suggestions %}
+                <div class="tw:flex tw:flex-wrap tw:gap-2">
+                    {% for suggestion in panorama_suggestions %}
+                    <a href="{{ suggestion.url }}" class="tw:btn tw:btn-info tw:btn-outline tw:btn-xs tw:no-underline">
+                        {{ suggestion.label }} · {{ suggestion.datetime }}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
 
             <div id="panorama-controls" class="tw:grid tw:grid-cols-2 md:tw:grid-cols-12 tw:gap-3 tw:items-end tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
                 <div class="tw:form-control md:tw:col-span-2">
@@ -755,6 +857,11 @@ $( document ).ready(function() {
                 </div>
             </div>
 
+            <div id="panorama-notices" class="tw:alert tw:py-2.5 tw:text-xs" style="display: none;" role="alert">
+                <i class="tw:icon-[lucide--triangle-alert] tw:w-4 tw:h-4 tw:self-start tw:mt-0.5"></i>
+                <ul id="panorama-notices-list" class="tw:list-disc tw:pl-4 tw:space-y-1"></ul>
+            </div>
+
             <div class="tw:flex tw:flex-wrap md:tw:flex-nowrap tw:items-end tw:gap-4">
                 
                 <div class="tw:form-control tw:w-full md:tw:w-1/4">
@@ -785,7 +892,7 @@ $( document ).ready(function() {
                 </div>
 
                 <div class="tw:flex tw:items-center tw:gap-3 tw:w-full md:tw:w-1/4">
-                    <button class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
+                    <button id="create-video" class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
                         <i class="tw:icon-[lucide--video] tw:w-4 tw:h-4"></i>
                         Create video
                     </button>
@@ -853,15 +960,19 @@ function updateImages() {
     history_seconds = pre_seconds + post_seconds;
     framerate = $('#FRAMERATE_SELECT').val();
 
+    // Do not leave a stale pass/fail result visible while the new period loads.
+    delete json_data['panorama_preflight'];
+    updatePanoramaNotices();
+
     loadImages();
 }
 
 $('#SOURCE_TYPE').on('change', function() {
-    updateSourceDisplay();
     json_data = {
         'image_list' : [],
         'message' : '',
     };
+    updateSourceDisplay();
     loadImages();
 });
 
@@ -888,7 +999,7 @@ $("#POST_SECONDS_SELECT").on("change", function() {
 $("#FRAMERATE_SELECT").on("change", function() {
     framerate = $('#FRAMERATE_SELECT').val();
 
-    var image_count = json_data['image_list'].length;
+    var image_count = generationFrameCount();
     $('#video_length').html(image_count + ' frames - about ' + image_count / parseFloat(framerate) + 's');
 });
 

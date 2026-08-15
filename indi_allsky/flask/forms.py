@@ -8585,6 +8585,7 @@ class IndiAllskyMiniVideoViewer(FlaskForm):
                 'id'                : v.id,
                 'url'               : str(url),
                 'success'           : v.success,
+                'source'            : data.get('source', 'standard'),
                 'thumbnail_url'     : str(thumbnail_url),
                 'dayDate_long'      : v.dayDate.strftime('%B %d, %Y'),
                 'dayDate'           : v.dayDate.strftime('%Y%m%d'),
