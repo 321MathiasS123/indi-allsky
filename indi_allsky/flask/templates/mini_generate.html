@@ -669,7 +669,7 @@ $( document ).ready(function() {
 {% endblock %}
 
 {% block content %}
-<div class="tw:w-full tw:h-full tw:flex tw:flex-col tw:gap-4">
+<div class="tw:w-full tw:flex tw:flex-col tw:gap-4">
 
     <div class="tw:bg-base-200/50 tw:p-4 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
         <form id="form_mini_timelapse" onSubmit="return false;" autocomplete="off" class="tw:flex tw:flex-col tw:gap-4">
@@ -688,6 +688,56 @@ $( document ).ready(function() {
                 </div>
                 <div class="md:tw:col-span-6 tw:text-xs tw:text-base-content/60">
                     Standard uses the existing all-sky workflow. Panorama renders the selected area and can move the saved image seam.
+                </div>
+            </div>
+
+            <div id="panorama-controls" class="tw:grid tw:grid-cols-2 md:tw:grid-cols-12 tw:gap-3 tw:items-end tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
+                <div class="tw:form-control md:tw:col-span-2">
+                    <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
+                    <select id="ASPECT_RATIO" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
+                        <option value="free">Free</option>
+                        <optgroup label="Social and video">
+                            <option value="16:9">16:9 — Landscape video</option>
+                            <option value="9:16">9:16 — Reels / Stories</option>
+                            <option value="1:1">1:1 — Square post</option>
+                            <option value="4:5">4:5 — Portrait post</option>
+                        </optgroup>
+                        <optgroup label="Mobile displays">
+                            <option value="18:9">18:9 — Mobile landscape</option>
+                            <option value="9:18">9:18 — Mobile portrait</option>
+                            <option value="19.5:9">19.5:9 — Mobile landscape</option>
+                            <option value="9:19.5">9:19.5 — Mobile portrait</option>
+                            <option value="20:9">20:9 — Mobile landscape</option>
+                            <option value="9:20">9:20 — Mobile portrait</option>
+                            <option value="21:9">21:9 — Ultrawide landscape</option>
+                            <option value="9:21">9:21 — Ultrawide portrait</option>
+                        </optgroup>
+                        <optgroup label="Classic">
+                            <option value="4:3">4:3 — Landscape</option>
+                            <option value="3:4">3:4 — Portrait</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="tw:form-control md:tw:col-span-2">
+                    <label for="CROP_X" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Start X</span></label>
+                    <input id="CROP_X" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                </div>
+                <div class="tw:form-control md:tw:col-span-2">
+                    <label for="CROP_Y" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Top</span></label>
+                    <input id="CROP_Y" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                </div>
+                <div class="tw:form-control md:tw:col-span-2">
+                    <label for="CROP_WIDTH" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Width</span></label>
+                    <input id="CROP_WIDTH" type="number" min="2" step="2" value="{{ panorama.width }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                </div>
+                <div class="tw:form-control md:tw:col-span-2">
+                    <label for="CROP_HEIGHT" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Height</span></label>
+                    <input id="CROP_HEIGHT" type="number" min="2" step="2" value="{{ panorama.height }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                </div>
+                <button id="panorama-reset" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 md:tw:col-span-2">Reset selection</button>
+                <div class="tw:col-span-2 md:tw:col-span-12 tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
+                    <span>Drag the green frame to move it. Drag its edges or corners to resize it; fixed presets keep their selected ratio.</span>
+                    <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
                 </div>
             </div>
 
@@ -741,55 +791,6 @@ $( document ).ready(function() {
                 </div>
             </div>
 
-            <div id="panorama-controls" class="tw:grid tw:grid-cols-2 md:tw:grid-cols-12 tw:gap-3 tw:items-end tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
-                    <select id="ASPECT_RATIO" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="free">Free</option>
-                        <optgroup label="Social and video">
-                            <option value="16:9">16:9 — Landscape video</option>
-                            <option value="9:16">9:16 — Reels / Stories</option>
-                            <option value="1:1">1:1 — Square post</option>
-                            <option value="4:5">4:5 — Portrait post</option>
-                        </optgroup>
-                        <optgroup label="Mobile displays">
-                            <option value="18:9">18:9 — Mobile landscape</option>
-                            <option value="9:18">9:18 — Mobile portrait</option>
-                            <option value="19.5:9">19.5:9 — Mobile landscape</option>
-                            <option value="9:19.5">9:19.5 — Mobile portrait</option>
-                            <option value="20:9">20:9 — Mobile landscape</option>
-                            <option value="9:20">9:20 — Mobile portrait</option>
-                            <option value="21:9">21:9 — Ultrawide landscape</option>
-                            <option value="9:21">9:21 — Ultrawide portrait</option>
-                        </optgroup>
-                        <optgroup label="Classic">
-                            <option value="4:3">4:3 — Landscape</option>
-                            <option value="3:4">3:4 — Portrait</option>
-                        </optgroup>
-                    </select>
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_X" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Start X</span></label>
-                    <input id="CROP_X" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_Y" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Top</span></label>
-                    <input id="CROP_Y" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_WIDTH" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Width</span></label>
-                    <input id="CROP_WIDTH" type="number" min="2" step="2" value="{{ panorama.width }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_HEIGHT" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Height</span></label>
-                    <input id="CROP_HEIGHT" type="number" min="2" step="2" value="{{ panorama.height }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <button id="panorama-reset" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 md:tw:col-span-2">Reset selection</button>
-                <div class="tw:col-span-2 md:tw:col-span-12 tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
-                    <span>Drag the green frame to move it. Drag its edges or corners to resize it; fixed presets keep their selected ratio.</span>
-                    <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
-                </div>
-            </div>
         </form>
     </div>
 
@@ -810,8 +811,8 @@ $( document ).ready(function() {
         </div>
     </div>
 
-    <div class="tw:flex-1 tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:min-h-[350px]">
-        <div id="standard-preview" class="tw:w-full tw:h-full tw:flex tw:items-center tw:justify-center">
+    <div class="tw:w-full tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:min-h-[350px] tw:overflow-hidden">
+        <div id="standard-preview" class="tw:w-full tw:flex tw:items-center tw:justify-center">
             <img id="loop-image" class="tw:max-w-full tw:max-h-[65vh] tw:object-contain tw:rounded-[var(--radius-box)] tw:shadow-inner" alt="Timelapse rendering array frame preview loop">
         </div>
 

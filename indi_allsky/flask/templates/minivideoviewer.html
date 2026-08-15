@@ -105,6 +105,7 @@ function populate_videos(video_list) {
         var dayNum = parseInt(item['dayDate'].substring(6, 8));
         var row_div = $('<div />', {
             'id': 'timeline-day-' + dayNum,
+            'data-video-id': item['id'],
             'class' : "timeline-day-item tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-4 tw:p-4 tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] tw:items-center",
         });
 
@@ -180,6 +181,20 @@ function populate_videos(video_list) {
                 youtube_video_a.html('<i class="tw:icon-[lucide--youtube] tw:w-3.5 tw:h-3.5"></i> Upload');
             }
         }
+        {% endif %}
+
+
+        {% if mini_video_delete_allowed %}
+        var delete_button = $('<button />', {
+            'type'  : 'button',
+            'class' : "tw:btn tw:btn-xs tw:btn-error tw:btn-outline tw:w-full tw:gap-1.5",
+            'title' : 'Permanently delete this mini timelapse',
+        }).html('<i class="tw:icon-[lucide--trash-2] tw:w-3.5 tw:h-3.5"></i> Delete video');
+
+        delete_button.on('click', function() {
+            delete_mini_video(item['id'], row_div);
+        });
+        delete_button.appendTo(minivideo_div);
         {% endif %}
 
 
@@ -472,6 +487,54 @@ function upload_youtube_video(video_id, asset_type) {
         },
     });
 };
+
+
+function delete_mini_video(video_id, row_div) {
+    if(!window.confirm('Delete this mini timelapse from indi-allsky? The local video and thumbnail will be removed. Uploaded copies are not affected.')) {
+        return;
+    }
+
+    $("#loader_filter").show();
+
+    var json_data = {
+        'CAMERA_ID' : fields["CAMERA_ID"].input.val(),
+        'VIDEO_ID'  : video_id,
+    };
+
+    $.ajax({
+        type: "POST",
+        url: "{{ url_for('indi_allsky.ajax_mini_videodelete_view') }}",
+        contentType: "application/json",
+        data: JSON.stringify(json_data),
+        success: function(rdata){
+            row_div.remove();
+            $("#loader_filter").hide();
+
+            successMessage.html(rdata['success-message']).show();
+            setTimeout(function() { successMessage.fadeOut(); }, 10000);
+
+            if($(".timeline-day-item").length === 0) {
+                $('<div />', {
+                    'class' : "tw:p-6 tw:text-center tw:text-sm tw:text-base-content/60 tw:bg-base-200 tw:rounded-[var(--radius-box)]",
+                    'text'  : 'No mini timelapses remain for this month.',
+                }).appendTo($("#videos_div"));
+            }
+
+            sync_calendar_value();
+        },
+        error: function(rdata){
+            $("#loader_filter").hide();
+
+            var message = 'Unable to delete mini timelapse';
+            if(rdata.responseJSON && rdata.responseJSON['failure-message']) {
+                message = rdata.responseJSON['failure-message'];
+            }
+
+            failureMessage.html(message).show();
+            setTimeout(function() { failureMessage.fadeOut(); }, 10000);
+        },
+    });
+}
 
 
 function init() {

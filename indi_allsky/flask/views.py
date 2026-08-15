@@ -5281,6 +5281,7 @@ class MiniVideoViewerView(FormView):
         context = super(MiniVideoViewerView, self).get_context()
 
         context['youtube__enable'] = int(self.indi_allsky_config.get('YOUTUBE', {}).get('ENABLE', 0))
+        context['mini_video_delete_allowed'] = _can_save_standard_configuration()
 
         form_data = {
             'CAMERA_ID'    : self.camera.id,
@@ -5365,6 +5366,63 @@ class AjaxMiniVideoViewerView(BaseView):
             json_data['MONTH_SELECT'] = (('', 'None'),)
             json_data['video_list'] = tuple()
 
+        return jsonify(json_data)
+
+
+class AjaxMiniVideoDeleteView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+
+    def dispatch_request(self):
+        if not _can_save_standard_configuration():
+            json_data = {
+                'failure-message' : 'User does not have permission to delete mini timelapses',
+            }
+            return jsonify(json_data), 403
+
+        try:
+            camera_id = int(request.json['CAMERA_ID'])
+            video_id = int(request.json['VIDEO_ID'])
+        except (KeyError, TypeError, ValueError):
+            json_data = {
+                'failure-message' : 'Invalid mini timelapse deletion request',
+            }
+            return jsonify(json_data), 400
+
+        try:
+            mini_video_entry = IndiAllSkyDbMiniVideoTable.query\
+                .join(IndiAllSkyDbMiniVideoTable.camera)\
+                .filter(
+                    and_(
+                        IndiAllSkyDbMiniVideoTable.id == video_id,
+                        IndiAllSkyDbCameraTable.id == camera_id,
+                    )
+                )\
+                .one()
+        except NoResultFound:
+            json_data = {
+                'failure-message' : 'Mini timelapse not found',
+            }
+            return jsonify(json_data), 404
+
+        app.logger.info('Removing mini timelapse entry: %s', mini_video_entry.filename)
+
+        try:
+            mini_video_entry.deleteAsset()
+        except OSError as e:
+            app.logger.error('Cannot remove mini timelapse: %s', str(e))
+            json_data = {
+                'failure-message' : 'Unable to remove the mini timelapse file',
+            }
+            return jsonify(json_data), 400
+
+        db.session.delete(mini_video_entry)
+        db.session.commit()
+
+        json_data = {
+            'success-message' : 'Mini timelapse deleted',
+        }
         return jsonify(json_data)
 
 
@@ -11169,7 +11227,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         pre_seconds = int(request.json['PRE_SECONDS'])
         post_seconds = int(request.json['POST_SECONDS'])
         framerate = float(request.json['FRAMERATE'])
-        note = str(request.json['NOTE'])
+        note = str(request.json.get('NOTE', ''))
 
 
         if source_type == 'standard':
@@ -14068,6 +14126,7 @@ bp_allsky.add_url_rule('/ajax/videoviewer', view_func=AjaxVideoViewerView.as_vie
 
 bp_allsky.add_url_rule('/minivideoviewer', view_func=MiniVideoViewerView.as_view('mini_videoviewer_view', template_name='minivideoviewer.html'))
 bp_allsky.add_url_rule('/ajax/minivideoviewer', view_func=AjaxMiniVideoViewerView.as_view('ajax_mini_videoviewer_view'))
+bp_allsky.add_url_rule('/ajax/minivideoviewer/delete', view_func=AjaxMiniVideoDeleteView.as_view('ajax_mini_videodelete_view'))
 
 bp_allsky.add_url_rule('/view_image', view_func=TimelapseImageView.as_view('timelapse_image_view', template_name='view_image.html'))
 bp_allsky.add_url_rule('/view_panorama', view_func=PanoramaImageView.as_view('panorama_image_view', template_name='view_image.html'))
