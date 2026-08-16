@@ -608,11 +608,13 @@ function updateSourceDisplay() {
         $('#standard-preview').hide();
 
         if(panorama_data['available']) {
+            $('#generation-controls, #generation-status').show();
             $('#preview-container').show();
             $('#panorama-preview').show();
             $('#panorama-controls').show();
             drawPanoramaEditor();
         } else {
+            $('#generation-controls, #generation-status').hide();
             $('#preview-container').hide();
             $('#panorama-preview').hide();
             $('#panorama-controls').hide();
@@ -621,6 +623,7 @@ function updateSourceDisplay() {
     } else {
         source_type = 'standard';
         $('#SOURCE_TYPE').val('standard');
+        $('#generation-controls, #generation-status').show();
         $('#preview-container').show();
         $('#panorama-preview').hide();
         $('#panorama-controls').hide();
@@ -839,6 +842,7 @@ $( document ).ready(function() {
             </div>
             {% endif %}
 
+            <div id="generation-controls" class="tw:flex tw:flex-col tw:gap-4">
             <div id="panorama-controls" class="tw:grid tw:grid-cols-2 md:tw:grid-cols-12 tw:gap-3 tw:items-end tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
                 <div class="tw:form-control md:tw:col-span-2">
                     <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
@@ -943,11 +947,12 @@ $( document ).ready(function() {
                     {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a description for this video') }}
                 </div>
             </div>
+            </div>
 
         </form>
     </div>
 
-    <div class="tw:bg-black/10 tw:px-4 tw:rounded-[var(--radius-box)] tw:flex tw:flex-col tw:gap-2">
+    <div id="generation-status" class="tw:bg-black/10 tw:px-4 tw:rounded-[var(--radius-box)] tw:flex tw:flex-col tw:gap-2">
         <div class="tw:alert tw:alert-error tw:py-2.5 tw:rounded-[var(--radius-box)] tw:text-xs tw:font-medium" id="failure_message" style="display: none;">
             <i class="tw:icon-[lucide--alert-octagon] tw:w-4 tw:h-4"></i>
             <span class="tw:text-center tw:w-full"></span>
