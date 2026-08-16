@@ -143,6 +143,33 @@ def test_linear_pan_wraps_right_to_left():
     )
 
 
+@pytest.mark.parametrize(
+    'direction,delta_x',
+    (
+        ('left_to_right', '+4096'),
+        ('right_to_left', '-4096'),
+    ),
+)
+def test_linear_pan_can_make_full_turn_to_same_crop(direction, delta_x):
+    filter_graph = buildPanoramaPanFilter(
+        4096, 1024,
+        200, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction=direction,
+    )
+    expected_filter = (
+        'split=2[pano_0][pano_1];'
+        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+        '[pano_strip]crop=w=1000:h=600:'
+        r'x=trunc(mod((200{0:s}*n/10)+4096\,4096)/2)*2:'
+        'y=trunc((100+0*n/10)/2)*2'
+    ).format(delta_x)
+
+    assert filter_graph == expected_filter
+
+
 def test_linear_pan_rejects_too_few_frames():
     with pytest.raises(ValueError, match='at least two frames'):
         buildPanoramaPanFilter(4096, 1024, 0, 0, 200, 0, 1000, 600, 1)
@@ -397,6 +424,27 @@ def test_ffmpeg_filter_graph_moves_crop_across_panorama_seam():
     expected = numpy.stack([
         cropPanoramaArray(source_frame, crop_x, 0, 4, 2)
         for crop_x in (6, 0, 2)
+    ])
+    actual = _run_ffmpeg_sequence_filter(source, filter_graph, expected.shape)
+
+    numpy.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
+def test_ffmpeg_filter_graph_makes_full_turn_to_same_crop():
+    source_frame = numpy.tile(numpy.arange(8, dtype=numpy.uint8), (4, 1))
+    source = numpy.repeat(source_frame[numpy.newaxis, :, :], 5, axis=0)
+    filter_graph = buildPanoramaPanFilter(
+        8, 4,
+        2, 0,
+        2, 0,
+        4, 2,
+        5,
+        direction='left_to_right',
+    )
+    expected = numpy.stack([
+        cropPanoramaArray(source_frame, crop_x, 0, 4, 2)
+        for crop_x in (2, 4, 6, 0, 2)
     ])
     actual = _run_ffmpeg_sequence_filter(source, filter_graph, expected.shape)
 

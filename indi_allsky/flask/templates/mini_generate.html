@@ -246,10 +246,10 @@ function panoramaHorizontalDelta(start_x, end_x, direction) {
     var direct_delta = end_x - start_x;
 
     if(direction === 'left_to_right') {
-        return wrapPixel(direct_delta);
+        return wrapPixel(direct_delta) || source_width;
     }
     if(direction === 'right_to_left') {
-        return -wrapPixel(-direct_delta);
+        return -(wrapPixel(-direct_delta) || source_width);
     }
 
     if(direct_delta > source_width / 2) {
@@ -417,25 +417,52 @@ function updatePanoramaPanControls() {
         horizontal_movement
         && (!vertical_movement || vertical_overlap > horizontal_overlap)
     );
+    var direction_select = $('#PAN_DIRECTION');
+    var automatic_option = $('#panorama-direction-auto');
+    var left_to_right_option = $('#panorama-direction-left-to-right');
+    var right_to_left_option = $('#panorama-direction-right-to-left');
 
     if(horizontal_pan) {
-        if(!panorama_direction_user_selected || $('#PAN_DIRECTION').val() === 'shortest') {
+        $('#panorama-direction-label').text('Horizontal direction');
+        automatic_option.prop('hidden', true);
+        left_to_right_option.text('Left to right');
+        right_to_left_option.text('Right to left');
+        if(!panorama_direction_user_selected || direction_select.val() === 'shortest') {
             var shortest_delta = panoramaHorizontalDelta(
                 panorama_start_selection['x'],
                 panorama_end_selection['x'],
                 'shortest'
             );
-            $('#PAN_DIRECTION').val(shortest_delta >= 0 ? 'left_to_right' : 'right_to_left');
+            direction_select.val(shortest_delta >= 0 ? 'left_to_right' : 'right_to_left');
+        }
+        $('#panorama-direction-control').show();
+    } else if(!horizontal_movement) {
+        $('#panorama-direction-label').text('Optional full rotation');
+        automatic_option.prop('hidden', false).text('No full rotation');
+        left_to_right_option.text('Full turn left to right');
+        right_to_left_option.text('Full turn right to left');
+        if(!panorama_direction_user_selected) {
+            direction_select.val('shortest');
         }
         $('#panorama-direction-control').show();
     } else {
         panorama_direction_user_selected = false;
-        $('#PAN_DIRECTION').val('shortest');
+        direction_select.val('shortest');
         $('#panorama-direction-control').hide();
     }
 
     var summary;
-    if(
+    var full_rotation = !horizontal_movement && direction_select.val() !== 'shortest';
+    if(full_rotation) {
+        summary = direction_select.val() === 'right_to_left'
+            ? 'The view will make a full turn from right to left.'
+            : 'The view will make a full turn from left to right.';
+        if(panorama_end_selection['y'] > panorama_start_selection['y']) {
+            summary += ' It will also move from top to bottom.';
+        } else if(panorama_end_selection['y'] < panorama_start_selection['y']) {
+            summary += ' It will also move from bottom to top.';
+        }
+    } else if(
         panorama_start_selection['x'] === panorama_end_selection['x']
         && panorama_start_selection['y'] === panorama_end_selection['y']
     ) {
@@ -1215,11 +1242,11 @@ $( document ).ready(function() {
                     </div>
                 </div>
                 <div id="panorama-direction-control" class="tw:form-control tw:col-span-2 md:tw:col-span-3" style="display: none;">
-                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal direction</span></label>
+                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span id="panorama-direction-label" class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal direction</span></label>
                     <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="shortest" hidden>Automatic</option>
-                        <option value="left_to_right">Left to right</option>
-                        <option value="right_to_left">Right to left</option>
+                        <option id="panorama-direction-auto" value="shortest" hidden>Automatic</option>
+                        <option id="panorama-direction-left-to-right" value="left_to_right">Left to right</option>
+                        <option id="panorama-direction-right-to-left" value="right_to_left">Right to left</option>
                     </select>
                 </div>
                 <div id="panorama-pan-summary" class="tw:col-span-2 md:tw:col-span-2 tw:text-xs tw:text-base-content/60" style="display: none;"></div>
