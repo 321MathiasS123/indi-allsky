@@ -5,6 +5,7 @@ import numpy
 import pytest
 
 from indi_allsky.panorama import buildPanoramaCropFilter
+from indi_allsky.panorama import buildPanoramaPanFilter
 from indi_allsky.panorama import cropPanoramaArray
 from indi_allsky.panorama import panoramaSourceCircleClipped
 from indi_allsky.panorama import validatePanoramaAspectRatio
@@ -25,6 +26,32 @@ def _run_ffmpeg_filter(source, filter_graph, output_shape):
         '-i', 'pipe:0',
         '-vf', filter_graph,
         '-frames:v', '1',
+        '-f', 'rawvideo',
+        '-pix_fmt', 'gray',
+        'pipe:1',
+    )
+    result = subprocess.run(
+        command,
+        input=source.tobytes(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+
+    return numpy.frombuffer(result.stdout, dtype=numpy.uint8).reshape(output_shape)
+
+
+def _run_ffmpeg_sequence_filter(source, filter_graph, output_shape):
+    frame_count, source_height, source_width = source.shape
+    command = (
+        FFMPEG_PATH,
+        '-v', 'error',
+        '-f', 'rawvideo',
+        '-pixel_format', 'gray',
+        '-video_size', '{0:d}x{1:d}'.format(source_width, source_height),
+        '-i', 'pipe:0',
+        '-vf', filter_graph,
+        '-frames:v', str(frame_count),
         '-f', 'rawvideo',
         '-pix_fmt', 'gray',
         'pipe:1',
@@ -66,6 +93,59 @@ def test_full_width_crop_can_move_the_output_seam():
         '[pano_left_src]crop=w=200:h=1024:x=0:y=0[pano_left];'
         '[pano_right][pano_left]hstack=inputs=2'
     )
+
+
+def test_linear_pan_without_seam_uses_dynamic_crop():
+    assert buildPanoramaPanFilter(
+        4096, 1024,
+        200, 100,
+        800, 300,
+        1000, 600,
+        11,
+    ) == (
+        'crop=w=1000:h=600:'
+        'x=trunc((200+600*n/10)/2)*2:'
+        'y=trunc((100+200*n/10)/2)*2'
+    )
+
+
+def test_linear_pan_wraps_left_to_right():
+    assert buildPanoramaPanFilter(
+        4096, 1024,
+        3600, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction='left_to_right',
+    ) == (
+        'split=2[pano_0][pano_1];'
+        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+        '[pano_strip]crop=w=1000:h=600:'
+        r'x=trunc(mod((3600+696*n/10)+4096\,4096)/2)*2:'
+        'y=trunc((100+0*n/10)/2)*2'
+    )
+
+
+def test_linear_pan_wraps_right_to_left():
+    assert buildPanoramaPanFilter(
+        4096, 1024,
+        3600, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction='right_to_left',
+    ) == (
+        'split=2[pano_0][pano_1];'
+        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+        '[pano_strip]crop=w=1000:h=600:'
+        r'x=trunc(mod((3600-3400*n/10)+4096\,4096)/2)*2:'
+        'y=trunc((100+0*n/10)/2)*2'
+    )
+
+
+def test_linear_pan_rejects_too_few_frames():
+    with pytest.raises(ValueError, match='at least two frames'):
+        buildPanoramaPanFilter(4096, 1024, 0, 0, 200, 0, 1000, 600, 1)
 
 
 @pytest.mark.parametrize(
@@ -192,12 +272,39 @@ def test_panorama_route_validation_normalizes_selection():
     )
 
     assert selection == {
-        'crop_x'      : 3600,
-        'crop_y'      : 100,
-        'crop_width'  : 1000,
-        'crop_height' : 600,
-        'aspect_ratio': 'free',
+        'crop_x'       : 3600,
+        'crop_y'       : 100,
+        'crop_width'   : 1000,
+        'crop_height'  : 600,
+        'aspect_ratio' : 'free',
+        'pan_mode'     : 'static',
+        'end_crop_x'   : 3600,
+        'end_crop_y'   : 100,
+        'pan_direction' : 'shortest',
     }
+
+
+def test_panorama_route_validation_normalizes_linear_pan():
+    selection = validatePanoramaMiniTimelapseRequest(
+        4096,
+        1024,
+        {
+            'CROP_X'       : '3600',
+            'CROP_Y'       : '100',
+            'CROP_WIDTH'   : '1000',
+            'CROP_HEIGHT'  : '600',
+            'ASPECT_RATIO' : 'free',
+            'PAN_MODE'     : 'linear',
+            'END_CROP_X'   : '200',
+            'END_CROP_Y'   : '300',
+            'PAN_DIRECTION': 'left_to_right',
+        },
+    )
+
+    assert selection['pan_mode'] == 'linear'
+    assert selection['end_crop_x'] == 200
+    assert selection['end_crop_y'] == 300
+    assert selection['pan_direction'] == 'left_to_right'
 
 
 @pytest.mark.parametrize(
@@ -230,6 +337,26 @@ def test_panorama_route_validation_normalizes_selection():
             'CROP_HEIGHT' : 1080,
             'ASPECT_RATIO': '2.39:1',
         },
+        {
+            'CROP_X'      : 0,
+            'CROP_Y'      : 0,
+            'CROP_WIDTH'  : 1920,
+            'CROP_HEIGHT' : 1080,
+            'ASPECT_RATIO': '16:9',
+            'PAN_MODE'    : 'linear',
+            'END_CROP_X'  : 0,
+        },
+        {
+            'CROP_X'       : 0,
+            'CROP_Y'       : 0,
+            'CROP_WIDTH'   : 1920,
+            'CROP_HEIGHT'  : 1080,
+            'ASPECT_RATIO' : '16:9',
+            'PAN_MODE'     : 'linear',
+            'END_CROP_X'   : 2,
+            'END_CROP_Y'   : 0,
+            'PAN_DIRECTION': 'around_twice',
+        },
     ),
 )
 def test_panorama_route_validation_rejects_bad_selection(selection):
@@ -251,5 +378,26 @@ def test_ffmpeg_filter_graph_matches_panorama_crop(crop):
     filter_graph = buildPanoramaCropFilter(8, 4, *crop)
     expected = cropPanoramaArray(source, *crop)
     actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
+
+    numpy.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
+def test_ffmpeg_filter_graph_moves_crop_across_panorama_seam():
+    source_frame = numpy.tile(numpy.arange(8, dtype=numpy.uint8), (4, 1))
+    source = numpy.repeat(source_frame[numpy.newaxis, :, :], 3, axis=0)
+    filter_graph = buildPanoramaPanFilter(
+        8, 4,
+        6, 0,
+        2, 0,
+        4, 2,
+        3,
+        direction='left_to_right',
+    )
+    expected = numpy.stack([
+        cropPanoramaArray(source_frame, crop_x, 0, 4, 2)
+        for crop_x in (6, 0, 2)
+    ])
+    actual = _run_ffmpeg_sequence_filter(source, filter_graph, expected.shape)
 
     numpy.testing.assert_array_equal(actual, expected)

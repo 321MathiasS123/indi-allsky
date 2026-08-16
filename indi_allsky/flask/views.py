@@ -1493,6 +1493,45 @@ class JsonPanoramaLoopView(JsonImageLoopView):
             )\
             .order_by(self.model.createDate.asc())
 
+        local = True
+        if self.web_nonlocal_images:
+            if self.web_local_images_admin and self.verify_admin_network():
+                pass
+            else:
+                local = False
+
+        def get_panorama_reference(reference_query):
+            for panorama_entry in reference_query:
+                try:
+                    panorama_path = Path(panorama_entry.getFilesystemPath())
+                    if not panorama_path.exists() or not panorama_path.stat().st_size:
+                        continue
+                    panorama_url = panorama_entry.getUrl(
+                        s3_prefix=self.s3_prefix,
+                        local=local,
+                    )
+                except (OSError, ValueError):
+                    continue
+
+                return {
+                    'id'        : panorama_entry.id,
+                    'url'       : str(panorama_url),
+                    'timestamp' : int(panorama_entry.createDate.timestamp()),
+                }
+
+            return None
+
+        reference_query = panorama_query\
+            .order_by(None)\
+            .filter(self.model.width == expected_width)\
+            .filter(self.model.height == expected_height)
+        start_reference = get_panorama_reference(
+            reference_query.order_by(self.model.createDate.asc()),
+        )
+        end_reference = get_panorama_reference(
+            reference_query.order_by(self.model.createDate.desc()),
+        )
+
         frame_count = 0
         local_frame_count = 0
         dimensions_match = True
@@ -1523,6 +1562,8 @@ class JsonPanoramaLoopView(JsonImageLoopView):
             'frame_count'             : frame_count,
             'has_enough_local_frames' : local_frame_count >= 2,
             'dimensions_match'        : dimensions_match,
+            'start_reference'         : start_reference,
+            'end_reference'           : end_reference,
         }
 
         return data
@@ -11493,6 +11534,10 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
                 'crop_width'        : selection['crop_width'],
                 'crop_height'       : selection['crop_height'],
                 'aspect_ratio'      : selection['aspect_ratio'],
+                'pan_mode'          : selection['pan_mode'],
+                'end_crop_x'        : selection['end_crop_x'],
+                'end_crop_y'        : selection['end_crop_y'],
+                'pan_direction'     : selection['pan_direction'],
             },
         }
 

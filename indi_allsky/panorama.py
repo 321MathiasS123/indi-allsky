@@ -19,6 +19,9 @@ PANORAMA_ASPECT_RATIOS = {
     '9:21' : (3, 7),
 }
 
+PANORAMA_PAN_MODES = ('static', 'linear')
+PANORAMA_PAN_DIRECTIONS = ('shortest', 'left_to_right', 'right_to_left')
+
 
 def panoramaSourceCircleClipped(
     source_width,
@@ -127,6 +130,119 @@ def buildPanoramaCropFilter(
     )
 
 
+def buildPanoramaPanFilter(
+    source_width,
+    source_height,
+    start_x,
+    start_y,
+    end_x,
+    end_y,
+    crop_width,
+    crop_height,
+    frame_count,
+    direction='shortest',
+):
+    """Build a fixed-size linear crop across a horizontally wrapping panorama."""
+    source_width = int(source_width)
+    source_height = int(source_height)
+    start_x = int(start_x)
+    start_y = int(start_y)
+    end_x = int(end_x)
+    end_y = int(end_y)
+    crop_width = int(crop_width)
+    crop_height = int(crop_height)
+    frame_count = int(frame_count)
+    direction = str(direction)
+
+    buildPanoramaCropFilter(
+        source_width,
+        source_height,
+        start_x,
+        start_y,
+        crop_width,
+        crop_height,
+    )
+    buildPanoramaCropFilter(
+        source_width,
+        source_height,
+        end_x,
+        end_y,
+        crop_width,
+        crop_height,
+    )
+
+    if frame_count < 2:
+        raise ValueError('Panorama pan requires at least two frames')
+    if direction not in PANORAMA_PAN_DIRECTIONS:
+        raise ValueError('Unsupported panorama pan direction')
+
+    direct_delta_x = end_x - start_x
+    if direction == 'left_to_right':
+        delta_x = direct_delta_x % source_width
+    elif direction == 'right_to_left':
+        delta_x = -((-direct_delta_x) % source_width)
+    else:
+        delta_x = direct_delta_x
+        if delta_x > source_width / 2:
+            delta_x -= source_width
+        elif delta_x < -(source_width / 2):
+            delta_x += source_width
+
+    if not delta_x and start_y == end_y:
+        return buildPanoramaCropFilter(
+            source_width,
+            source_height,
+            start_x,
+            start_y,
+            crop_width,
+            crop_height,
+        )
+
+    frame_divisor = frame_count - 1
+    direct_end_x = start_x + delta_x
+    needs_horizontal_wrap = (
+        min(start_x, direct_end_x) < 0
+        or max(start_x, direct_end_x) + crop_width > source_width
+    )
+    if needs_horizontal_wrap:
+        # Two copies let the crop span the seam; modulo keeps its moving left
+        # edge inside the first copy regardless of the chosen route.
+        filter_prefix = (
+            'split=2[pano_0][pano_1];'
+            '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+            '[pano_strip]'
+        )
+        crop_x_base = 'mod(({0:d}{1:+d}*n/{2:d})+{3:d}\\,{3:d})'.format(
+            start_x,
+            delta_x,
+            frame_divisor,
+            source_width,
+        )
+    else:
+        filter_prefix = ''
+        crop_x_base = '({0:d}{1:+d}*n/{2:d})'.format(
+            start_x,
+            delta_x,
+            frame_divisor,
+        )
+
+    delta_y = end_y - start_y
+    crop_x_expression = 'trunc({0:s}/2)*2'.format(crop_x_base)
+    crop_y_expression = 'trunc(({0:d}{1:+d}*n/{2:d})/2)*2'.format(
+        start_y,
+        delta_y,
+        frame_divisor,
+    )
+
+    return '{prefix}crop=w={width:d}:h={height:d}:x={x}:y={y}'.format(
+        prefix=filter_prefix,
+        width=crop_width,
+        height=crop_height,
+        x=crop_x_expression,
+        y=crop_y_expression,
+    )
+
+
 def validatePanoramaMiniTimelapseRequest(source_width, source_height, request_data):
     """Normalize and validate the panorama selection received from the browser."""
     try:
@@ -136,6 +252,7 @@ def validatePanoramaMiniTimelapseRequest(source_width, source_height, request_da
             'crop_width'  : int(request_data['CROP_WIDTH']),
             'crop_height' : int(request_data['CROP_HEIGHT']),
             'aspect_ratio': str(request_data.get('ASPECT_RATIO', 'free')),
+            'pan_mode'    : str(request_data.get('PAN_MODE', 'static')),
         }
     except (KeyError, TypeError, ValueError):
         raise ValueError('Panorama selection is incomplete or invalid')
@@ -153,6 +270,32 @@ def validatePanoramaMiniTimelapseRequest(source_width, source_height, request_da
         selection['crop_width'],
         selection['crop_height'],
     )
+
+    if selection['pan_mode'] not in PANORAMA_PAN_MODES:
+        raise ValueError('Unsupported panorama pan mode')
+
+    if selection['pan_mode'] == 'linear':
+        try:
+            selection['end_crop_x'] = int(request_data['END_CROP_X'])
+            selection['end_crop_y'] = int(request_data['END_CROP_Y'])
+            selection['pan_direction'] = str(request_data.get('PAN_DIRECTION', 'shortest'))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError('Panorama end selection is incomplete or invalid')
+
+        buildPanoramaCropFilter(
+            source_width,
+            source_height,
+            selection['end_crop_x'],
+            selection['end_crop_y'],
+            selection['crop_width'],
+            selection['crop_height'],
+        )
+        if selection['pan_direction'] not in PANORAMA_PAN_DIRECTIONS:
+            raise ValueError('Unsupported panorama pan direction')
+    else:
+        selection['end_crop_x'] = selection['crop_x']
+        selection['end_crop_y'] = selection['crop_y']
+        selection['pan_direction'] = 'shortest'
 
     return selection
 

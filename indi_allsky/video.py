@@ -24,6 +24,7 @@ from . import asi676mc_calibration
 
 from .timelapse import TimelapseGenerator
 from .panorama import buildPanoramaCropFilter
+from .panorama import buildPanoramaPanFilter
 from .panorama import cropPanoramaArray
 from .panorama import validatePanoramaAspectRatio
 from .keogram import KeogramGenerator
@@ -804,6 +805,7 @@ class VideoWorker(Process):
 
 
         video_filter = ''
+        pan_mode = 'static'
         if panorama:
             panorama_image_entry = db.session.query(
                 IndiAllSkyDbPanoramaImageTable,
@@ -821,6 +823,10 @@ class VideoWorker(Process):
                 crop_width = int(kwargs['crop_width'])
                 crop_height = int(kwargs['crop_height'])
                 aspect_ratio = str(kwargs.get('aspect_ratio', 'free'))
+                pan_mode = str(kwargs.get('pan_mode', 'static'))
+                end_crop_x = int(kwargs.get('end_crop_x', crop_x))
+                end_crop_y = int(kwargs.get('end_crop_y', crop_y))
+                pan_direction = str(kwargs.get('pan_direction', 'shortest'))
 
                 video_filter = buildPanoramaCropFilter(
                     source_width,
@@ -831,6 +837,18 @@ class VideoWorker(Process):
                     crop_height,
                 )
                 validatePanoramaAspectRatio(aspect_ratio, crop_width, crop_height)
+                if pan_mode == 'linear':
+                    buildPanoramaCropFilter(
+                        source_width,
+                        source_height,
+                        end_crop_x,
+                        end_crop_y,
+                        crop_width,
+                        crop_height,
+                    )
+                    video_filter = ''  # final filter depends on the usable frame count
+                elif pan_mode != 'static':
+                    raise ValueError('Unsupported panorama pan mode')
             except (KeyError, TypeError, ValueError) as e:
                 logger.error('Invalid panorama crop: %s', str(e))
                 task.setFailed('Invalid panorama crop: {0:s}'.format(str(e)))
@@ -1012,6 +1030,26 @@ class VideoWorker(Process):
             return
 
 
+        if panorama and pan_mode == 'linear':
+            try:
+                video_filter = buildPanoramaPanFilter(
+                    source_width,
+                    source_height,
+                    crop_x,
+                    crop_y,
+                    end_crop_x,
+                    end_crop_y,
+                    crop_width,
+                    crop_height,
+                    len(timelapse_files),
+                    direction=pan_direction,
+                )
+            except ValueError as e:
+                logger.error('Invalid panorama pan: %s', str(e))
+                task.setFailed('Invalid panorama pan: {0:s}'.format(str(e)))
+                return
+
+
         mini_video_metadata = {
             'type'          : constants.MINI_VIDEO,
             'createDate'    : int(now.timestamp()),
@@ -1049,6 +1087,10 @@ class VideoWorker(Process):
                 'crop_width'    : crop_width,
                 'crop_height'   : crop_height,
                 'aspect_ratio'  : aspect_ratio,
+                'pan_mode'      : pan_mode,
+                'end_crop_x'    : end_crop_x,
+                'end_crop_y'    : end_crop_y,
+                'pan_direction' : pan_direction,
             })
 
         # Create DB entry before creating file
@@ -1075,7 +1117,10 @@ class VideoWorker(Process):
         if panorama:
             thumbnail_image_entry = panorama_image_entry
             if video_filter:
-                panorama_image_path = Path(panorama_image_entry.getFilesystemPath())
+                if pan_mode == 'linear':
+                    panorama_image_path = timelapse_files[0]
+                else:
+                    panorama_image_path = Path(panorama_image_entry.getFilesystemPath())
                 panorama_image_data = cv2.imread(str(panorama_image_path), cv2.IMREAD_COLOR)
 
                 if panorama_image_data is None:
