@@ -42,7 +42,7 @@ var framerate_delay_lut = {
 };
 
 function init() {
-    if(source_type !== 'panorama' || !panorama_data['available']) {
+    if(source_type !== 'panorama') {
         source_type = 'standard';
     }
 
@@ -110,6 +110,13 @@ function loadImages() {
         'timestamp' : endDate_timestamp,
     };
     if(source_type === 'panorama') {
+        if(!panorama_data['available']) {
+            $('#loader_generate').hide();
+            $('#message, #video_length').empty();
+            updatePanoramaNotices();
+            return;
+        }
+
         image_loop_url = "{{ url_for(panorama_image_loop_view) }}";
         request_data['source_width'] = panorama_data['width'];
         request_data['source_height'] = panorama_data['height'];
@@ -595,15 +602,26 @@ function resetPanoramaSelection() {
 
 function updateSourceDisplay() {
     source_type = $('#SOURCE_TYPE').val() || source_type;
+    $('#panorama-unavailable').hide();
 
-    if(source_type === 'panorama' && panorama_data['available']) {
+    if(source_type === 'panorama') {
         $('#standard-preview').hide();
-        $('#panorama-preview').show();
-        $('#panorama-controls').show();
-        drawPanoramaEditor();
+
+        if(panorama_data['available']) {
+            $('#preview-container').show();
+            $('#panorama-preview').show();
+            $('#panorama-controls').show();
+            drawPanoramaEditor();
+        } else {
+            $('#preview-container').hide();
+            $('#panorama-preview').hide();
+            $('#panorama-controls').hide();
+            $('#panorama-unavailable').show();
+        }
     } else {
         source_type = 'standard';
         $('#SOURCE_TYPE').val('standard');
+        $('#preview-container').show();
         $('#panorama-preview').hide();
         $('#panorama-controls').hide();
         $('#standard-preview').show();
@@ -783,7 +801,7 @@ $( document ).ready(function() {
             {{ form_mini_timelapse.CAMERA_ID() }}
             {{ form_mini_timelapse.IMAGE_ID() }}
 
-            {% if panorama.available %}
+            {% if panorama_enabled %}
             <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-3 tw:items-center">
                 <label for="SOURCE_TYPE" class="md:tw:col-span-2 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
                     Images to use
@@ -798,8 +816,10 @@ $( document ).ready(function() {
                     Choose all-sky images for the usual full-sky view. Choose panorama images to select the area shown in the video.
                 </div>
             </div>
-            {% elif panorama_enabled %}
-            <div class="tw:alert tw:alert-info tw:flex tw:flex-col sm:tw:flex-row tw:items-start sm:tw:items-center tw:gap-3 tw:text-xs" role="status">
+            {% endif %}
+
+            {% if panorama_enabled and not panorama.available %}
+            <div id="panorama-unavailable" class="tw:alert tw:alert-info tw:flex tw:flex-col sm:tw:flex-row tw:items-start sm:tw:items-center tw:gap-3 tw:text-xs" style="display: none;" role="status">
                 <i class="tw:icon-[lucide--image-off] tw:w-4 tw:h-4 tw:shrink-0"></i>
                 <div class="tw:flex-1">
                     <div class="tw:font-bold">No panorama was saved for this image.</div>
@@ -810,7 +830,7 @@ $( document ).ready(function() {
                 {% if panorama_suggestions %}
                 <div class="tw:flex tw:flex-wrap tw:gap-2">
                     {% for suggestion in panorama_suggestions %}
-                    <a href="{{ suggestion.url }}" class="tw:btn tw:btn-info tw:btn-outline tw:btn-xs tw:no-underline">
+                    <a href="{{ suggestion.url }}" class="tw:btn tw:btn-neutral tw:btn-xs tw:no-underline">
                         {{ suggestion.label }} · {{ suggestion.datetime }}
                     </a>
                     {% endfor %}
@@ -864,7 +884,7 @@ $( document ).ready(function() {
                 </div>
                 <button id="panorama-reset" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 md:tw:col-span-2">Reset area</button>
                 <div class="tw:col-span-2 md:tw:col-span-12 tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
-                    <span>Drag the green box to choose what appears in the video. Drag an edge or corner to resize it. If you choose a preset, the box keeps that shape while you resize it.</span>
+                    <span>Drag the outlined box to choose what appears in the video. Drag an edge or corner to resize it. If you choose a preset, the box keeps that shape while you resize it.</span>
                     <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
                 </div>
             </div>
@@ -944,7 +964,7 @@ $( document ).ready(function() {
         </div>
     </div>
 
-    <div class="tw:w-full tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:min-h-[350px] tw:overflow-hidden">
+    <div id="preview-container" class="tw:w-full tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:min-h-[350px] tw:overflow-hidden">
         <div id="standard-preview" class="tw:w-full tw:flex tw:items-center tw:justify-center">
             <img id="loop-image" class="tw:max-w-full tw:max-h-[65vh] tw:object-contain tw:rounded-[var(--radius-box)] tw:shadow-inner" alt="Mini timelapse preview">
         </div>
