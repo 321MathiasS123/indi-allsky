@@ -1066,6 +1066,8 @@ class VideoWorker(Process):
         }
 
         mini_video_metadata['data'] = {
+            'generation_task_id' : task.id,
+            'generation_task_created' : task.createDate.isoformat(),
             'max_kpindex'       : max_kpindex,
             'max_ovation_max'   : max_ovation_max,
             'max_smoke_rating'  : max_smoke_rating,

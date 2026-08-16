@@ -5515,6 +5515,34 @@ class AjaxMiniVideoDeleteView(BaseView):
             }
             return jsonify(json_data), 404
 
+        mini_video_data = mini_video_entry.data if isinstance(mini_video_entry.data, dict) else {}
+        try:
+            generation_task_id = int(mini_video_data.get('generation_task_id') or 0)
+        except (TypeError, ValueError):
+            generation_task_id = 0
+        generation_task_created = str(mini_video_data.get('generation_task_created') or '')
+
+        if generation_task_id and generation_task_created:
+            active_task = IndiAllSkyDbTaskQueueTable.query\
+                .filter(IndiAllSkyDbTaskQueueTable.id == generation_task_id)\
+                .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO)\
+                .filter(
+                    IndiAllSkyDbTaskQueueTable.state.in_((
+                        TaskQueueState.QUEUED,
+                        TaskQueueState.RUNNING,
+                    ))
+                )\
+                .first()
+
+            if active_task and active_task.createDate.isoformat() == generation_task_created:
+                json_data = {
+                    'failure-message' : (
+                        'This mini timelapse is still being created. '
+                        'Try again when it is finished.'
+                    ),
+                }
+                return jsonify(json_data), 409
+
         app.logger.info('Removing mini timelapse entry: %s', mini_video_entry.filename)
 
         try:
