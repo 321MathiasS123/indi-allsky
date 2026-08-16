@@ -105,7 +105,6 @@ function populate_videos(video_list) {
         var dayNum = parseInt(item['dayDate'].substring(6, 8));
         var row_div = $('<div />', {
             'id': 'timeline-day-' + dayNum,
-            'data-video-id': item['id'],
             'class' : "timeline-day-item tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-4 tw:p-4 tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] tw:items-center",
         });
 
@@ -200,7 +199,7 @@ function populate_videos(video_list) {
         }).html('<i class="tw:icon-[lucide--trash-2] tw:w-3.5 tw:h-3.5"></i> Delete video');
 
         delete_button.on('click', function() {
-            delete_mini_video(item['id'], row_div);
+            delete_mini_video(item['id'], row_div, delete_button);
         });
         delete_button.appendTo(minivideo_div);
         {% endif %}
@@ -497,11 +496,12 @@ function upload_youtube_video(video_id, asset_type) {
 };
 
 
-function delete_mini_video(video_id, row_div) {
+function delete_mini_video(video_id, row_div, delete_button) {
     if(!window.confirm('Delete this mini timelapse from indi-allsky? The local video and thumbnail will be removed. Uploaded copies are not affected.')) {
         return;
     }
 
+    delete_button.prop('disabled', true);
     $("#loader_filter").show();
 
     var json_data = {
@@ -532,6 +532,7 @@ function delete_mini_video(video_id, row_div) {
         },
         error: function(rdata){
             $("#loader_filter").hide();
+            delete_button.prop('disabled', false);
 
             var message = 'Unable to delete mini timelapse';
             if(rdata.responseJSON && rdata.responseJSON['failure-message']) {

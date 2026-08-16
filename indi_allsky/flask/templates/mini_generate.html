@@ -261,7 +261,15 @@ function drawPanoramaEditor() {
             panorama_selection['height'] * scale_y
         );
 
-        context.strokeStyle = '#22c55e';
+        context.strokeStyle = '#111827';
+        context.lineWidth = 7;
+        context.strokeRect(
+            segment['x'] * scale_x,
+            panorama_selection['y'] * scale_y,
+            segment['width'] * scale_x,
+            panorama_selection['height'] * scale_y
+        );
+        context.strokeStyle = '#ff4fd8';
         context.lineWidth = 3;
         context.strokeRect(
             segment['x'] * scale_x,
@@ -281,8 +289,10 @@ function drawPanoramaEditor() {
         [panorama_selection['x'] * scale_x, (panorama_selection['y'] + panorama_selection['height']) * scale_y],
         [right_x * scale_x, (panorama_selection['y'] + panorama_selection['height']) * scale_y],
     ];
-    context.fillStyle = '#22c55e';
     handle_points.forEach(function(point) {
+        context.fillStyle = '#111827';
+        context.fillRect(point[0] - 7, point[1] - 7, 14, 14);
+        context.fillStyle = '#ff4fd8';
         context.fillRect(point[0] - 5, point[1] - 5, 10, 10);
     });
 
@@ -615,13 +625,14 @@ function updatePanoramaNotices() {
 
     var notices = [];
     var blocking_problem = false;
+    var preflight_pending = !json_data['panorama_preflight'];
 
     if(history_seconds > preview_history_limit_seconds) {
         notices.push('The preview shows up to 4 hours. The finished video will still use the full selected period.');
     }
 
     if(panorama_data['circle_clipped']) {
-        notices.push('Part of the configured fisheye circle is outside the camera frame. The horizon may look incomplete or distorted.');
+        notices.push('Part of the round sky view falls outside the image. The horizon may look incomplete or distorted.');
     }
 
     var preflight = json_data['panorama_preflight'];
@@ -639,7 +650,7 @@ function updatePanoramaNotices() {
 
     if(!notices.length) {
         notice_container.hide();
-        $('#create-video').prop('disabled', false);
+        $('#create-video').prop('disabled', preflight_pending);
         return;
     }
 
@@ -651,7 +662,7 @@ function updatePanoramaNotices() {
         .removeClass('tw:alert-warning tw:alert-error')
         .addClass(blocking_problem ? 'tw:alert-error' : 'tw:alert-warning')
         .show();
-    $('#create-video').prop('disabled', blocking_problem);
+    $('#create-video').prop('disabled', blocking_problem || preflight_pending);
 }
 
 function generationFrameCount() {
@@ -684,7 +695,8 @@ function loadJS(url, data, onDone, onError) {
             json_data = rdata
 
             var image_count = generationFrameCount();
-            $('#video_length').html(image_count + ' frames - about ' + image_count / parseFloat(framerate) + 's');
+            var duration_seconds = Math.round((image_count / parseFloat(framerate)) * 10) / 10;
+            $('#video_length').text(image_count + ' frames - about ' + duration_seconds + ' seconds');
 
             if(rdata['image_list'].length) {
                 $('#message').html(json_data['message']);
@@ -767,7 +779,7 @@ $( document ).ready(function() {
 <div class="tw:w-full tw:flex tw:flex-col tw:gap-4">
 
     <div class="tw:bg-base-200/50 tw:p-4 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
-        <form id="form_mini_timelapse" onSubmit="return false;" autocomplete="off" class="tw:flex tw:flex-col tw:gap-4">
+        <form id="form_mini_timelapse" autocomplete="off" class="tw:flex tw:flex-col tw:gap-4">
             {{ form_mini_timelapse.CAMERA_ID() }}
             {{ form_mini_timelapse.IMAGE_ID() }}
 
@@ -908,7 +920,7 @@ $( document ).ready(function() {
                     {{ form_mini_timelapse.NOTE.label.text }}
                 </label>
                 <div class="md:tw:col-span-11 tw:w-full">
-                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add an optional note about this video') }}
+                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a description for this video') }}
                 </div>
             </div>
 
@@ -1000,11 +1012,14 @@ $("#FRAMERATE_SELECT").on("change", function() {
     framerate = $('#FRAMERATE_SELECT').val();
 
     var image_count = generationFrameCount();
-    $('#video_length').html(image_count + ' frames - about ' + image_count / parseFloat(framerate) + 's');
+    var duration_seconds = Math.round((image_count / parseFloat(framerate)) * 10) / 10;
+    $('#video_length').text(image_count + ' frames - about ' + duration_seconds + ' seconds');
 });
 
 
-$('#form_mini_timelapse').on('submit', function() {
+$('#form_mini_timelapse').on('submit', function(event) {
+    event.preventDefault();
+
     var form_data = {
         'SOURCE_TYPE' : source_type,
         'IMAGE_ID' : $('#IMAGE_ID').val(),
@@ -1021,6 +1036,8 @@ $('#form_mini_timelapse').on('submit', function() {
         'ASPECT_RATIO' : $('#ASPECT_RATIO').val(),
     }
 
+    $('#failure_message, #success_message').hide();
+    $('#create-video').prop('disabled', true);
     $('#loader_generate').show();
 
     $.ajax({
@@ -1031,16 +1048,21 @@ $('#form_mini_timelapse').on('submit', function() {
         success: function(rdata){
             $("#loader_generate").hide();
             $('#NOTE').val('');
+            updatePanoramaNotices();
 
-            $('#success_message').html(rdata['success-message']).show();
+            $('#success_message span').text(rdata['success-message']);
+            $('#success_message').show();
             setTimeout(function() { $('#success_message').fadeOut(); }, 15000);
         },
         error: function(rdata){
             $("#loader_generate").hide();
+            updatePanoramaNotices();
 
-            var errors = JSON.parse(rdata.responseText);
+            var errors = rdata.responseJSON || {};
+            var failure_message = errors['failure-message'] || 'Could not create the mini timelapse. Try again or check the logs.';
 
-            $('#failure_message').html(errors['failure-message']).show();
+            $('#failure_message span').text(failure_message);
+            $('#failure_message').show();
             setTimeout(function() { $('#failure_message').fadeOut(); }, 15000);
         },
     });

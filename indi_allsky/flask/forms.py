@@ -9648,7 +9648,7 @@ class IndiAllskyMiniTimelapseForm(FlaskForm):
     PRE_SECONDS_SELECT               = SelectField('Before selected image', choices=SECONDS_choices, validators=[DataRequired()])
     POST_SECONDS_SELECT              = SelectField('After selected image', choices=SECONDS_choices, validators=[DataRequired()])
     FRAMERATE_SELECT                 = SelectField('Speed', choices=FRAMERATE_SELECT_choices, validators=[DataRequired()])
-    NOTE                             = StringField('Description (optional)', validators=[])
+    NOTE                             = StringField('Description', validators=[DataRequired()])
 
 
 class IndiAllskyLongTermKeogramForm(FlaskForm):

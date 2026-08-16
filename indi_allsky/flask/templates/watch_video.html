@@ -8,7 +8,6 @@
 <script type="text/javascript">
 var video_id = {{ video_id }};
 var camera_id = {{ camera_id }};
-var video_camera_id = {{ video_camera_id }};
 var dayDate = "{{ dayDate }}";
 var file_view = "{{ file_view }}";
 </script>
@@ -100,7 +99,7 @@ function deleteMiniTimelapse() {
         url: "{{ url_for('indi_allsky.ajax_mini_videodelete_view') }}",
         contentType: "application/json",
         data: JSON.stringify({
-            'CAMERA_ID' : video_camera_id,
+            'CAMERA_ID' : {{ video_camera_id }},
             'VIDEO_ID' : video_id,
         }),
         success: function() {
