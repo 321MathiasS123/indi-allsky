@@ -19,6 +19,7 @@ var json_data = {
 };
 var fullscreen = false;  //initial state
 var panorama_image = new Image();
+var panorama_preview_image = null;
 var panorama_selection = {
     'x' : 0,
     'y' : 0,
@@ -83,6 +84,24 @@ async function loop() {
 
 
 function showImage(entry) {
+    if(source_type === 'panorama') {
+        var preview_image = new Image();
+        preview_image.onload = function() {
+            if(
+                source_type !== 'panorama'
+                || this.naturalWidth !== panorama_data['width']
+                || this.naturalHeight !== panorama_data['height']
+            ) {
+                return;
+            }
+
+            panorama_preview_image = this;
+            drawPanoramaOutputPreview();
+        };
+        preview_image.src = entry["url"];
+        return;
+    }
+
     if(source_type !== 'standard') {
         return;
     }
@@ -308,10 +327,19 @@ function drawPanoramaEditor() {
 }
 
 function drawPanoramaOutputPreview() {
+    var source_image = panorama_preview_image || panorama_image;
+    if(!source_image.complete || !source_image.naturalWidth) {
+        return;
+    }
+
     var canvas = document.getElementById('panorama-output-preview');
     var maximum_width = 1200;
-    canvas.width = Math.min(panorama_selection['width'], maximum_width);
-    canvas.height = Math.max(1, Math.round(canvas.width * panorama_selection['height'] / panorama_selection['width']));
+    var preview_width = Math.min(panorama_selection['width'], maximum_width);
+    var preview_height = Math.max(1, Math.round(preview_width * panorama_selection['height'] / panorama_selection['width']));
+    if(canvas.width !== preview_width || canvas.height !== preview_height) {
+        canvas.width = preview_width;
+        canvas.height = preview_height;
+    }
 
     var context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -330,7 +358,7 @@ function drawPanoramaOutputPreview() {
             : Math.round(canvas.width * source_width_drawn / panorama_selection['width']);
         var destination_width = destination_end - destination_x;
         context.drawImage(
-            panorama_image,
+            source_image,
             segment['x'],
             panorama_selection['y'],
             segment['width'],
