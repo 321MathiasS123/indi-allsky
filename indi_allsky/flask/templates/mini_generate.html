@@ -975,14 +975,15 @@ function updateSourceDisplay() {
             $('#generation-controls, #generation-status').show();
             $('#preview-container').show();
             $('#panorama-preview').show();
-            $('#panorama-controls').show();
+            $('#panorama-mode-control').show();
+            $('#panorama-controls').css('display', 'flex');
             updatePanoramaPanControls();
             drawPanoramaEditor();
         } else {
             $('#generation-controls, #generation-status').hide();
             $('#preview-container').hide();
             $('#panorama-preview').hide();
-            $('#panorama-controls').hide();
+            $('#panorama-mode-control, #panorama-controls').hide();
             $('#panorama-unavailable').show();
         }
     } else {
@@ -991,7 +992,7 @@ function updateSourceDisplay() {
         $('#generation-controls, #generation-status').show();
         $('#preview-container').show();
         $('#panorama-preview').hide();
-        $('#panorama-controls').hide();
+        $('#panorama-mode-control, #panorama-controls').hide();
         $('#standard-preview').show();
     }
 
@@ -1195,24 +1196,24 @@ $( document ).ready(function() {
             {{ form_mini_timelapse.IMAGE_ID() }}
 
             {% if panorama_enabled %}
-            <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-3 tw:items-center">
-                <label for="SOURCE_TYPE" class="md:tw:col-span-2 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
+            <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-12 tw:gap-3 tw:items-center">
+                <label for="SOURCE_TYPE" class="tw:md:col-span-2 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
                     Images to use
                 </label>
-                <div class="md:tw:col-span-4">
+                <div class="tw:md:col-span-4">
                     <select id="SOURCE_TYPE" class="tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary">
                         <option value="standard">All-sky images</option>
                         <option value="panorama">Panorama images</option>
                     </select>
                 </div>
-                <div class="md:tw:col-span-6 tw:text-xs tw:text-base-content/60">
+                <div class="tw:md:col-span-6 tw:text-xs tw:text-base-content/60">
                     Choose all-sky images for the usual full-sky view. Choose panorama images to select the area shown in the video.
                 </div>
             </div>
             {% endif %}
 
             {% if panorama_enabled and not panorama.available %}
-            <div id="panorama-unavailable" class="tw:alert tw:alert-info tw:flex tw:flex-col sm:tw:flex-row tw:items-start sm:tw:items-center tw:gap-3 tw:text-xs" style="display: none;" role="status">
+            <div id="panorama-unavailable" class="tw:alert tw:alert-info tw:flex tw:flex-col tw:sm:flex-row tw:items-start tw:sm:items-center tw:gap-3 tw:text-xs" style="display: none;" role="status">
                 <i class="tw:icon-[lucide--image-off] tw:w-4 tw:h-4 tw:shrink-0"></i>
                 <div class="tw:flex-1">
                     <div class="tw:font-bold">No panorama was saved for this image.</div>
@@ -1233,147 +1234,162 @@ $( document ).ready(function() {
             {% endif %}
 
             <div id="generation-controls" class="tw:flex tw:flex-col tw:gap-4">
-            <div id="panorama-controls" class="tw:grid tw:grid-cols-2 md:tw:grid-cols-12 tw:gap-3 tw:items-end tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
-                <div class="tw:form-control tw:col-span-2 md:tw:col-span-3">
-                    <label for="PAN_MODE" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">View movement</span></label>
-                    <select id="PAN_MODE" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="static">Keep the view still</option>
-                        <option value="linear">Pan between two areas</option>
-                    </select>
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
-                    <select id="ASPECT_RATIO" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="free">Free size</option>
-                        <optgroup label="Social and video">
-                            <option value="16:9">16:9 — Landscape video</option>
-                            <option value="9:16">9:16 — Reels / Stories</option>
-                            <option value="1:1">1:1 — Square post</option>
-                            <option value="4:5">4:5 — Portrait post</option>
-                        </optgroup>
-                        <optgroup label="Phone screens">
-                            <option value="18:9">18:9 — Mobile landscape</option>
-                            <option value="9:18">9:18 — Mobile portrait</option>
-                            <option value="19.5:9">19.5:9 — Mobile landscape</option>
-                            <option value="9:19.5">9:19.5 — Mobile portrait</option>
-                            <option value="20:9">20:9 — Mobile landscape</option>
-                            <option value="9:20">9:20 — Mobile portrait</option>
-                            <option value="21:9">21:9 — Ultrawide landscape</option>
-                            <option value="9:21">9:21 — Ultrawide portrait</option>
-                        </optgroup>
-                        <optgroup label="Classic">
-                            <option value="4:3">4:3 — Landscape</option>
-                            <option value="3:4">3:4 — Portrait</option>
-                        </optgroup>
-                    </select>
-                </div>
-                <div id="panorama-direction-control" class="tw:form-control tw:col-span-2 md:tw:col-span-3" style="display: none;">
-                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal route</span></label>
-                    <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="shortest">Shortest route</option>
-                        <option value="left_to_right">Left to right</option>
-                        <option value="right_to_left">Right to left</option>
-                        <option value="full_left_to_right">Full turn left to right</option>
-                        <option value="full_right_to_left">Full turn right to left</option>
-                    </select>
-                </div>
-                <div id="panorama-pan-summary" class="tw:col-span-2 md:tw:col-span-4 tw:text-xs tw:text-base-content/60" style="display: none;"></div>
-                <div id="panorama-pan-editors" class="tw:col-span-2 md:tw:col-span-12 tw:grid tw:grid-cols-1 lg:tw:grid-cols-2 tw:gap-3 tw:items-start" style="display: none;">
-                    <div id="panorama-start-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
-                        <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
-                            <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">First frame</div>
-                            <span id="panorama-start-active" class="tw:badge tw:badge-primary tw:badge-sm">Editing</span>
-                        </div>
-                        <canvas id="panorama-start-editor" data-panorama-frame="start" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
-                    </div>
-                    <div id="panorama-end-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
-                        <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
-                            <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">Last frame</div>
-                            <span id="panorama-end-active" class="tw:badge tw:badge-primary tw:badge-sm" style="display: none;">Editing</span>
-                        </div>
-                        <canvas id="panorama-end-editor" data-panorama-frame="end" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                <div id="panorama-mode-control" class="tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
+                    <div class="tw:form-control tw:w-full tw:max-w-md">
+                        <label for="PAN_MODE" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">View movement</span></label>
+                        <select id="PAN_MODE" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
+                            <option value="static">Keep the view still</option>
+                            <option value="linear">Pan between two areas</option>
+                        </select>
                     </div>
                 </div>
-                <div id="panorama-manual-target" class="tw:col-span-2 md:tw:col-span-12 tw:text-xs tw:text-base-content/60" style="display: none;">
-                    The values below adjust the <span id="panorama-manual-target-name" class="tw:font-bold">first frame</span>. Click or drag either image to switch frames.
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_X" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal position</span></label>
-                    <input id="CROP_X" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_Y" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Vertical position</span></label>
-                    <input id="CROP_Y" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_WIDTH" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Selected width</span></label>
-                    <input id="CROP_WIDTH" type="number" min="2" step="2" value="{{ panorama.width }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <div class="tw:form-control md:tw:col-span-2">
-                    <label for="CROP_HEIGHT" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Selected height</span></label>
-                    <input id="CROP_HEIGHT" type="number" min="2" step="2" value="{{ panorama.height }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
-                </div>
-                <button id="panorama-reset" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 md:tw:col-span-2">Reset area</button>
-                <div class="tw:col-span-2 md:tw:col-span-12 tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
-                    <span>Drag the outlined box to choose what appears in the video. Drag an edge or corner to resize it. If you choose a preset, the box keeps that shape while you resize it.</span>
-                    <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
-                </div>
-            </div>
 
-            <div id="panorama-notices" class="tw:alert tw:py-2.5 tw:text-xs" style="display: none;" role="alert">
-                <i class="tw:icon-[lucide--triangle-alert] tw:w-4 tw:h-4 tw:self-start tw:mt-0.5"></i>
-                <ul id="panorama-notices-list" class="tw:list-disc tw:pl-4 tw:space-y-1"></ul>
-            </div>
+                <div id="timing-controls" class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-3 tw:gap-3 tw:items-end">
+                    <div class="tw:form-control tw:w-full">
+                        <label class="tw:label tw:pb-1">
+                            <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
+                                {{ form_mini_timelapse.PRE_SECONDS_SELECT.label.text }}
+                            </span>
+                        </label>
+                        {{ form_mini_timelapse.PRE_SECONDS_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm tw:focus:outline-none tw:focus:border-primary') }}
+                    </div>
 
-            <div class="tw:flex tw:flex-wrap md:tw:flex-nowrap tw:items-end tw:gap-4">
-                
-                <div class="tw:form-control tw:w-full md:tw:w-1/4">
+                    <div class="tw:form-control tw:w-full">
+                        <label class="tw:label tw:pb-1">
+                            <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
+                                {{ form_mini_timelapse.POST_SECONDS_SELECT.label.text }}
+                            </span>
+                        </label>
+                        {{ form_mini_timelapse.POST_SECONDS_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm tw:focus:outline-none tw:focus:border-primary') }}
+                    </div>
+
+                    <div class="tw:form-control tw:w-full">
+                        <label class="tw:label tw:pb-1">
+                            <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
+                                {{ form_mini_timelapse.FRAMERATE_SELECT.label.text }}
+                            </span>
+                        </label>
+                        {{ form_mini_timelapse.FRAMERATE_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm tw:focus:outline-none tw:focus:border-primary') }}
+                    </div>
+                </div>
+
+                <div id="panorama-controls" class="tw:flex tw:flex-col tw:gap-3 tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
+                    <div class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-3 tw:gap-3 tw:items-end">
+                        <div class="tw:form-control">
+                            <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
+                            <select id="ASPECT_RATIO" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
+                                <option value="free">Free size</option>
+                                <optgroup label="Social and video">
+                                    <option value="16:9">16:9 — Landscape video</option>
+                                    <option value="9:16">9:16 — Reels / Stories</option>
+                                    <option value="1:1">1:1 — Square post</option>
+                                    <option value="4:5">4:5 — Portrait post</option>
+                                </optgroup>
+                                <optgroup label="Phone screens">
+                                    <option value="18:9">18:9 — Mobile landscape</option>
+                                    <option value="9:18">9:18 — Mobile portrait</option>
+                                    <option value="19.5:9">19.5:9 — Mobile landscape</option>
+                                    <option value="9:19.5">9:19.5 — Mobile portrait</option>
+                                    <option value="20:9">20:9 — Mobile landscape</option>
+                                    <option value="9:20">9:20 — Mobile portrait</option>
+                                    <option value="21:9">21:9 — Ultrawide landscape</option>
+                                    <option value="9:21">9:21 — Ultrawide portrait</option>
+                                </optgroup>
+                                <optgroup label="Classic">
+                                    <option value="4:3">4:3 — Landscape</option>
+                                    <option value="3:4">3:4 — Portrait</option>
+                                </optgroup>
+                            </select>
+                        </div>
+
+                        <div id="panorama-direction-control" class="tw:form-control" style="display: none;">
+                            <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal route</span></label>
+                            <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
+                                <option value="shortest">Shortest route</option>
+                                <option value="left_to_right">Left to right</option>
+                                <option value="right_to_left">Right to left</option>
+                                <option value="full_left_to_right">Full turn left to right</option>
+                                <option value="full_right_to_left">Full turn right to left</option>
+                            </select>
+                        </div>
+
+                        <button id="panorama-reset" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 tw:w-full">Reset area</button>
+                    </div>
+
+                    <div id="panorama-pan-summary" class="tw:text-xs tw:text-base-content/60" style="display: none;"></div>
+
+                    <div id="panorama-pan-editors" class="tw:grid tw:grid-cols-1 tw:lg:grid-cols-2 tw:gap-3 tw:items-start" style="display: none;">
+                        <div id="panorama-start-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
+                            <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
+                                <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">First frame</div>
+                                <span id="panorama-start-active" class="tw:badge tw:badge-primary tw:badge-sm">Editing</span>
+                            </div>
+                            <canvas id="panorama-start-editor" data-panorama-frame="start" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                        </div>
+                        <div id="panorama-end-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
+                            <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
+                                <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">Last frame</div>
+                                <span id="panorama-end-active" class="tw:badge tw:badge-primary tw:badge-sm" style="display: none;">Editing</span>
+                            </div>
+                            <canvas id="panorama-end-editor" data-panorama-frame="end" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                        </div>
+                    </div>
+
+                    <details id="panorama-manual-options" class="tw:bg-base-200/40 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] tw:p-3">
+                        <summary class="tw:cursor-pointer tw:text-xs tw:font-bold tw:text-base-content/70">Manual position and size</summary>
+                        <div id="panorama-manual-target" class="tw:text-xs tw:text-base-content/60 tw:mt-3" style="display: none;">
+                            These values adjust the <span id="panorama-manual-target-name" class="tw:font-bold">first frame</span>. Click or drag either image to switch frames.
+                        </div>
+                        <div class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-4 tw:gap-3 tw:mt-3">
+                            <div class="tw:form-control">
+                                <label for="CROP_X" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal position</span></label>
+                                <input id="CROP_X" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                            </div>
+                            <div class="tw:form-control">
+                                <label for="CROP_Y" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Vertical position</span></label>
+                                <input id="CROP_Y" type="number" min="0" step="2" value="0" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                            </div>
+                            <div class="tw:form-control">
+                                <label for="CROP_WIDTH" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Selected width</span></label>
+                                <input id="CROP_WIDTH" type="number" min="2" step="2" value="{{ panorama.width }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                            </div>
+                            <div class="tw:form-control">
+                                <label for="CROP_HEIGHT" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Selected height</span></label>
+                                <input id="CROP_HEIGHT" type="number" min="2" step="2" value="{{ panorama.height }}" class="tw:input tw:input-bordered tw:input-sm tw:h-9 tw:w-full tw:font-mono">
+                            </div>
+                        </div>
+                    </details>
+
+                    <div class="tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
+                        <span>Drag the outlined box to choose what appears in the video. Drag an edge or corner to resize it. If you choose a preset, the box keeps that shape while you resize it.</span>
+                        <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
+                    </div>
+                </div>
+
+                <div id="panorama-notices" class="tw:alert tw:py-2.5 tw:text-xs" style="display: none;" role="alert">
+                    <i class="tw:icon-[lucide--triangle-alert] tw:w-4 tw:h-4 tw:self-start tw:mt-0.5"></i>
+                    <ul id="panorama-notices-list" class="tw:list-disc tw:pl-4 tw:space-y-1"></ul>
+                </div>
+
+                <div class="tw:form-control tw:pt-2 tw:border-t tw:border-base-300">
                     <label class="tw:label tw:pb-1">
                         <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
-                            {{ form_mini_timelapse.PRE_SECONDS_SELECT.label.text }}
+                            {{ form_mini_timelapse.NOTE.label.text }}
                         </span>
                     </label>
-                    {{ form_mini_timelapse.PRE_SECONDS_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary') }}
+                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a description for this video') }}
                 </div>
 
-                <div class="tw:form-control tw:w-full md:tw:w-1/4">
-                    <label class="tw:label tw:pb-1">
-                        <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
-                            {{ form_mini_timelapse.POST_SECONDS_SELECT.label.text }}
-                        </span>
-                    </label>
-                    {{ form_mini_timelapse.POST_SECONDS_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary') }}
-                </div>
-
-                <div class="tw:form-control tw:w-full md:tw:w-1/4">
-                    <label class="tw:label tw:pb-1">
-                        <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
-                            {{ form_mini_timelapse.FRAMERATE_SELECT.label.text }}
-                        </span>
-                    </label>
-                    {{ form_mini_timelapse.FRAMERATE_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary') }}
-                </div>
-
-                <div class="tw:flex tw:items-center tw:gap-3 tw:w-full md:tw:w-1/4">
+                <div class="tw:flex tw:items-center tw:gap-3 tw:w-full">
                     <button id="create-video" class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
                         <i class="tw:icon-[lucide--video] tw:w-4 tw:h-4"></i>
                         Create video
                     </button>
-                    
+
                     <div id="loader_generate" class="tw:flex tw:items-center tw:justify-center tw:w-10 tw:h-10 tw:bg-base-300/50 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300" style="display: none;">
                         <span class="tw:loading tw:loading-spinner tw:loading-sm tw:text-success"></span>
                     </div>
                 </div>
-            </div>
-
-            <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-12 tw:gap-3 tw:items-center tw:pt-2 tw:border-t tw:border-base-300">
-                <label class="md:tw:col-span-1 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
-                    {{ form_mini_timelapse.NOTE.label.text }}
-                </label>
-                <div class="md:tw:col-span-11 tw:w-full">
-                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a description for this video') }}
-                </div>
-            </div>
             </div>
 
         </form>
@@ -1390,7 +1406,7 @@ $( document ).ready(function() {
             <span class="tw:text-center tw:w-full"></span>
         </div>
 
-        <div class="tw:flex tw:flex-col sm:tw:flex-row tw:justify-between tw:items-center tw:gap-2 tw:text-[0.6875rem] tw:font-semibold tw:tracking-wide tw:uppercase tw:text-base-content/40">
+        <div class="tw:flex tw:flex-col tw:sm:flex-row tw:justify-between tw:items-center tw:gap-2 tw:text-[0.6875rem] tw:font-semibold tw:tracking-wide tw:uppercase tw:text-base-content/40">
             <div id="message" class="tw:truncate"></div>
             <div id="video_length" class="tw:font-mono tw:bg-base-200/60 tw:px-2 tw:py-0.5 tw:rounded tw:border tw:border-base-300"></div>
         </div>
