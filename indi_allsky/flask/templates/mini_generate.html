@@ -31,6 +31,7 @@ var panorama_start_selection = Object.assign({}, panorama_selection);
 var panorama_end_selection = Object.assign({}, panorama_selection);
 var panorama_edit_frame = 'start';
 var panorama_pan_initialized = false;
+var panorama_pan_positions_linked = true;
 var panorama_start_image = null;
 var panorama_end_image = null;
 var panorama_preview_progress = 0;
@@ -216,16 +217,25 @@ function syncPanoramaSelectionSize() {
         return;
     }
 
+    // Initial endpoint crops act as one box until either is deliberately moved.
+    if(panorama_pan_positions_linked) {
+        if(panorama_edit_frame === 'end') {
+            panorama_start_selection = copyPanoramaSelection(panorama_selection);
+        } else {
+            panorama_end_selection = copyPanoramaSelection(panorama_selection);
+        }
+        return;
+    }
+
     var other_selection = panorama_edit_frame === 'end'
         ? panorama_start_selection
         : panorama_end_selection;
-    other_selection['width'] = panorama_selection['width'];
-    other_selection['height'] = panorama_selection['height'];
-    other_selection['y'] = evenPixel(clamp(
-        other_selection['y'],
-        0,
-        panorama_data['height'] - other_selection['height']
-    ));
+    var resized_selection = resizePanoramaSelectionAroundCenter(
+        other_selection,
+        panorama_selection['width'],
+        panorama_selection['height']
+    );
+    Object.assign(other_selection, resized_selection);
 }
 
 function panoramaHorizontalDelta(start_x, end_x, direction) {
@@ -357,6 +367,7 @@ function updatePanoramaPanMode() {
         if(!panorama_pan_initialized) {
             panorama_end_selection = copyPanoramaSelection(panorama_start_selection);
             panorama_pan_initialized = true;
+            panorama_pan_positions_linked = true;
         }
         panorama_edit_frame = 'start';
         panorama_selection = copyPanoramaSelection(panorama_start_selection);
@@ -381,6 +392,8 @@ function updatePanoramaPanControls() {
     $('#panorama-pan-editors').css('display', linear_pan ? 'grid' : 'none');
     $('#panorama-manual-target').toggle(linear_pan);
     $('#panorama-static-editor').toggle(!linear_pan);
+    $('#panorama-static-hint').toggle(!linear_pan);
+    $('#panorama-pan-hint').toggle(linear_pan);
     $('#panorama-start-editor-panel')
         .toggleClass('tw:ring-2 tw:ring-primary', linear_pan && panorama_edit_frame === 'start');
     $('#panorama-end-editor-panel')
@@ -396,6 +409,11 @@ function updatePanoramaPanControls() {
 
     $('#panorama-manual-target-name').text(
         panorama_edit_frame === 'end' ? 'last frame' : 'first frame'
+    );
+    $('#panorama-pan-hint').text(
+        panorama_pan_positions_linked
+            ? 'The frames start aligned. Resize either frame to change both. Drag a frame to position it separately.'
+            : 'The frame positions are independent. Resize either frame to keep both crops the same size.'
     );
 
     var horizontal_movement = panorama_start_selection['x'] !== panorama_end_selection['x'];
@@ -878,8 +896,20 @@ function panoramaPointerMove(event) {
     var start = panorama_drag['selection'];
 
     if(panorama_drag['mode'] === 'move') {
-        panorama_selection['x'] = wrapPixel(evenPixel(start['x'] + delta_x));
-        panorama_selection['y'] = evenPixel(clamp(start['y'] + delta_y, 0, panorama_data['height'] - start['height']));
+        var moved_x = wrapPixel(evenPixel(start['x'] + delta_x));
+        var moved_y = evenPixel(clamp(
+            start['y'] + delta_y,
+            0,
+            panorama_data['height'] - start['height']
+        ));
+        if(
+            panoramaPanMode() === 'linear'
+            && (moved_x !== start['x'] || moved_y !== start['y'])
+        ) {
+            panorama_pan_positions_linked = false;
+        }
+        panorama_selection['x'] = moved_x;
+        panorama_selection['y'] = moved_y;
     } else if(selectedAspectUnits()) {
         resizeFixedAspectSelection(start, panorama_drag['mode'], delta_x, delta_y);
     } else {
@@ -916,6 +946,16 @@ function applyPanoramaFields(changed_field) {
     var new_width;
     var new_height;
     var units = selectedAspectUnits();
+
+    if(
+        panoramaPanMode() === 'linear'
+        && (
+            (changed_field === 'CROP_X' && new_x !== panorama_selection['x'])
+            || (changed_field === 'CROP_Y' && new_y !== panorama_selection['y'])
+        )
+    ) {
+        panorama_pan_positions_linked = false;
+    }
 
     if(units) {
         new_y = evenPixel(clamp(new_y, 0, panorama_data['height'] - units['height']));
@@ -956,6 +996,7 @@ function resetPanoramaSelection() {
     };
     panorama_start_selection = copyPanoramaSelection(panorama_selection);
     panorama_end_selection = copyPanoramaSelection(panorama_selection);
+    panorama_pan_positions_linked = true;
 
     if(selectedAspectUnits()) {
         applyAspectRatioPreset();
@@ -1196,18 +1237,16 @@ $( document ).ready(function() {
             {{ form_mini_timelapse.IMAGE_ID() }}
 
             {% if panorama_enabled %}
-            <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-12 tw:gap-3 tw:items-center">
-                <label for="SOURCE_TYPE" class="tw:md:col-span-2 tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
+            <div class="tw:flex tw:flex-col tw:gap-2 tw:max-w-3xl">
+                <label for="SOURCE_TYPE" class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
                     Images to use
                 </label>
-                <div class="tw:md:col-span-4">
-                    <select id="SOURCE_TYPE" class="tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm focus:tw:outline-none focus:tw:border-primary">
-                        <option value="standard">All-sky images</option>
-                        <option value="panorama">Panorama images</option>
-                    </select>
-                </div>
-                <div class="tw:md:col-span-6 tw:text-xs tw:text-base-content/60">
-                    Choose all-sky images for the usual full-sky view. Choose panorama images to select the area shown in the video.
+                <select id="SOURCE_TYPE" class="tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm tw:focus:outline-none tw:focus:border-primary">
+                    <option value="standard">All-sky images</option>
+                    <option value="panorama">Panorama images</option>
+                </select>
+                <div class="tw:text-xs tw:text-base-content/60">
+                    All-sky images show the usual full-sky view. Panorama images let you choose the part shown in the video.
                 </div>
             </div>
             {% endif %}
@@ -1241,6 +1280,9 @@ $( document ).ready(function() {
                             <option value="static">Keep the view still</option>
                             <option value="linear">Pan between two areas</option>
                         </select>
+                        <div class="tw:text-xs tw:text-base-content/60 tw:mt-1">
+                            Keep one view throughout the video, or choose where a moving view starts and ends.
+                        </div>
                     </div>
                 </div>
 
@@ -1271,6 +1313,9 @@ $( document ).ready(function() {
                         </label>
                         {{ form_mini_timelapse.FRAMERATE_SELECT(class='tw:select tw:select-bordered tw:select-sm tw:h-10 tw:bg-base-100 tw:w-full tw:text-sm tw:focus:outline-none tw:focus:border-primary') }}
                     </div>
+                </div>
+                <div class="tw:text-xs tw:text-base-content/60">
+                    Before and after set the time range around the selected image. Speed controls how quickly those images play.
                 </div>
 
                 <div id="panorama-controls" class="tw:flex tw:flex-col tw:gap-3 tw:pt-2 tw:border-t tw:border-base-300" style="display: none;">
@@ -1318,6 +1363,11 @@ $( document ).ready(function() {
 
                     <div id="panorama-pan-summary" class="tw:text-xs tw:text-base-content/60" style="display: none;"></div>
 
+                    <div id="panorama-static-editor">
+                        <div id="panorama-editor-title" class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider tw:mb-2">Choose the area to show</div>
+                        <canvas id="panorama-editor" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                    </div>
+
                     <div id="panorama-pan-editors" class="tw:grid tw:grid-cols-1 tw:lg:grid-cols-2 tw:gap-3 tw:items-start" style="display: none;">
                         <div id="panorama-start-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
                             <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
@@ -1335,8 +1385,21 @@ $( document ).ready(function() {
                         </div>
                     </div>
 
+                    <div class="tw:flex tw:flex-col tw:gap-1 tw:text-xs tw:text-base-content/60">
+                        <div id="panorama-static-hint">
+                            Drag the frame to position it. Drag an edge or corner to resize it. An aspect-ratio preset keeps the selected shape.
+                        </div>
+                        <div id="panorama-pan-hint" style="display: none;">
+                            The frames start aligned. Resize either frame to change both. Drag a frame to position it separately.
+                        </div>
+                        <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
+                    </div>
+
                     <details id="panorama-manual-options" class="tw:bg-base-200/40 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] tw:p-3">
                         <summary class="tw:cursor-pointer tw:text-xs tw:font-bold tw:text-base-content/70">Manual position and size</summary>
+                        <div class="tw:text-xs tw:text-base-content/60 tw:mt-2">
+                            Use these fields only when you need exact pixel values.
+                        </div>
                         <div id="panorama-manual-target" class="tw:text-xs tw:text-base-content/60 tw:mt-3" style="display: none;">
                             These values adjust the <span id="panorama-manual-target-name" class="tw:font-bold">first frame</span>. Click or drag either image to switch frames.
                         </div>
@@ -1359,11 +1422,6 @@ $( document ).ready(function() {
                             </div>
                         </div>
                     </details>
-
-                    <div class="tw:flex tw:flex-wrap tw:items-center tw:gap-2 tw:text-xs tw:text-base-content/60">
-                        <span>Drag the outlined box to choose what appears in the video. Drag an edge or corner to resize it. If you choose a preset, the box keeps that shape while you resize it.</span>
-                        <span id="panorama-wrap-state" class="tw:badge tw:badge-info tw:badge-sm" style="display: none;"></span>
-                    </div>
                 </div>
 
                 <div id="panorama-notices" class="tw:alert tw:py-2.5 tw:text-xs" style="display: none;" role="alert">
@@ -1372,12 +1430,13 @@ $( document ).ready(function() {
                 </div>
 
                 <div class="tw:form-control tw:pt-2 tw:border-t tw:border-base-300">
-                    <label class="tw:label tw:pb-1">
+                    <label for="NOTE" class="tw:label tw:pb-1">
                         <span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">
-                            {{ form_mini_timelapse.NOTE.label.text }}
+                            {{ form_mini_timelapse.NOTE.label.text }} <span class="tw:text-error" aria-hidden="true">*</span>
                         </span>
+                        <span class="tw:label-text-alt tw:text-xs tw:text-base-content/60">Required</span>
                     </label>
-                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a description for this video') }}
+                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a short description for this video', required=True, aria_required='true') }}
                 </div>
 
                 <div class="tw:flex tw:items-center tw:gap-3 tw:w-full">
@@ -1418,10 +1477,6 @@ $( document ).ready(function() {
         </div>
 
         <div id="panorama-preview" class="tw:w-full tw:flex tw:flex-col tw:gap-4" style="display: none;">
-            <div id="panorama-static-editor">
-                <div id="panorama-editor-title" class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider tw:mb-2">Choose the area to show</div>
-                <canvas id="panorama-editor" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
-            </div>
             <div>
                 <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider tw:mb-2">Video preview</div>
                 <canvas id="panorama-output-preview" class="tw:max-w-full tw:h-auto tw:block tw:mx-auto tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-zoom-in"></canvas>
