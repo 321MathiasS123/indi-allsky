@@ -1016,7 +1016,7 @@ function updateSourceDisplay() {
         $('#standard-preview').hide();
 
         if(panorama_data['available']) {
-            $('#generation-controls, #generation-status').show();
+            $('#generation-controls, #generation-status, #create-video-row').show();
             $('#preview-container').show();
             $('#panorama-preview').show();
             $('#panorama-mode-control').show();
@@ -1024,7 +1024,7 @@ function updateSourceDisplay() {
             updatePanoramaPanControls();
             drawPanoramaEditor();
         } else {
-            $('#generation-controls, #generation-status').hide();
+            $('#generation-controls, #generation-status, #create-video-row').hide();
             $('#preview-container').hide();
             $('#panorama-preview').hide();
             $('#panorama-mode-control, #panorama-controls').hide();
@@ -1033,7 +1033,7 @@ function updateSourceDisplay() {
     } else {
         source_type = 'standard';
         $('#SOURCE_TYPE').val('standard');
-        $('#generation-controls, #generation-status').show();
+        $('#generation-controls, #generation-status, #create-video-row').show();
         $('#preview-container').show();
         $('#panorama-preview').hide();
         $('#panorama-mode-control, #panorama-controls').hide();
@@ -1477,7 +1477,7 @@ $( document ).ready(function() {
         </div>
     </div>
 
-    <div class="tw:flex tw:items-center tw:gap-3 tw:w-full">
+    <div id="create-video-row" class="tw:flex tw:items-center tw:gap-3 tw:w-full">
         <button id="create-video" type="submit" form="form_mini_timelapse" class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
             <i class="tw:icon-[lucide--video] tw:w-4 tw:h-4"></i>
             Create video
