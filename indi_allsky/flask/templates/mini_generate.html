@@ -37,6 +37,7 @@ var panorama_end_image = null;
 var panorama_preview_progress = 0;
 var panorama_drag = null;
 var preview_revision = 0;  // invalidates old requests, delays, and image loads
+var preview_resize_observer = null;
 // The animation preview stays bounded, while panorama preflight checks the
 // complete generation period on the server.
 var preview_history_limit_seconds = 14400;
@@ -51,6 +52,36 @@ var framerate_delay_lut = {
     '10'   : 100,
     '25'   : 40,
 };
+
+function fitVideoPreview() {
+    var container = document.getElementById('preview-container');
+    var create_row = document.getElementById('create-video-row');
+    var preview = document.getElementById(
+        source_type === 'panorama' ? 'panorama-output-preview' : 'loop-image'
+    );
+    if(!container || !create_row || !preview || !container.offsetParent || !create_row.offsetParent) {
+        return;
+    }
+
+    preview.style.maxHeight = 'none';
+
+    var root_gap = parseFloat(window.getComputedStyle(container.parentElement).rowGap) || 16;
+    var success_message = document.getElementById('success_message');
+    var success_space = success_message && success_message.offsetParent
+        ? success_message.offsetHeight + root_gap
+        : 0;
+    var available_height = (
+        window.innerHeight
+        - container.getBoundingClientRect().top
+        - create_row.offsetHeight
+        - success_space
+        - root_gap
+        - Math.max(0, container.offsetHeight - preview.offsetHeight)
+        - 16
+    );
+
+    preview.style.maxHeight = Math.max(180, Math.floor(available_height)) + 'px';
+}
 
 function init() {
     if(source_type !== 'panorama') {
@@ -703,6 +734,8 @@ function drawPanoramaOutputPreview() {
         );
         destination_x = destination_end;
     });
+
+    fitVideoPreview();
 }
 
 function updatePanoramaFields() {
@@ -1029,6 +1062,7 @@ function updateSourceDisplay() {
     }
 
     updatePanoramaNotices();
+    fitVideoPreview();
 }
 
 function updatePanoramaNotices() {
@@ -1212,6 +1246,14 @@ $( document ).ready(function() {
         .on('pointerdown', panoramaPointerDown)
         .on('pointermove', panoramaPointerMove)
         .on('pointerup pointercancel', panoramaPointerUp);
+
+    $(window).on('resize', fitVideoPreview);
+    if(window.ResizeObserver) {
+        preview_resize_observer = new ResizeObserver(fitVideoPreview);
+        $('#form_mini_timelapse, #generation-status, #success_message').each(function() {
+            preview_resize_observer.observe(this);
+        });
+    }
 
     init();
 });
@@ -1447,9 +1489,9 @@ $( document ).ready(function() {
         </div>
     </div>
 
-    <div id="preview-container" class="tw:w-full tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:min-h-[350px] tw:overflow-hidden">
+    <div id="preview-container" class="tw:w-full tw:bg-base-300/20 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:p-2 tw:overflow-hidden">
         <div id="standard-preview" class="tw:w-full tw:flex tw:items-center tw:justify-center">
-            <img id="loop-image" class="tw:max-w-full tw:max-h-[65vh] tw:object-contain tw:rounded-[var(--radius-box)] tw:shadow-inner" alt="Mini timelapse preview">
+            <img id="loop-image" class="tw:max-w-full tw:object-contain tw:rounded-[var(--radius-box)] tw:shadow-inner" alt="Mini timelapse preview">
         </div>
 
         <div id="panorama-preview" class="tw:w-full tw:flex tw:flex-col tw:gap-4" style="display: none;">
