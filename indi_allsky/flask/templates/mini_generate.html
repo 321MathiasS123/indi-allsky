@@ -887,10 +887,13 @@ function panoramaPointerMove(event) {
     event.preventDefault();
     var point = pointerToPanorama(event);
     var delta_x = point['x'] - panorama_drag['pointer_x'];
-    if(delta_x > panorama_data['width'] / 2) {
-        delta_x -= panorama_data['width'];
-    } else if(delta_x < -panorama_data['width'] / 2) {
-        delta_x += panorama_data['width'];
+    // Free resizing must keep its direction when the pointer crosses the panorama midpoint.
+    if(panorama_drag['mode'] === 'move' || selectedAspectUnits()) {
+        if(delta_x > panorama_data['width'] / 2) {
+            delta_x -= panorama_data['width'];
+        } else if(delta_x < -panorama_data['width'] / 2) {
+            delta_x += panorama_data['width'];
+        }
     }
     var delta_y = point['y'] - panorama_drag['pointer_y'];
     var start = panorama_drag['selection'];
@@ -1439,16 +1442,6 @@ $( document ).ready(function() {
                     {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a short description for this video', required=True, aria_required='true') }}
                 </div>
 
-                <div class="tw:flex tw:items-center tw:gap-3 tw:w-full">
-                    <button id="create-video" class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
-                        <i class="tw:icon-[lucide--video] tw:w-4 tw:h-4"></i>
-                        Create video
-                    </button>
-
-                    <div id="loader_generate" class="tw:flex tw:items-center tw:justify-center tw:w-10 tw:h-10 tw:bg-base-300/50 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300" style="display: none;">
-                        <span class="tw:loading tw:loading-spinner tw:loading-sm tw:text-success"></span>
-                    </div>
-                </div>
             </div>
 
         </form>
@@ -1481,6 +1474,17 @@ $( document ).ready(function() {
                 <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider tw:mb-2">Video preview</div>
                 <canvas id="panorama-output-preview" class="tw:max-w-full tw:h-auto tw:block tw:mx-auto tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-zoom-in"></canvas>
             </div>
+        </div>
+    </div>
+
+    <div class="tw:flex tw:items-center tw:gap-3 tw:w-full">
+        <button id="create-video" type="submit" form="form_mini_timelapse" class="tw:btn tw:btn-success tw:btn-sm tw:h-10 tw:flex-1 tw:text-xs tw:font-bold tw:uppercase tw:tracking-wider tw:gap-2">
+            <i class="tw:icon-[lucide--video] tw:w-4 tw:h-4"></i>
+            Create video
+        </button>
+
+        <div id="loader_generate" class="tw:flex tw:items-center tw:justify-center tw:w-10 tw:h-10 tw:bg-base-300/50 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300" style="display: none;">
+            <span class="tw:loading tw:loading-spinner tw:loading-sm tw:text-success"></span>
         </div>
     </div>
 
