@@ -192,12 +192,7 @@ function wrapPixel(value) {
 }
 
 function copyPanoramaSelection(selection) {
-    return {
-        'x' : selection['x'],
-        'y' : selection['y'],
-        'width' : selection['width'],
-        'height' : selection['height'],
-    };
+    return Object.assign({}, selection);
 }
 
 function panoramaPanMode() {
@@ -242,17 +237,10 @@ function panoramaHorizontalDelta(start_x, end_x, direction) {
     var source_width = panorama_data['width'];
     var direct_delta = end_x - start_x;
 
-    if(direction === 'left_to_right') {
-        return wrapPixel(direct_delta);
-    }
-    if(direction === 'right_to_left') {
-        return -wrapPixel(-direct_delta);
-    }
-    if(direction === 'full_left_to_right') {
-        return wrapPixel(direct_delta) + source_width;
-    }
-    if(direction === 'full_right_to_left') {
-        return -(wrapPixel(-direct_delta) + source_width);
+    var left_to_right = direction.indexOf('left_to_right') !== -1;
+    if(left_to_right || direction.indexOf('right_to_left') !== -1) {
+        var delta = left_to_right ? wrapPixel(direct_delta) : -wrapPixel(-direct_delta);
+        return delta + (direction.indexOf('full_') === 0 ? (left_to_right ? source_width : -source_width) : 0);
     }
 
     if(direct_delta > source_width / 2) {
@@ -1255,7 +1243,7 @@ $( document ).ready(function() {
             {% endif %}
 
             {% if panorama_enabled and not panorama.available %}
-            <div id="panorama-unavailable" class="tw:alert tw:alert-info tw:flex tw:flex-col tw:sm:flex-row tw:items-start tw:sm:items-center tw:gap-3 tw:text-xs" style="display: none;" role="status">
+            <div id="panorama-unavailable" class="tw:alert tw:alert-info tw:flex tw:flex-col tw:items-start tw:gap-3 tw:text-xs" style="display: none;" role="status">
                 <i class="tw:icon-[lucide--image-off] tw:w-4 tw:h-4 tw:shrink-0"></i>
                 <div class="tw:flex-1">
                     <div class="tw:font-bold">No panorama was saved for this image.</div>

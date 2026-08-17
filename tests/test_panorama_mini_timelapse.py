@@ -16,33 +16,8 @@ FFMPEG_PATH = shutil.which('ffmpeg')
 
 
 def _run_ffmpeg_filter(source, filter_graph, output_shape):
-    source_height, source_width = source.shape[:2]
-    command = (
-        FFMPEG_PATH,
-        '-v', 'error',
-        '-f', 'rawvideo',
-        '-pixel_format', 'gray',
-        '-video_size', '{0:d}x{1:d}'.format(source_width, source_height),
-        '-i', 'pipe:0',
-        '-vf', filter_graph,
-        '-frames:v', '1',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'gray',
-        'pipe:1',
-    )
-    result = subprocess.run(
-        command,
-        input=source.tobytes(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-    )
-
-    return numpy.frombuffer(result.stdout, dtype=numpy.uint8).reshape(output_shape)
-
-
-def _run_ffmpeg_sequence_filter(source, filter_graph, output_shape):
-    frame_count, source_height, source_width = source.shape
+    source_height, source_width = source.shape[-2:]
+    frame_count = source.shape[0] if source.ndim == 3 else 1
     command = (
         FFMPEG_PATH,
         '-v', 'error',
@@ -109,52 +84,44 @@ def test_linear_pan_without_seam_uses_dynamic_crop():
     )
 
 
-def test_linear_pan_wraps_left_to_right():
-    assert buildPanoramaPanFilter(
-        4096, 1024,
-        3600, 100,
-        200, 100,
-        1000, 600,
-        11,
-        direction='left_to_right',
-    ) == (
-        'split=2[pano_0][pano_1];'
-        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
-        '[pano_strip]crop=w=1000:h=600:'
-        r'x=trunc(mod((3600+696*n/10)+4096\,4096)/2)*2:'
-        'y=trunc((100+0*n/10)/2)*2'
-    )
-
-
-def test_linear_pan_wraps_right_to_left():
-    assert buildPanoramaPanFilter(
-        4096, 1024,
-        3600, 100,
-        200, 100,
-        1000, 600,
-        11,
-        direction='right_to_left',
-    ) == (
-        'split=2[pano_0][pano_1];'
-        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
-        '[pano_strip]crop=w=1000:h=600:'
-        r'x=trunc(mod((3600-3400*n/10)+4096\,4096)/2)*2:'
-        'y=trunc((100+0*n/10)/2)*2'
-    )
-
-
 @pytest.mark.parametrize(
     'direction,delta_x',
     (
-        ('full_left_to_right', '+4096'),
-        ('full_right_to_left', '-4096'),
+        ('left_to_right', '+696'),
+        ('right_to_left', '-3400'),
     ),
 )
-def test_linear_pan_can_make_full_turn_to_same_crop(direction, delta_x):
+def test_linear_pan_wraps_across_seam(direction, delta_x):
+    assert buildPanoramaPanFilter(
+        4096, 1024,
+        3600, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction=direction,
+    ) == (
+        'split=2[pano_0][pano_1];'
+        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+        '[pano_strip]crop=w=1000:h=600:'
+        r'x=trunc(mod((3600{0:s}*n/10)+4096\,4096)/2)*2:'
+        'y=trunc((100+0*n/10)/2)*2'
+    ).format(delta_x)
+
+
+@pytest.mark.parametrize(
+    'direction,start_x,end_x,delta_x',
+    (
+        ('full_left_to_right', 200, 200, '+4096'),
+        ('full_right_to_left', 200, 200, '-4096'),
+        ('full_left_to_right', 3600, 200, '+4792'),
+        ('full_right_to_left', 3600, 200, '-7496'),
+    ),
+)
+def test_linear_pan_full_turn_routes(direction, start_x, end_x, delta_x):
     filter_graph = buildPanoramaPanFilter(
         4096, 1024,
-        200, 100,
-        200, 100,
+        start_x, 100,
+        end_x, 100,
         1000, 600,
         11,
         direction=direction,
@@ -163,9 +130,9 @@ def test_linear_pan_can_make_full_turn_to_same_crop(direction, delta_x):
         'split=2[pano_0][pano_1];'
         '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
         '[pano_strip]crop=w=1000:h=600:'
-        r'x=trunc(mod((200{0:s}*n/10)+4096\,4096)/2)*2:'
+        r'x=trunc(mod(({0:d}{1:s}*n/10)+4096\,4096)/2)*2:'
         'y=trunc((100+0*n/10)/2)*2'
-    ).format(delta_x)
+    ).format(start_x, delta_x)
 
     assert filter_graph == expected_filter
 
@@ -180,33 +147,6 @@ def test_directed_pan_to_same_crop_does_not_make_full_turn(direction):
         11,
         direction=direction,
     ) == 'crop=w=1000:h=600:x=200:y=100'
-
-
-@pytest.mark.parametrize(
-    'direction,delta_x',
-    (
-        ('full_left_to_right', '+4792'),
-        ('full_right_to_left', '-7496'),
-    ),
-)
-def test_full_turn_continues_to_different_ending_crop(direction, delta_x):
-    filter_graph = buildPanoramaPanFilter(
-        4096, 1024,
-        3600, 100,
-        200, 100,
-        1000, 600,
-        11,
-        direction=direction,
-    )
-    expected_filter = (
-        'split=2[pano_0][pano_1];'
-        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
-        '[pano_strip]crop=w=1000:h=600:'
-        r'x=trunc(mod((3600{0:s}*n/10)+4096\,4096)/2)*2:'
-        'y=trunc((100+0*n/10)/2)*2'
-    ).format(delta_x)
-
-    assert filter_graph == expected_filter
 
 
 def test_linear_pan_rejects_too_few_frames():
@@ -374,58 +314,32 @@ def test_panorama_route_validation_normalizes_linear_pan():
 
 
 @pytest.mark.parametrize(
-    'selection',
+    'changes',
     (
+        {'CROP_HEIGHT': None},
+        {'CROP_X': 'left'},
+        {'CROP_HEIGHT': 1082},
+        {'ASPECT_RATIO': '2.39:1'},
+        {'PAN_MODE': 'linear', 'END_CROP_X': 0},
         {
-            'CROP_X'      : 0,
-            'CROP_Y'      : 0,
-            'CROP_WIDTH'  : 1920,
-            'ASPECT_RATIO': '16:9',
-        },
-        {
-            'CROP_X'      : 'left',
-            'CROP_Y'      : 0,
-            'CROP_WIDTH'  : 1920,
-            'CROP_HEIGHT' : 1080,
-            'ASPECT_RATIO': '16:9',
-        },
-        {
-            'CROP_X'      : 0,
-            'CROP_Y'      : 0,
-            'CROP_WIDTH'  : 1920,
-            'CROP_HEIGHT' : 1082,
-            'ASPECT_RATIO': '16:9',
-        },
-        {
-            'CROP_X'      : 0,
-            'CROP_Y'      : 0,
-            'CROP_WIDTH'  : 1920,
-            'CROP_HEIGHT' : 1080,
-            'ASPECT_RATIO': '2.39:1',
-        },
-        {
-            'CROP_X'      : 0,
-            'CROP_Y'      : 0,
-            'CROP_WIDTH'  : 1920,
-            'CROP_HEIGHT' : 1080,
-            'ASPECT_RATIO': '16:9',
-            'PAN_MODE'    : 'linear',
-            'END_CROP_X'  : 0,
-        },
-        {
-            'CROP_X'       : 0,
-            'CROP_Y'       : 0,
-            'CROP_WIDTH'   : 1920,
-            'CROP_HEIGHT'  : 1080,
-            'ASPECT_RATIO' : '16:9',
-            'PAN_MODE'     : 'linear',
-            'END_CROP_X'   : 2,
-            'END_CROP_Y'   : 0,
+            'PAN_MODE': 'linear',
+            'END_CROP_X': 2,
+            'END_CROP_Y': 0,
             'PAN_DIRECTION': 'around_twice',
         },
     ),
 )
-def test_panorama_route_validation_rejects_bad_selection(selection):
+def test_panorama_route_validation_rejects_bad_selection(changes):
+    selection = {
+        'CROP_X'       : 0,
+        'CROP_Y'       : 0,
+        'CROP_WIDTH'   : 1920,
+        'CROP_HEIGHT'  : 1080,
+        'ASPECT_RATIO' : '16:9',
+    }
+    selection.update(changes)
+    selection = {key: value for key, value in selection.items() if value is not None}
+
     with pytest.raises(ValueError):
         validatePanoramaMiniTimelapseRequest(4096, 2160, selection)
 
@@ -464,7 +378,7 @@ def test_ffmpeg_filter_graph_moves_crop_across_panorama_seam():
         cropPanoramaArray(source_frame, crop_x, 0, 4, 2)
         for crop_x in (6, 0, 2)
     ])
-    actual = _run_ffmpeg_sequence_filter(source, filter_graph, expected.shape)
+    actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
 
     numpy.testing.assert_array_equal(actual, expected)
 
@@ -485,6 +399,6 @@ def test_ffmpeg_filter_graph_makes_full_turn_to_same_crop():
         cropPanoramaArray(source_frame, crop_x, 0, 4, 2)
         for crop_x in (2, 4, 6, 0, 2)
     ])
-    actual = _run_ffmpeg_sequence_filter(source, filter_graph, expected.shape)
+    actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
 
     numpy.testing.assert_array_equal(actual, expected)

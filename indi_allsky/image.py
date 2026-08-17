@@ -2414,12 +2414,10 @@ class ImageWorker(Process):
     def write_panorama_img(self, pano_data, i_ref, camera, jpeg_exif=None):
         panorama_height, panorama_width = pano_data.shape[:2]
 
-        # Store the source geometry used for this panorama. This keeps later
-        # warnings accurate even if the panorama configuration is changed.
+        # Store the result so later configuration changes do not alter the warning.
         source_height, source_width = self.image_processor.image.shape[:2]
         binning = max(int(i_ref.binning), 1)
-        fish2pano_config = self.config.get('FISH2PANO', {})
-        circle_diameter = int(fish2pano_config.get('DIAMETER', 3000) / binning)
+        circle_diameter = int(self.config.get('FISH2PANO', {}).get('DIAMETER', 3000) / binning)
         circle_offset_x = int(self.config.get('LENS_OFFSET_X', 0) / binning)
         circle_offset_y = int(self.config.get('LENS_OFFSET_Y', 0) / binning)
         circle_clipped = panoramaSourceCircleClipped(
@@ -2536,11 +2534,6 @@ class ImageWorker(Process):
             'aurora_n_hemi_gw'      : i_ref.aurora_n_hemi_gw,
             'aurora_s_hemi_gw'      : i_ref.aurora_s_hemi_gw,
             'camera_sqm_raw_mag'    : self.image_processor.camera_sqm_raw_mag,
-            'fish2pano_source_width'   : source_width,
-            'fish2pano_source_height'  : source_height,
-            'fish2pano_circle_diameter' : circle_diameter,
-            'fish2pano_circle_offset_x' : circle_offset_x,
-            'fish2pano_circle_offset_y' : circle_offset_y,
             'fish2pano_circle_clipped'  : circle_clipped,
         }
 

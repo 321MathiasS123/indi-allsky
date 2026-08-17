@@ -1481,7 +1481,7 @@ class JsonPanoramaLoopView(JsonImageLoopView):
         loop_dt = datetime.fromtimestamp(timestamp)
         start_dt = loop_dt - timedelta(seconds=requested_history_seconds)
 
-        panorama_query = self.model.query\
+        panorama_entries = self.model.query\
             .join(self.model.camera)\
             .filter(
                 and_(
@@ -1491,21 +1491,40 @@ class JsonPanoramaLoopView(JsonImageLoopView):
                     self.model.createDate <= loop_dt,
                 )
             )\
-            .order_by(self.model.createDate.asc())
+            .order_by(self.model.createDate.asc())\
+            .all()
 
-        local = True
-        if self.web_nonlocal_images:
-            if self.web_local_images_admin and self.verify_admin_network():
-                pass
-            else:
-                local = False
+        local = not self.web_nonlocal_images or (
+            self.web_local_images_admin and self.verify_admin_network()
+        )
 
-        def get_panorama_reference(reference_query):
-            for panorama_entry in reference_query:
+        local_frame_count = 0
+        dimensions_match = True
+        reference_entries = []
+        for panorama_entry in panorama_entries:
+
+            dimension_mismatch = (
+                panorama_entry.width != expected_width
+                or panorama_entry.height != expected_height
+            )
+
+            try:
+                panorama_path = Path(panorama_entry.getFilesystemPath())
+                if not panorama_path.exists() or not panorama_path.stat().st_size:
+                    continue
+
+                local_frame_count += 1
+                if dimension_mismatch:
+                    dimensions_match = False
+                    continue
+            except (OSError, ValueError):
+                continue
+
+            reference_entries.append(panorama_entry)
+
+        def get_reference(entries):
+            for panorama_entry in entries:
                 try:
-                    panorama_path = Path(panorama_entry.getFilesystemPath())
-                    if not panorama_path.exists() or not panorama_path.stat().st_size:
-                        continue
                     panorama_url = panorama_entry.getUrl(
                         s3_prefix=self.s3_prefix,
                         local=local,
@@ -1519,51 +1538,12 @@ class JsonPanoramaLoopView(JsonImageLoopView):
                     'timestamp' : int(panorama_entry.createDate.timestamp()),
                 }
 
-            return None
-
-        reference_query = panorama_query\
-            .order_by(None)\
-            .filter(self.model.width == expected_width)\
-            .filter(self.model.height == expected_height)
-        start_reference = get_panorama_reference(
-            reference_query.order_by(self.model.createDate.asc()),
-        )
-        end_reference = get_panorama_reference(
-            reference_query.order_by(self.model.createDate.desc()),
-        )
-
-        frame_count = 0
-        local_frame_count = 0
-        dimensions_match = True
-        for panorama_entry in panorama_query:
-            frame_count += 1
-
-            dimension_mismatch = (
-                panorama_entry.width != expected_width
-                or panorama_entry.height != expected_height
-            )
-
-            # Two local files are enough to determine whether generation can
-            # start. Keep counting database rows for the full-period estimate.
-            if local_frame_count >= 2 and not dimension_mismatch:
-                continue
-
-            try:
-                panorama_path = Path(panorama_entry.getFilesystemPath())
-                if panorama_path.exists() and panorama_path.stat().st_size:
-                    if local_frame_count < 2:
-                        local_frame_count += 1
-                    if dimension_mismatch:
-                        dimensions_match = False
-            except (OSError, ValueError):
-                pass
-
         data['panorama_preflight'] = {
-            'frame_count'             : frame_count,
+            'frame_count'             : len(panorama_entries),
             'has_enough_local_frames' : local_frame_count >= 2,
             'dimensions_match'        : dimensions_match,
-            'start_reference'         : start_reference,
-            'end_reference'           : end_reference,
+            'start_reference'         : get_reference(reference_entries),
+            'end_reference'           : get_reference(reversed(reference_entries)),
         }
 
         return data
@@ -11322,12 +11302,9 @@ class MiniTimelapseGeneratorView(TemplateView):
             .order_by(IndiAllSkyDbPanoramaImageTable.id.desc())\
             .first()
 
-        local = True
-        if self.web_nonlocal_images:
-            if self.web_local_images_admin and self.verify_admin_network():
-                pass
-            else:
-                local = False
+        local = not self.web_nonlocal_images or (
+            self.web_local_images_admin and self.verify_admin_network()
+        )
 
         if panorama_image_entry:
             try:

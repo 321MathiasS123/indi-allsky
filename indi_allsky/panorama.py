@@ -37,11 +37,9 @@ def panoramaSourceCircleClipped(
     offset_y=0,
 ):
     """Return whether the configured fisheye circle extends past the source image."""
-    source_width = int(source_width)
-    source_height = int(source_height)
-    circle_diameter = int(circle_diameter)
-    offset_x = int(offset_x)
-    offset_y = int(offset_y)
+    source_width, source_height, circle_diameter, offset_x, offset_y = map(
+        int, (source_width, source_height, circle_diameter, offset_x, offset_y),
+    )
 
     if source_width < 1 or source_height < 1 or circle_diameter < 1:
         raise ValueError('Panorama source and circle dimensions must be positive')
@@ -77,12 +75,9 @@ def buildPanoramaCropFilter(
     crop_height,
 ):
     """Build an FFmpeg crop filter, wrapping only across the horizontal seam."""
-    source_width = int(source_width)
-    source_height = int(source_height)
-    crop_x = int(crop_x)
-    crop_y = int(crop_y)
-    crop_width = int(crop_width)
-    crop_height = int(crop_height)
+    source_width, source_height, crop_x, crop_y, crop_width, crop_height = map(
+        int, (source_width, source_height, crop_x, crop_y, crop_width, crop_height),
+    )
 
     if source_width < 2 or source_height < 2:
         raise ValueError('Panorama source dimensions must be at least 2 x 2 pixels')
@@ -149,15 +144,10 @@ def buildPanoramaPanFilter(
     direction='shortest',
 ):
     """Build a fixed-size linear crop across a horizontally wrapping panorama."""
-    source_width = int(source_width)
-    source_height = int(source_height)
-    start_x = int(start_x)
-    start_y = int(start_y)
-    end_x = int(end_x)
-    end_y = int(end_y)
-    crop_width = int(crop_width)
-    crop_height = int(crop_height)
-    frame_count = int(frame_count)
+    source_width, source_height, start_x, start_y, end_x, end_y = map(
+        int, (source_width, source_height, start_x, start_y, end_x, end_y),
+    )
+    crop_width, crop_height, frame_count = map(int, (crop_width, crop_height, frame_count))
     direction = str(direction)
 
     buildPanoramaCropFilter(
@@ -183,20 +173,20 @@ def buildPanoramaPanFilter(
         raise ValueError('Unsupported panorama pan direction')
 
     direct_delta_x = end_x - start_x
-    if direction == 'left_to_right':
-        delta_x = direct_delta_x % source_width
-    elif direction == 'right_to_left':
-        delta_x = -((-direct_delta_x) % source_width)
-    elif direction == 'full_left_to_right':
-        delta_x = (direct_delta_x % source_width) + source_width
-    elif direction == 'full_right_to_left':
-        delta_x = -(((-direct_delta_x) % source_width) + source_width)
-    else:
+    if direction == 'shortest':
         delta_x = direct_delta_x
         if delta_x > source_width / 2:
             delta_x -= source_width
         elif delta_x < -(source_width / 2):
             delta_x += source_width
+    elif 'left_to_right' in direction:
+        delta_x = direct_delta_x % source_width
+        if direction.startswith('full_'):
+            delta_x += source_width
+    else:
+        delta_x = -((-direct_delta_x) % source_width)
+        if direction.startswith('full_'):
+            delta_x -= source_width
 
     if not delta_x and start_y == end_y:
         return buildPanoramaCropFilter(
@@ -209,10 +199,15 @@ def buildPanoramaPanFilter(
         )
 
     frame_divisor = frame_count - 1
-    direct_end_x = start_x + delta_x
     needs_horizontal_wrap = (
-        min(start_x, direct_end_x) < 0
-        or max(start_x, direct_end_x) + crop_width > source_width
+        min(start_x, start_x + delta_x) < 0
+        or max(start_x, start_x + delta_x) + crop_width > source_width
+    )
+    filter_prefix = ''
+    crop_x_base = '({0:d}{1:+d}*n/{2:d})'.format(
+        start_x,
+        delta_x,
+        frame_divisor,
     )
     if needs_horizontal_wrap:
         # Two copies let the crop span the seam; modulo keeps its moving left
@@ -228,28 +223,18 @@ def buildPanoramaPanFilter(
             frame_divisor,
             source_width,
         )
-    else:
-        filter_prefix = ''
-        crop_x_base = '({0:d}{1:+d}*n/{2:d})'.format(
-            start_x,
-            delta_x,
-            frame_divisor,
-        )
 
-    delta_y = end_y - start_y
-    crop_x_expression = 'trunc({0:s}/2)*2'.format(crop_x_base)
-    crop_y_expression = 'trunc(({0:d}{1:+d}*n/{2:d})/2)*2'.format(
-        start_y,
-        delta_y,
-        frame_divisor,
-    )
-
-    return '{prefix}crop=w={width:d}:h={height:d}:x={x}:y={y}'.format(
+    return (
+        '{prefix}crop=w={width:d}:h={height:d}:'
+        'x=trunc({x}/2)*2:y=trunc(({start_y:d}{delta_y:+d}*n/{divisor:d})/2)*2'
+    ).format(
         prefix=filter_prefix,
         width=crop_width,
         height=crop_height,
-        x=crop_x_expression,
-        y=crop_y_expression,
+        x=crop_x_base,
+        start_y=start_y,
+        delta_y=end_y - start_y,
+        divisor=frame_divisor,
     )
 
 
@@ -323,10 +308,9 @@ def cropPanoramaArray(image, crop_x, crop_y, crop_width, crop_height):
         crop_height,
     )
 
-    crop_x = int(crop_x)
-    crop_y = int(crop_y)
-    crop_width = int(crop_width)
-    crop_height = int(crop_height)
+    crop_x, crop_y, crop_width, crop_height = map(
+        int, (crop_x, crop_y, crop_width, crop_height),
+    )
     crop_end_x = crop_x + crop_width
 
     if crop_end_x <= source_width:
