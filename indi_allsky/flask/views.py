@@ -11541,7 +11541,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             or post_seconds > 43200
             or not math.isfinite(framerate)
             or framerate <= 0
-            or framerate > 25
+            or framerate > 60
         ):
             json_data = {
                 'failure-message' : 'Check the selected time range and speed, then try again.',

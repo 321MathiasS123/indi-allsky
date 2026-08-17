@@ -9642,6 +9642,8 @@ class IndiAllskyMiniTimelapseForm(FlaskForm):
         ('5', '5 FPS'),
         ('10', '10 FPS'),
         ('25', '25 FPS'),
+        ('30', '30 FPS'),
+        ('60', '60 FPS'),
     )
 
     CAMERA_ID                        = HiddenField('Camera ID', validators=[DataRequired()])

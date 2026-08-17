@@ -428,7 +428,7 @@ def test_ffmpeg_filter_graph_honors_two_frame_endpoints():
 
 
 @pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
-@pytest.mark.parametrize('framerate', (0.25, 0.5, 0.75, 1, 2, 5, 10, 25))
+@pytest.mark.parametrize('framerate', (0.25, 0.5, 0.75, 1, 2, 5, 10, 25, 30, 60))
 def test_timed_pan_preserves_capture_progress_across_gap(tmp_path, framerate):
     source_frame = numpy.tile(numpy.arange(8, dtype=numpy.uint8), (4, 1))
     source = numpy.repeat(source_frame[numpy.newaxis, :, :], 4, axis=0)
