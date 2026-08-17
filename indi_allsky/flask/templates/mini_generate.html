@@ -31,7 +31,6 @@ var panorama_start_selection = Object.assign({}, panorama_selection);
 var panorama_end_selection = Object.assign({}, panorama_selection);
 var panorama_edit_frame = 'start';
 var panorama_pan_initialized = false;
-var panorama_direction_user_selected = false;
 var panorama_start_image = null;
 var panorama_end_image = null;
 var panorama_preview_progress = 0;
@@ -246,10 +245,16 @@ function panoramaHorizontalDelta(start_x, end_x, direction) {
     var direct_delta = end_x - start_x;
 
     if(direction === 'left_to_right') {
-        return wrapPixel(direct_delta) || source_width;
+        return wrapPixel(direct_delta);
     }
     if(direction === 'right_to_left') {
-        return -(wrapPixel(-direct_delta) || source_width);
+        return -wrapPixel(-direct_delta);
+    }
+    if(direction === 'full_left_to_right') {
+        return wrapPixel(direct_delta) + source_width;
+    }
+    if(direction === 'full_right_to_left') {
+        return -(wrapPixel(-direct_delta) + source_width);
     }
 
     if(direct_delta > source_width / 2) {
@@ -403,60 +408,20 @@ function updatePanoramaPanControls() {
         panorama_edit_frame === 'end' ? 'Choose the ending area' : 'Choose the starting area'
     );
 
-    // Greater overlap on one axis means the movement is mainly on the other.
-    var horizontal_overlap = Math.max(0, panorama_selection['width'] - circularDistance(
-        panorama_start_selection['x'],
-        panorama_end_selection['x']
-    ));
-    var vertical_overlap = Math.max(0, panorama_selection['height'] - Math.abs(
-        panorama_end_selection['y'] - panorama_start_selection['y']
-    ));
     var horizontal_movement = panorama_start_selection['x'] !== panorama_end_selection['x'];
-    var vertical_movement = panorama_start_selection['y'] !== panorama_end_selection['y'];
-    var horizontal_pan = (
-        horizontal_movement
-        && (!vertical_movement || vertical_overlap > horizontal_overlap)
-    );
-    var direction_select = $('#PAN_DIRECTION');
-    var automatic_option = $('#panorama-direction-auto');
-    var left_to_right_option = $('#panorama-direction-left-to-right');
-    var right_to_left_option = $('#panorama-direction-right-to-left');
-
-    if(horizontal_pan) {
-        $('#panorama-direction-label').text('Horizontal direction');
-        automatic_option.prop('hidden', true);
-        left_to_right_option.text('Left to right');
-        right_to_left_option.text('Right to left');
-        if(!panorama_direction_user_selected || direction_select.val() === 'shortest') {
-            var shortest_delta = panoramaHorizontalDelta(
-                panorama_start_selection['x'],
-                panorama_end_selection['x'],
-                'shortest'
-            );
-            direction_select.val(shortest_delta >= 0 ? 'left_to_right' : 'right_to_left');
-        }
-        $('#panorama-direction-control').show();
-    } else if(!horizontal_movement) {
-        $('#panorama-direction-label').text('Optional full rotation');
-        automatic_option.prop('hidden', false).text('No full rotation');
-        left_to_right_option.text('Full turn left to right');
-        right_to_left_option.text('Full turn right to left');
-        if(!panorama_direction_user_selected) {
-            direction_select.val('shortest');
-        }
-        $('#panorama-direction-control').show();
-    } else {
-        panorama_direction_user_selected = false;
-        direction_select.val('shortest');
-        $('#panorama-direction-control').hide();
-    }
+    var direction = $('#PAN_DIRECTION').val() || 'shortest';
+    var full_rotation = direction === 'full_left_to_right'
+        || direction === 'full_right_to_left';
+    $('#panorama-direction-control').show();
 
     var summary;
-    var full_rotation = !horizontal_movement && direction_select.val() !== 'shortest';
     if(full_rotation) {
-        summary = direction_select.val() === 'right_to_left'
+        summary = direction === 'full_right_to_left'
             ? 'The view will make a full turn from right to left.'
             : 'The view will make a full turn from left to right.';
+        if(horizontal_movement) {
+            summary += ' It will continue to the ending area.';
+        }
         if(panorama_end_selection['y'] > panorama_start_selection['y']) {
             summary += ' It will also move from top to bottom.';
         } else if(panorama_end_selection['y'] < panorama_start_selection['y']) {
@@ -467,16 +432,16 @@ function updatePanoramaPanControls() {
         && panorama_start_selection['y'] === panorama_end_selection['y']
     ) {
         summary = 'The starting and ending areas match, so the view will not move.';
-    } else if(horizontal_pan) {
-        summary = $('#PAN_DIRECTION').val() === 'right_to_left'
-            ? 'The view will move from right to left.'
-            : 'The view will move from left to right.';
+    } else if(horizontal_movement && direction === 'right_to_left') {
+        summary = 'The view will move from right to left.';
+    } else if(horizontal_movement && direction === 'left_to_right') {
+        summary = 'The view will move from left to right.';
+    } else if(horizontal_movement) {
+        summary = 'The view will follow the shortest route across the panorama.';
     } else if(panorama_end_selection['y'] > panorama_start_selection['y']) {
         summary = 'The view will move from top to bottom.';
     } else if(panorama_end_selection['y'] < panorama_start_selection['y']) {
         summary = 'The view will move from bottom to top.';
-    } else {
-        summary = 'The view will follow the shortest path across the panorama.';
     }
     $('#panorama-pan-summary').text(summary).show();
 }
@@ -523,6 +488,18 @@ function maximumAspectScale(units, maximum_height) {
     ));
 }
 
+function resizePanoramaSelectionAroundCenter(selection, new_width, new_height) {
+    var center_x = selection['x'] + selection['width'] / 2;
+    var center_y = selection['y'] + selection['height'] / 2;
+
+    return {
+        'x' : wrapPixel(evenPixel(center_x - new_width / 2)),
+        'y' : evenPixel(clamp(center_y - new_height / 2, 0, panorama_data['height'] - new_height)),
+        'width' : new_width,
+        'height' : new_height,
+    };
+}
+
 function applyAspectRatioPreset() {
     var units = selectedAspectUnits();
     if(!units) {
@@ -533,15 +510,31 @@ function applyAspectRatioPreset() {
     var scale = maximumAspectScale(units, panorama_data['height']);
     var new_width = units['width'] * scale;
     var new_height = units['height'] * scale;
-    var center_x = panorama_selection['x'] + panorama_selection['width'] / 2;
-    var center_y = panorama_selection['y'] + panorama_selection['height'] / 2;
+    saveActivePanoramaSelection();
 
-    panorama_selection = {
-        'x' : wrapPixel(evenPixel(center_x - new_width / 2)),
-        'y' : evenPixel(clamp(center_y - new_height / 2, 0, panorama_data['height'] - new_height)),
-        'width' : new_width,
-        'height' : new_height,
-    };
+    if(panoramaPanMode() === 'linear') {
+        // A ratio is shared by both endpoints. Resize each around its own
+        // center so changing the ratio does not create unintended movement.
+        panorama_start_selection = resizePanoramaSelectionAroundCenter(
+            panorama_start_selection,
+            new_width,
+            new_height
+        );
+        panorama_end_selection = resizePanoramaSelectionAroundCenter(
+            panorama_end_selection,
+            new_width,
+            new_height
+        );
+        panorama_selection = copyPanoramaSelection(
+            panorama_edit_frame === 'end' ? panorama_end_selection : panorama_start_selection
+        );
+    } else {
+        panorama_selection = resizePanoramaSelectionAroundCenter(
+            panorama_selection,
+            new_width,
+            new_height
+        );
+    }
     drawPanoramaEditor();
 }
 
@@ -949,7 +942,6 @@ function resetPanoramaSelection() {
     };
     panorama_start_selection = copyPanoramaSelection(panorama_selection);
     panorama_end_selection = copyPanoramaSelection(panorama_selection);
-    panorama_direction_user_selected = false;
 
     if(selectedAspectUnits()) {
         applyAspectRatioPreset();
@@ -1242,11 +1234,13 @@ $( document ).ready(function() {
                     </div>
                 </div>
                 <div id="panorama-direction-control" class="tw:form-control tw:col-span-2 md:tw:col-span-3" style="display: none;">
-                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span id="panorama-direction-label" class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal direction</span></label>
+                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal route</span></label>
                     <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option id="panorama-direction-auto" value="shortest" hidden>Automatic</option>
-                        <option id="panorama-direction-left-to-right" value="left_to_right">Left to right</option>
-                        <option id="panorama-direction-right-to-left" value="right_to_left">Right to left</option>
+                        <option value="shortest">Shortest route</option>
+                        <option value="left_to_right">Left to right</option>
+                        <option value="right_to_left">Right to left</option>
+                        <option value="full_left_to_right">Full turn left to right</option>
+                        <option value="full_right_to_left">Full turn right to left</option>
                     </select>
                 </div>
                 <div id="panorama-pan-summary" class="tw:col-span-2 md:tw:col-span-2 tw:text-xs tw:text-base-content/60" style="display: none;"></div>
@@ -1445,7 +1439,6 @@ $('#panorama-pan-end').on('click', function() {
 });
 
 $('#PAN_DIRECTION').on('change', function() {
-    panorama_direction_user_selected = true;
     updatePanoramaPanControls();
     drawPanoramaOutputPreview();
 });

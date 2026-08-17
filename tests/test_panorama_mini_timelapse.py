@@ -146,8 +146,8 @@ def test_linear_pan_wraps_right_to_left():
 @pytest.mark.parametrize(
     'direction,delta_x',
     (
-        ('left_to_right', '+4096'),
-        ('right_to_left', '-4096'),
+        ('full_left_to_right', '+4096'),
+        ('full_right_to_left', '-4096'),
     ),
 )
 def test_linear_pan_can_make_full_turn_to_same_crop(direction, delta_x):
@@ -164,6 +164,45 @@ def test_linear_pan_can_make_full_turn_to_same_crop(direction, delta_x):
         '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
         '[pano_strip]crop=w=1000:h=600:'
         r'x=trunc(mod((200{0:s}*n/10)+4096\,4096)/2)*2:'
+        'y=trunc((100+0*n/10)/2)*2'
+    ).format(delta_x)
+
+    assert filter_graph == expected_filter
+
+
+@pytest.mark.parametrize('direction', ('left_to_right', 'right_to_left'))
+def test_directed_pan_to_same_crop_does_not_make_full_turn(direction):
+    assert buildPanoramaPanFilter(
+        4096, 1024,
+        200, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction=direction,
+    ) == 'crop=w=1000:h=600:x=200:y=100'
+
+
+@pytest.mark.parametrize(
+    'direction,delta_x',
+    (
+        ('full_left_to_right', '+4792'),
+        ('full_right_to_left', '-7496'),
+    ),
+)
+def test_full_turn_continues_to_different_ending_crop(direction, delta_x):
+    filter_graph = buildPanoramaPanFilter(
+        4096, 1024,
+        3600, 100,
+        200, 100,
+        1000, 600,
+        11,
+        direction=direction,
+    )
+    expected_filter = (
+        'split=2[pano_0][pano_1];'
+        '[pano_0][pano_1]hstack=inputs=2[pano_strip];'
+        '[pano_strip]crop=w=1000:h=600:'
+        r'x=trunc(mod((3600{0:s}*n/10)+4096\,4096)/2)*2:'
         'y=trunc((100+0*n/10)/2)*2'
     ).format(delta_x)
 
@@ -324,14 +363,14 @@ def test_panorama_route_validation_normalizes_linear_pan():
             'PAN_MODE'     : 'linear',
             'END_CROP_X'   : '200',
             'END_CROP_Y'   : '300',
-            'PAN_DIRECTION': 'left_to_right',
+            'PAN_DIRECTION': 'full_left_to_right',
         },
     )
 
     assert selection['pan_mode'] == 'linear'
     assert selection['end_crop_x'] == 200
     assert selection['end_crop_y'] == 300
-    assert selection['pan_direction'] == 'left_to_right'
+    assert selection['pan_direction'] == 'full_left_to_right'
 
 
 @pytest.mark.parametrize(
@@ -440,7 +479,7 @@ def test_ffmpeg_filter_graph_makes_full_turn_to_same_crop():
         2, 0,
         4, 2,
         5,
-        direction='left_to_right',
+        direction='full_left_to_right',
     )
     expected = numpy.stack([
         cropPanoramaArray(source_frame, crop_x, 0, 4, 2)

@@ -20,7 +20,13 @@ PANORAMA_ASPECT_RATIOS = {
 }
 
 PANORAMA_PAN_MODES = ('static', 'linear')
-PANORAMA_PAN_DIRECTIONS = ('shortest', 'left_to_right', 'right_to_left')
+PANORAMA_PAN_DIRECTIONS = (
+    'shortest',
+    'left_to_right',
+    'right_to_left',
+    'full_left_to_right',
+    'full_right_to_left',
+)
 
 
 def panoramaSourceCircleClipped(
@@ -179,12 +185,12 @@ def buildPanoramaPanFilter(
     direct_delta_x = end_x - start_x
     if direction == 'left_to_right':
         delta_x = direct_delta_x % source_width
-        if not delta_x:
-            delta_x = source_width
     elif direction == 'right_to_left':
         delta_x = -((-direct_delta_x) % source_width)
-        if not delta_x:
-            delta_x = -source_width
+    elif direction == 'full_left_to_right':
+        delta_x = (direct_delta_x % source_width) + source_width
+    elif direction == 'full_right_to_left':
+        delta_x = -(((-direct_delta_x) % source_width) + source_width)
     else:
         delta_x = direct_delta_x
         if delta_x > source_width / 2:
