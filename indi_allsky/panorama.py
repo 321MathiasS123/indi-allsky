@@ -1,3 +1,6 @@
+import math
+from pathlib import Path
+
 import numpy
 
 
@@ -131,6 +134,23 @@ def buildPanoramaCropFilter(
     )
 
 
+def _panoramaPanDeltaX(source_width, start_x, end_x, direction):
+    direct_delta_x = end_x - start_x
+    if direction == 'shortest':
+        if direct_delta_x > source_width / 2:
+            return direct_delta_x - source_width
+        if direct_delta_x < -(source_width / 2):
+            return direct_delta_x + source_width
+        return direct_delta_x
+    if 'left_to_right' in direction:
+        return (direct_delta_x % source_width) + (
+            source_width if direction.startswith('full_') else 0
+        )
+    return -((-direct_delta_x) % source_width) - (
+        source_width if direction.startswith('full_') else 0
+    )
+
+
 def buildPanoramaPanFilter(
     source_width,
     source_height,
@@ -142,6 +162,7 @@ def buildPanoramaPanFilter(
     crop_height,
     frame_count,
     direction='shortest',
+    command_file=None,
 ):
     """Build a fixed-size linear crop across a horizontally wrapping panorama."""
     source_width, source_height, start_x, start_y, end_x, end_y = map(
@@ -172,21 +193,7 @@ def buildPanoramaPanFilter(
     if direction not in PANORAMA_PAN_DIRECTIONS:
         raise ValueError('Unsupported panorama pan direction')
 
-    direct_delta_x = end_x - start_x
-    if direction == 'shortest':
-        delta_x = direct_delta_x
-        if delta_x > source_width / 2:
-            delta_x -= source_width
-        elif delta_x < -(source_width / 2):
-            delta_x += source_width
-    elif 'left_to_right' in direction:
-        delta_x = direct_delta_x % source_width
-        if direction.startswith('full_'):
-            delta_x += source_width
-    else:
-        delta_x = -((-direct_delta_x) % source_width)
-        if direction.startswith('full_'):
-            delta_x -= source_width
+    delta_x = _panoramaPanDeltaX(source_width, start_x, end_x, direction)
 
     if not delta_x and start_y == end_y:
         return buildPanoramaCropFilter(
@@ -224,6 +231,21 @@ def buildPanoramaPanFilter(
             source_width,
         )
 
+    if command_file:
+        command_path = str(Path(command_file)).replace('\\', '/')
+        command_path = command_path.replace(':', '\\:').replace("'", "\\'")
+        return (
+            "sendcmd=f='{command_file:s}',{prefix}"
+            'crop@panorama_pan=w={width:d}:h={height:d}:x={start_x:d}:y={start_y:d}'
+        ).format(
+            command_file=command_path,
+            prefix=filter_prefix,
+            width=crop_width,
+            height=crop_height,
+            start_x=start_x,
+            start_y=start_y,
+        )
+
     return (
         '{prefix}crop=w={width:d}:h={height:d}:'
         'x=trunc({x}/2)*2:y=trunc(({start_y:d}{delta_y:+d}*n/{divisor:d})/2)*2'
@@ -236,6 +258,80 @@ def buildPanoramaPanFilter(
         delta_y=end_y - start_y,
         divisor=frame_divisor,
     )
+
+
+def buildPanoramaTimedPanFilter(
+    source_width,
+    source_height,
+    start_x,
+    start_y,
+    end_x,
+    end_y,
+    crop_width,
+    crop_height,
+    frame_timestamps,
+    framerate,
+    command_file,
+    direction='shortest',
+):
+    """Build a pan whose surviving frames retain their capture-time positions."""
+    frame_count = len(frame_timestamps)
+    filter_graph = buildPanoramaPanFilter(
+        source_width,
+        source_height,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        crop_width,
+        crop_height,
+        frame_count,
+        direction=direction,
+        command_file=command_file,
+    )
+
+    source_width = int(source_width)
+    start_x, start_y, end_x, end_y = map(int, (start_x, start_y, end_x, end_y))
+    framerate = float(framerate)
+    if not math.isfinite(framerate) or framerate <= 0:
+        raise ValueError('Panorama pan framerate must be positive')
+
+    first_timestamp = float(frame_timestamps[0])
+    last_timestamp = float(frame_timestamps[-1])
+    if not math.isfinite(first_timestamp) or not math.isfinite(last_timestamp):
+        raise ValueError('Panorama pan timestamps must be finite')
+    timestamp_range = last_timestamp - first_timestamp
+    if timestamp_range <= 0:
+        raise ValueError('Panorama pan frames must have increasing timestamps')
+
+    delta_x = _panoramaPanDeltaX(source_width, start_x, end_x, direction)
+
+    if not delta_x and start_y == end_y:
+        return filter_graph
+
+    previous_timestamp = first_timestamp
+    with Path(command_file).open('w', encoding='ascii') as command_f:
+        for index, frame_timestamp in enumerate(frame_timestamps):
+            timestamp = float(frame_timestamp)
+            if not math.isfinite(timestamp):
+                raise ValueError('Panorama pan timestamps must be finite')
+            if timestamp < previous_timestamp:
+                raise ValueError('Panorama pan timestamps must be ordered')
+            previous_timestamp = timestamp
+
+            progress = (timestamp - first_timestamp) / timestamp_range
+            crop_x = int(((start_x + (delta_x * progress)) % source_width) / 2) * 2
+            crop_y = int((start_y + ((end_y - start_y) * progress)) / 2) * 2
+            command_time = 0 if not index else (index - 0.5) / framerate
+            command_f.write(
+                '{0:.9f} crop@panorama_pan x {1:d}, crop@panorama_pan y {2:d};\n'.format(
+                    command_time,
+                    crop_x,
+                    crop_y,
+                )
+            )
+
+    return filter_graph
 
 
 def validatePanoramaMiniTimelapseRequest(source_width, source_height, request_data):

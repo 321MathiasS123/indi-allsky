@@ -96,14 +96,17 @@ class TimelapseGenerator(object):
         return self._pre_processor
 
 
-    def generate(self, video_file, file_list):
+    def generate(self, video_file, file_list, preserve_order=False):
         video_file_p = Path(video_file)
 
-        # Exclude empty files
-        file_list_nonzero = filter(lambda p: p.stat().st_size != 0, file_list)
+        if preserve_order:
+            file_list_ordered = list(file_list)
+        else:
+            # Exclude empty files
+            file_list_nonzero = filter(lambda p: p.stat().st_size != 0, file_list)
 
-        # Sort by timestamp
-        file_list_ordered = sorted(file_list_nonzero, key=lambda p: p.stat().st_mtime)
+            # Sort by timestamp
+            file_list_ordered = sorted(file_list_nonzero, key=lambda p: p.stat().st_mtime)
 
 
         if self.skip_frames:

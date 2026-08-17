@@ -1175,6 +1175,7 @@ class ImageLoopCanvasView(TemplateView):
 
 class JsonImageLoopView(JsonView):
     model = IndiAllSkyDbImageTable
+    include_id = False
 
     def __init__(self, **kwargs):
         super(JsonImageLoopView, self).__init__(**kwargs)
@@ -1274,6 +1275,8 @@ class JsonImageLoopView(JsonView):
                 'height'    : i.height,
                 'timestamp' : int(i.createDate.timestamp()),
             }
+            if self.include_id:
+                data['id'] = i.id
 
 
             try:
@@ -1459,6 +1462,7 @@ class PanoramaLoopImgView(ImageLoopImgView):
 
 class JsonPanoramaLoopView(JsonImageLoopView):
     model = IndiAllSkyDbPanoramaImageTable
+    include_id = True
 
 
     def get_objects(self):
@@ -1491,8 +1495,8 @@ class JsonPanoramaLoopView(JsonImageLoopView):
                     self.model.createDate <= loop_dt,
                 )
             )\
-            .order_by(self.model.createDate.asc())\
-            .all()
+            .order_by(self.model.createDate.asc(), self.model.id.asc())\
+            .yield_per(100)
 
         local = not self.web_nonlocal_images or (
             self.web_local_images_admin and self.verify_admin_network()
@@ -1500,7 +1504,10 @@ class JsonPanoramaLoopView(JsonImageLoopView):
 
         local_frame_count = 0
         dimensions_match = True
-        reference_entries = []
+        start_reference_entry = None
+        end_reference_entry = None
+        preview_entry_ids = {entry['id'] for entry in data['image_list']}
+        available_preview_entry_ids = set()
         for panorama_entry in panorama_entries:
 
             dimension_mismatch = (
@@ -1510,7 +1517,7 @@ class JsonPanoramaLoopView(JsonImageLoopView):
 
             try:
                 panorama_path = Path(panorama_entry.getFilesystemPath())
-                if not panorama_path.exists() or not panorama_path.stat().st_size:
+                if not panorama_path.stat().st_size:
                     continue
 
                 local_frame_count += 1
@@ -1520,30 +1527,40 @@ class JsonPanoramaLoopView(JsonImageLoopView):
             except (OSError, ValueError):
                 continue
 
-            reference_entries.append(panorama_entry)
+            if panorama_entry.id in preview_entry_ids:
+                available_preview_entry_ids.add(panorama_entry.id)
+            if start_reference_entry is None:
+                start_reference_entry = panorama_entry
+            end_reference_entry = panorama_entry
 
-        def get_reference(entries):
-            for panorama_entry in entries:
-                try:
-                    panorama_url = panorama_entry.getUrl(
-                        s3_prefix=self.s3_prefix,
-                        local=local,
-                    )
-                except (OSError, ValueError):
-                    continue
+        data['image_list'] = [
+            entry for entry in data['image_list']
+            if entry['id'] in available_preview_entry_ids
+        ]
 
-                return {
-                    'id'        : panorama_entry.id,
-                    'url'       : str(panorama_url),
-                    'timestamp' : int(panorama_entry.createDate.timestamp()),
-                }
+        def get_reference(panorama_entry):
+            if panorama_entry is None:
+                return None
+            try:
+                panorama_url = panorama_entry.getUrl(
+                    s3_prefix=self.s3_prefix,
+                    local=local,
+                )
+            except (OSError, ValueError):
+                return None
+
+            return {
+                'id'        : panorama_entry.id,
+                'url'       : str(panorama_url),
+                'timestamp' : int(panorama_entry.createDate.timestamp()),
+            }
 
         data['panorama_preflight'] = {
-            'frame_count'             : len(panorama_entries),
+            'frame_count'             : local_frame_count,
             'has_enough_local_frames' : local_frame_count >= 2,
             'dimensions_match'        : dimensions_match,
-            'start_reference'         : get_reference(reference_entries),
-            'end_reference'           : get_reference(reversed(reference_entries)),
+            'start_reference'         : get_reference(start_reference_entry),
+            'end_reference'           : get_reference(end_reference_entry),
         }
 
         return data
@@ -5518,6 +5535,38 @@ class AjaxMiniVideoDeleteView(BaseView):
                 json_data = {
                     'failure-message' : (
                         'This mini timelapse is still being created. '
+                        'Try again when it is finished.'
+                    ),
+                }
+                return jsonify(json_data), 409
+
+        related_assets = {(mini_video_entry.__class__.__name__, mini_video_entry.id)}
+        if mini_video_entry.thumbnail_uuid:
+            thumbnail_id = db.session.query(IndiAllSkyDbThumbnailTable.id)\
+                .filter(IndiAllSkyDbThumbnailTable.uuid == mini_video_entry.thumbnail_uuid)\
+                .scalar()
+            if thumbnail_id:
+                related_assets.add((IndiAllSkyDbThumbnailTable.__name__, thumbnail_id))
+
+        active_upload_tasks = IndiAllSkyDbTaskQueueTable.query\
+            .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.UPLOAD)\
+            .filter(
+                IndiAllSkyDbTaskQueueTable.state.in_((
+                    TaskQueueState.MANUAL,
+                    TaskQueueState.QUEUED,
+                    TaskQueueState.RUNNING,
+                ))
+            )
+        for upload_task in active_upload_tasks:
+            upload_data = upload_task.data if isinstance(upload_task.data, dict) else {}
+            try:
+                upload_asset = (str(upload_data.get('model')), int(upload_data.get('id')))
+            except (TypeError, ValueError):
+                continue
+            if upload_asset in related_assets:
+                json_data = {
+                    'failure-message' : (
+                        'This mini timelapse is still being uploaded. '
                         'Try again when it is finished.'
                     ),
                 }
@@ -11308,11 +11357,14 @@ class MiniTimelapseGeneratorView(TemplateView):
 
         if panorama_image_entry:
             try:
-                panorama_url = panorama_image_entry.getUrl(
-                    s3_prefix=self.s3_prefix,
-                    local=local,
-                )
-            except ValueError:
+                panorama_path = Path(panorama_image_entry.getFilesystemPath())
+                panorama_url = ''
+                if panorama_path.stat().st_size:
+                    panorama_url = panorama_image_entry.getUrl(
+                        s3_prefix=self.s3_prefix,
+                        local=local,
+                    )
+            except (OSError, ValueError):
                 panorama_url = ''
 
             if panorama_url:

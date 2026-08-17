@@ -25,6 +25,7 @@ from . import asi676mc_calibration
 from .timelapse import TimelapseGenerator
 from .panorama import buildPanoramaCropFilter
 from .panorama import buildPanoramaPanFilter
+from .panorama import buildPanoramaTimedPanFilter
 from .panorama import cropPanoramaArray
 from .panorama import validatePanoramaAspectRatio
 from .keogram import KeogramGenerator
@@ -943,7 +944,11 @@ class VideoWorker(Process):
             .filter(mini_timelapse_model.createDate >= startDate)\
             .filter(mini_timelapse_model.createDate <= endDate)\
             .filter(mini_timelapse_model.exclude == sa_false())\
-            .order_by(mini_timelapse_model.createDate.asc())
+            .order_by(
+                mini_timelapse_model.createDate.asc(),
+                mini_timelapse_model.id.asc(),
+            )\
+            .yield_per(100)
 
 
         mini_timelapse_files_entries_count = mini_timelapse_files_entries.count()
@@ -997,14 +1002,14 @@ class VideoWorker(Process):
 
 
         timelapse_files = list()
+        panorama_frame_timestamps = list()
         for entry in mini_timelapse_files_entries:
-            p_entry = Path(entry.getFilesystemPath())
-
-            if not p_entry.exists():
-                logger.error('File not found: %s', p_entry)
-                continue
-
-            if p_entry.stat().st_size == 0:
+            try:
+                p_entry = Path(entry.getFilesystemPath())
+                if not p_entry.stat().st_size:
+                    continue
+            except (OSError, ValueError):
+                logger.error('File not found: %s', entry.filename)
                 continue
 
             if panorama and (entry.width != source_width or entry.height != source_height):
@@ -1021,6 +1026,8 @@ class VideoWorker(Process):
                 return
 
             timelapse_files.append(p_entry)
+            if panorama:
+                panorama_frame_timestamps.append(entry.createDate.timestamp())
 
 
         if panorama and len(timelapse_files) < 2:
@@ -1172,6 +1179,38 @@ class VideoWorker(Process):
                 ffmpeg_extra_options = self.config.get('FFMPEG_EXTRA_OPTIONS_DAY', '')
 
 
+        pan_command_file = None
+        if panorama and pan_mode == 'linear':
+            try:
+                with tempfile.NamedTemporaryFile(
+                    suffix='_panorama_pan.txt',
+                    delete=False,
+                ) as pan_command_f:
+                    pan_command_file = Path(pan_command_f.name)
+                video_filter = buildPanoramaTimedPanFilter(
+                    source_width,
+                    source_height,
+                    crop_x,
+                    crop_y,
+                    end_crop_x,
+                    end_crop_y,
+                    crop_width,
+                    crop_height,
+                    panorama_frame_timestamps,
+                    framerate,
+                    pan_command_file,
+                    direction=pan_direction,
+                )
+            except (OSError, ValueError) as e:
+                if pan_command_file:
+                    try:
+                        pan_command_file.unlink()
+                    except FileNotFoundError:
+                        pass
+                logger.error('Invalid panorama pan: %s', str(e))
+                task.setFailed('Invalid panorama pan: {0:s}'.format(str(e)))
+                return
+
         try:
             mini_tg = TimelapseGenerator(
                 self.config,
@@ -1187,7 +1226,7 @@ class VideoWorker(Process):
                 mini_tg.vf_scale = vf_scale
             mini_tg.ffmpeg_extra_options = ffmpeg_extra_options
 
-            mini_tg.generate(video_file, timelapse_files)
+            mini_tg.generate(video_file, timelapse_files, preserve_order=panorama)
 
 
             try:
@@ -1212,9 +1251,13 @@ class VideoWorker(Process):
 
             task.setFailed('Failed to generate mini timelapse: {0:s}'.format(str(video_file)))
             return
+        finally:
+            if pan_command_file:
+                try:
+                    pan_command_file.unlink()
+                except FileNotFoundError:
+                    pass
 
-
-        task.setSuccess('Generated timelapse: {0:s}'.format(str(video_file)))
 
         ### Upload ###
 
@@ -1228,6 +1271,9 @@ class VideoWorker(Process):
         self._miscUpload.s3_upload_mini_video(mini_video_entry, mini_video_metadata)
         self._miscUpload.upload_mini_video(mini_video_entry)
         self._miscUpload.youtube_upload_mini_video(mini_video_entry, mini_video_metadata)
+
+
+        task.setSuccess('Generated timelapse: {0:s}'.format(str(video_file)))
 
 
     def generatePanoramaMiniVideo(self, task, **kwargs):

@@ -6,6 +6,7 @@ import pytest
 
 from indi_allsky.panorama import buildPanoramaCropFilter
 from indi_allsky.panorama import buildPanoramaPanFilter
+from indi_allsky.panorama import buildPanoramaTimedPanFilter
 from indi_allsky.panorama import cropPanoramaArray
 from indi_allsky.panorama import panoramaSourceCircleClipped
 from indi_allsky.panorama import validatePanoramaAspectRatio
@@ -15,12 +16,13 @@ from indi_allsky.panorama import validatePanoramaMiniTimelapseRequest
 FFMPEG_PATH = shutil.which('ffmpeg')
 
 
-def _run_ffmpeg_filter(source, filter_graph, output_shape):
+def _run_ffmpeg_filter(source, filter_graph, output_shape, framerate=25):
     source_height, source_width = source.shape[-2:]
     frame_count = source.shape[0] if source.ndim == 3 else 1
     command = (
         FFMPEG_PATH,
         '-v', 'error',
+        '-r', str(framerate),
         '-f', 'rawvideo',
         '-pixel_format', 'gray',
         '-video_size', '{0:d}x{1:d}'.format(source_width, source_height),
@@ -400,5 +402,51 @@ def test_ffmpeg_filter_graph_makes_full_turn_to_same_crop():
         for crop_x in (2, 4, 6, 0, 2)
     ])
     actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
+
+    numpy.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
+def test_ffmpeg_filter_graph_honors_two_frame_endpoints():
+    source_frame = numpy.tile(numpy.arange(8, dtype=numpy.uint8), (4, 1))
+    source = numpy.repeat(source_frame[numpy.newaxis, :, :], 2, axis=0)
+    filter_graph = buildPanoramaPanFilter(
+        8, 4,
+        6, 0,
+        2, 2,
+        4, 2,
+        2,
+        direction='left_to_right',
+    )
+    expected = numpy.stack([
+        cropPanoramaArray(source_frame, 6, 0, 4, 2),
+        cropPanoramaArray(source_frame, 2, 2, 4, 2),
+    ])
+    actual = _run_ffmpeg_filter(source, filter_graph, expected.shape)
+
+    numpy.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(FFMPEG_PATH is None, reason='FFmpeg is not installed')
+@pytest.mark.parametrize('framerate', (0.25, 0.5, 0.75, 1, 2, 5, 10, 25))
+def test_timed_pan_preserves_capture_progress_across_gap(tmp_path, framerate):
+    source_frame = numpy.tile(numpy.arange(8, dtype=numpy.uint8), (4, 1))
+    source = numpy.repeat(source_frame[numpy.newaxis, :, :], 4, axis=0)
+    command_file = tmp_path.joinpath('panorama_pan.txt')
+    filter_graph = buildPanoramaTimedPanFilter(
+        8, 4,
+        0, 0,
+        0, 2,
+        4, 2,
+        (0, 15, 45, 60),
+        framerate,
+        command_file,
+        direction='full_left_to_right',
+    )
+    expected = numpy.stack([
+        cropPanoramaArray(source_frame, crop_x, crop_y, 4, 2)
+        for crop_x, crop_y in ((0, 0), (2, 0), (6, 0), (0, 2))
+    ])
+    actual = _run_ffmpeg_filter(source, filter_graph, expected.shape, framerate=framerate)
 
     numpy.testing.assert_array_equal(actual, expected)
