@@ -228,18 +228,6 @@ function syncPanoramaSelectionSize() {
     ));
 }
 
-function editorPanoramaImage() {
-    if(panoramaPanMode() === 'linear') {
-        if(panorama_edit_frame === 'end') {
-            return panorama_end_image || panorama_image;
-        }
-
-        return panorama_start_image || panorama_image;
-    }
-
-    return panorama_image;
-}
-
 function panoramaHorizontalDelta(start_x, end_x, direction) {
     var source_width = panorama_data['width'];
     var direct_delta = end_x - start_x;
@@ -390,13 +378,15 @@ function updatePanoramaPanMode() {
 
 function updatePanoramaPanControls() {
     var linear_pan = panoramaPanMode() === 'linear';
-    $('#panorama-pan-controls').toggle(linear_pan);
-    $('#panorama-pan-start')
-        .toggleClass('tw:btn-neutral', linear_pan && panorama_edit_frame === 'start')
-        .toggleClass('tw:btn-outline', !linear_pan || panorama_edit_frame !== 'start');
-    $('#panorama-pan-end')
-        .toggleClass('tw:btn-neutral', linear_pan && panorama_edit_frame === 'end')
-        .toggleClass('tw:btn-outline', !linear_pan || panorama_edit_frame !== 'end');
+    $('#panorama-pan-editors').css('display', linear_pan ? 'grid' : 'none');
+    $('#panorama-manual-target').toggle(linear_pan);
+    $('#panorama-static-editor').toggle(!linear_pan);
+    $('#panorama-start-editor-panel')
+        .toggleClass('tw:ring-2 tw:ring-primary', linear_pan && panorama_edit_frame === 'start');
+    $('#panorama-end-editor-panel')
+        .toggleClass('tw:ring-2 tw:ring-primary', linear_pan && panorama_edit_frame === 'end');
+    $('#panorama-start-active').toggle(linear_pan && panorama_edit_frame === 'start');
+    $('#panorama-end-active').toggle(linear_pan && panorama_edit_frame === 'end');
 
     if(!linear_pan) {
         $('#panorama-direction-control, #panorama-pan-summary').hide();
@@ -404,8 +394,8 @@ function updatePanoramaPanControls() {
         return;
     }
 
-    $('#panorama-editor-title').text(
-        panorama_edit_frame === 'end' ? 'Choose the ending area' : 'Choose the starting area'
+    $('#panorama-manual-target-name').text(
+        panorama_edit_frame === 'end' ? 'last frame' : 'first frame'
     );
 
     var horizontal_movement = panorama_start_selection['x'] !== panorama_end_selection['x'];
@@ -561,10 +551,12 @@ function panoramaSegments(selection) {
 }
 
 function configurePanoramaEditor() {
-    var canvas = document.getElementById('panorama-editor');
     var maximum_width = 1600;
-    canvas.width = Math.min(panorama_data['width'], maximum_width);
-    canvas.height = Math.round(canvas.width * panorama_data['height'] / panorama_data['width']);
+    ['panorama-editor', 'panorama-start-editor', 'panorama-end-editor'].forEach(function(canvas_id) {
+        var canvas = document.getElementById(canvas_id);
+        canvas.width = Math.min(panorama_data['width'], maximum_width);
+        canvas.height = Math.round(canvas.width * panorama_data['height'] / panorama_data['width']);
+    });
 
     $('#CROP_X').attr('max', panorama_data['width'] - 2);
     $('#CROP_Y').attr('max', panorama_data['height'] - 2);
@@ -572,15 +564,12 @@ function configurePanoramaEditor() {
     $('#CROP_HEIGHT').attr('max', panorama_data['height']);
 }
 
-function drawPanoramaEditor() {
-    saveActivePanoramaSelection();
-    syncPanoramaSelectionSize();
-    var editor_image = editorPanoramaImage();
+function drawPanoramaSelectionEditor(canvas_id, selection, editor_image) {
     if(!editor_image.complete || !editor_image.naturalWidth) {
         return;
     }
 
-    var canvas = document.getElementById('panorama-editor');
+    var canvas = document.getElementById(canvas_id);
     var context = canvas.getContext('2d');
     var scale_x = canvas.width / panorama_data['width'];
     var scale_y = canvas.height / panorama_data['height'];
@@ -590,47 +579,47 @@ function drawPanoramaEditor() {
     context.fillStyle = 'rgba(0, 0, 0, 0.58)';
     context.fillRect(0, 0, canvas.width, canvas.height);
 
-    var segments = panoramaSegments();
+    var segments = panoramaSegments(selection);
     segments.forEach(function(segment) {
         context.drawImage(
             editor_image,
             segment['x'],
-            panorama_selection['y'],
+            selection['y'],
             segment['width'],
-            panorama_selection['height'],
+            selection['height'],
             segment['x'] * scale_x,
-            panorama_selection['y'] * scale_y,
+            selection['y'] * scale_y,
             segment['width'] * scale_x,
-            panorama_selection['height'] * scale_y
+            selection['height'] * scale_y
         );
 
         context.strokeStyle = '#111827';
         context.lineWidth = 7;
         context.strokeRect(
             segment['x'] * scale_x,
-            panorama_selection['y'] * scale_y,
+            selection['y'] * scale_y,
             segment['width'] * scale_x,
-            panorama_selection['height'] * scale_y
+            selection['height'] * scale_y
         );
         context.strokeStyle = '#ff4fd8';
         context.lineWidth = 3;
         context.strokeRect(
             segment['x'] * scale_x,
-            panorama_selection['y'] * scale_y,
+            selection['y'] * scale_y,
             segment['width'] * scale_x,
-            panorama_selection['height'] * scale_y
+            selection['height'] * scale_y
         );
     });
 
-    var right_x = panorama_selection['x'] + panorama_selection['width'];
+    var right_x = selection['x'] + selection['width'];
     if(right_x > panorama_data['width']) {
         right_x -= panorama_data['width'];
     }
     var handle_points = [
-        [panorama_selection['x'] * scale_x, panorama_selection['y'] * scale_y],
-        [right_x * scale_x, panorama_selection['y'] * scale_y],
-        [panorama_selection['x'] * scale_x, (panorama_selection['y'] + panorama_selection['height']) * scale_y],
-        [right_x * scale_x, (panorama_selection['y'] + panorama_selection['height']) * scale_y],
+        [selection['x'] * scale_x, selection['y'] * scale_y],
+        [right_x * scale_x, selection['y'] * scale_y],
+        [selection['x'] * scale_x, (selection['y'] + selection['height']) * scale_y],
+        [right_x * scale_x, (selection['y'] + selection['height']) * scale_y],
     ];
     handle_points.forEach(function(point) {
         context.fillStyle = '#111827';
@@ -638,6 +627,26 @@ function drawPanoramaEditor() {
         context.fillStyle = '#ff4fd8';
         context.fillRect(point[0] - 5, point[1] - 5, 10, 10);
     });
+}
+
+function drawPanoramaEditor() {
+    saveActivePanoramaSelection();
+    syncPanoramaSelectionSize();
+
+    if(panoramaPanMode() === 'linear') {
+        drawPanoramaSelectionEditor(
+            'panorama-start-editor',
+            panorama_start_selection,
+            panorama_start_image || panorama_image
+        );
+        drawPanoramaSelectionEditor(
+            'panorama-end-editor',
+            panorama_end_selection,
+            panorama_end_image || panorama_image
+        );
+    } else {
+        drawPanoramaSelectionEditor('panorama-editor', panorama_selection, panorama_image);
+    }
 
     drawPanoramaOutputPreview();
     updatePanoramaFields();
@@ -708,7 +717,7 @@ function updatePanoramaFields() {
 }
 
 function pointerToPanorama(event) {
-    var canvas = document.getElementById('panorama-editor');
+    var canvas = event.currentTarget;
     var bounds = canvas.getBoundingClientRect();
     return {
         'x' : (event.clientX - bounds.left) * panorama_data['width'] / bounds.width,
@@ -734,6 +743,11 @@ function pointInsideSelection(point) {
 function panoramaPointerDown(event) {
     if(source_type !== 'panorama') {
         return;
+    }
+
+    var frame_name = event.currentTarget.getAttribute('data-panorama-frame');
+    if(panoramaPanMode() === 'linear' && frame_name && frame_name !== panorama_edit_frame) {
+        selectPanoramaEditFrame(frame_name);
     }
 
     var point = pointerToPanorama(event);
@@ -1161,9 +1175,10 @@ $( document ).ready(function() {
         goFullscreen(this);
     });
 
-    $('#panorama-editor').on('pointerdown', panoramaPointerDown);
-    $('#panorama-editor').on('pointermove', panoramaPointerMove);
-    $('#panorama-editor').on('pointerup pointercancel', panoramaPointerUp);
+    $('#panorama-editor, #panorama-start-editor, #panorama-end-editor')
+        .on('pointerdown', panoramaPointerDown)
+        .on('pointermove', panoramaPointerMove)
+        .on('pointerup pointercancel', panoramaPointerUp);
 
     init();
 });
@@ -1226,24 +1241,6 @@ $( document ).ready(function() {
                         <option value="linear">Pan between two areas</option>
                     </select>
                 </div>
-                <div id="panorama-pan-controls" class="tw:form-control tw:col-span-2 md:tw:col-span-4" style="display: none;">
-                    <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Area to adjust</span></label>
-                    <div class="tw:join tw:w-full">
-                        <button id="panorama-pan-start" type="button" class="tw:btn tw:btn-neutral tw:btn-sm tw:h-9 tw:join-item tw:flex-1">First frame</button>
-                        <button id="panorama-pan-end" type="button" class="tw:btn tw:btn-outline tw:btn-sm tw:h-9 tw:join-item tw:flex-1">Last frame</button>
-                    </div>
-                </div>
-                <div id="panorama-direction-control" class="tw:form-control tw:col-span-2 md:tw:col-span-3" style="display: none;">
-                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal route</span></label>
-                    <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
-                        <option value="shortest">Shortest route</option>
-                        <option value="left_to_right">Left to right</option>
-                        <option value="right_to_left">Right to left</option>
-                        <option value="full_left_to_right">Full turn left to right</option>
-                        <option value="full_right_to_left">Full turn right to left</option>
-                    </select>
-                </div>
-                <div id="panorama-pan-summary" class="tw:col-span-2 md:tw:col-span-2 tw:text-xs tw:text-base-content/60" style="display: none;"></div>
                 <div class="tw:form-control md:tw:col-span-2">
                     <label for="ASPECT_RATIO" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Aspect ratio</span></label>
                     <select id="ASPECT_RATIO" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
@@ -1269,6 +1266,36 @@ $( document ).ready(function() {
                             <option value="3:4">3:4 — Portrait</option>
                         </optgroup>
                     </select>
+                </div>
+                <div id="panorama-direction-control" class="tw:form-control tw:col-span-2 md:tw:col-span-3" style="display: none;">
+                    <label for="PAN_DIRECTION" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal route</span></label>
+                    <select id="PAN_DIRECTION" class="tw:select tw:select-bordered tw:select-sm tw:h-9 tw:bg-base-100 tw:w-full tw:text-sm">
+                        <option value="shortest">Shortest route</option>
+                        <option value="left_to_right">Left to right</option>
+                        <option value="right_to_left">Right to left</option>
+                        <option value="full_left_to_right">Full turn left to right</option>
+                        <option value="full_right_to_left">Full turn right to left</option>
+                    </select>
+                </div>
+                <div id="panorama-pan-summary" class="tw:col-span-2 md:tw:col-span-4 tw:text-xs tw:text-base-content/60" style="display: none;"></div>
+                <div id="panorama-pan-editors" class="tw:col-span-2 md:tw:col-span-12 tw:grid tw:grid-cols-1 lg:tw:grid-cols-2 tw:gap-3 tw:items-start" style="display: none;">
+                    <div id="panorama-start-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
+                        <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
+                            <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">First frame</div>
+                            <span id="panorama-start-active" class="tw:badge tw:badge-primary tw:badge-sm">Editing</span>
+                        </div>
+                        <canvas id="panorama-start-editor" data-panorama-frame="start" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                    </div>
+                    <div id="panorama-end-editor-panel" class="tw:bg-base-200/50 tw:p-2 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
+                        <div class="tw:flex tw:items-center tw:justify-between tw:gap-2 tw:mb-2">
+                            <div class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider">Last frame</div>
+                            <span id="panorama-end-active" class="tw:badge tw:badge-primary tw:badge-sm" style="display: none;">Editing</span>
+                        </div>
+                        <canvas id="panorama-end-editor" data-panorama-frame="end" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
+                    </div>
+                </div>
+                <div id="panorama-manual-target" class="tw:col-span-2 md:tw:col-span-12 tw:text-xs tw:text-base-content/60" style="display: none;">
+                    The values below adjust the <span id="panorama-manual-target-name" class="tw:font-bold">first frame</span>. Click or drag either image to switch frames.
                 </div>
                 <div class="tw:form-control md:tw:col-span-2">
                     <label for="CROP_X" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-xs tw:font-bold tw:text-base-content/60">Horizontal position</span></label>
@@ -1375,7 +1402,7 @@ $( document ).ready(function() {
         </div>
 
         <div id="panorama-preview" class="tw:w-full tw:flex tw:flex-col tw:gap-4" style="display: none;">
-            <div>
+            <div id="panorama-static-editor">
                 <div id="panorama-editor-title" class="tw:text-xs tw:font-bold tw:text-base-content/60 tw:uppercase tw:tracking-wider tw:mb-2">Choose the area to show</div>
                 <canvas id="panorama-editor" class="tw:w-full tw:h-auto tw:block tw:rounded-[var(--radius-box)] tw:shadow-inner tw:cursor-move" style="touch-action: none;"></canvas>
             </div>
@@ -1428,14 +1455,6 @@ $('#ASPECT_RATIO').on('change', function() {
 
 $('#PAN_MODE').on('change', function() {
     updatePanoramaPanMode();
-});
-
-$('#panorama-pan-start').on('click', function() {
-    selectPanoramaEditFrame('start');
-});
-
-$('#panorama-pan-end').on('click', function() {
-    selectPanoramaEditFrame('end');
 });
 
 $('#PAN_DIRECTION').on('change', function() {
