@@ -1187,7 +1187,8 @@ class JsonImageLoopView(JsonView):
 
 
     def get_objects(self):
-        history_seconds = int(request.args.get('limit_s', self.history_seconds))
+        requested_history_seconds = int(request.args.get('limit_s', self.history_seconds))
+        history_seconds = requested_history_seconds
         self.limit = int(request.args.get('limit', self._limit))
         timestamp = int(request.args.get('timestamp', 0))
         camera_id = int(request.args['camera_id'])
@@ -1220,7 +1221,60 @@ class JsonImageLoopView(JsonView):
         if len(data['image_list']) == 0:
             data['message'] = 'No Timelapse Data'
 
+        if request.args.get('mini_preflight') == '1':
+            data['standard_preflight'] = self.getMiniTimelapsePreflight(
+                camera_id,
+                timestamp,
+                requested_history_seconds,
+            )
+
         return data
+
+
+    def getMiniTimelapsePreflight(self, camera_id, timestamp, history_seconds):
+        history_seconds = max(1, min(history_seconds, 86400))
+        end_dt = datetime.fromtimestamp(timestamp)
+        start_dt = end_dt - timedelta(seconds=history_seconds)
+
+        image_entries = self.model.query\
+            .join(self.model.camera)\
+            .filter(
+                and_(
+                    IndiAllSkyDbCameraTable.id == camera_id,
+                    self.model.exclude == sa_false(),
+                    self.model.createDate >= start_dt,
+                    self.model.createDate <= end_dt,
+                )
+            )\
+            .order_by(self.model.createDate.asc(), self.model.id.asc())\
+            .yield_per(100)
+
+        frame_count = 0
+        start_reference = None
+        end_reference = None
+        for image_entry in image_entries:
+            try:
+                image_path = Path(image_entry.getFilesystemPath())
+                if not image_path.stat().st_size:
+                    continue
+            except (OSError, ValueError):
+                continue
+
+            frame_count += 1
+            frame_reference = {
+                'timestamp' : int(image_entry.createDate.timestamp()),
+                'datetime'  : image_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            if start_reference is None:
+                start_reference = frame_reference
+            end_reference = frame_reference
+
+        return {
+            'frame_count'             : frame_count,
+            'has_enough_local_frames' : frame_count >= 2,
+            'start_reference'         : start_reference,
+            'end_reference'           : end_reference,
+        }
 
 
     def getLoopImages(self, camera_id, loop_dt, history_seconds):
@@ -1553,6 +1607,7 @@ class JsonPanoramaLoopView(JsonImageLoopView):
                 'id'        : panorama_entry.id,
                 'url'       : str(panorama_url),
                 'timestamp' : int(panorama_entry.createDate.timestamp()),
+                'datetime'  : panorama_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
             }
 
         data['panorama_preflight'] = {
@@ -11634,12 +11689,18 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             return jsonify(json_data), 400
 
 
-        image_id = int(request.json['IMAGE_ID'])
-        camera_id = int(request.json['CAMERA_ID'])
-        pre_seconds = int(request.json['PRE_SECONDS'])
-        post_seconds = int(request.json['POST_SECONDS'])
-        framerate = float(request.json['FRAMERATE'])
-        note = str(request.json['NOTE'])
+        try:
+            image_id = int(request_data['IMAGE_ID'])
+            camera_id = int(request_data['CAMERA_ID'])
+            pre_seconds = int(request_data['PRE_SECONDS'])
+            post_seconds = int(request_data['POST_SECONDS'])
+            framerate = float(request_data['FRAMERATE'])
+            note = str(request_data.get('NOTE') or '')
+        except (KeyError, TypeError, ValueError):
+            json_data = {
+                'failure-message' : 'Check the selected time range and speed, then try again.',
+            }
+            return jsonify(json_data), 400
 
         if not note.strip():
             json_data = {
@@ -11648,12 +11709,33 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             return jsonify(json_data), 400
 
 
+        if (
+            pre_seconds < 1
+            or pre_seconds > 43200
+            or post_seconds < 1
+            or post_seconds > 43200
+            or not math.isfinite(framerate)
+            or framerate <= 0
+            or framerate > 60
+        ):
+            json_data = {
+                'failure-message' : 'Check the selected time range and speed, then try again.',
+            }
+            return jsonify(json_data), 400
+
+
         # sanity check
-        IndiAllSkyDbImageTable.query\
-            .join(IndiAllSkyDbImageTable.camera)\
-            .filter(IndiAllSkyDbCameraTable.id == camera_id)\
-            .filter(IndiAllSkyDbImageTable.id == image_id)\
-            .one()
+        try:
+            IndiAllSkyDbImageTable.query\
+                .join(IndiAllSkyDbImageTable.camera)\
+                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+                .filter(IndiAllSkyDbImageTable.id == image_id)\
+                .one()
+        except NoResultFound:
+            json_data = {
+                'failure-message' : 'The selected image is no longer available. Choose another image.',
+            }
+            return jsonify(json_data), 400
 
 
         jobdata = {

@@ -38,8 +38,8 @@ var panorama_preview_progress = 0;
 var panorama_drag = null;
 var preview_revision = 0;  // invalidates old requests, delays, and image loads
 var preview_resize_observer = null;
-// The animation preview stays bounded, while panorama preflight checks the
-// complete generation period on the server.
+// The animation preview stays bounded, while preflight checks the complete
+// generation period on the server.
 var preview_history_limit_seconds = 14400;
 
 var framerate_delay_lut = {
@@ -202,6 +202,8 @@ function loadImages() {
         image_loop_url = "{{ url_for(panorama_image_loop_view) }}";
         request_data['source_width'] = panorama_data['width'];
         request_data['source_height'] = panorama_data['height'];
+    } else {
+        request_data['mini_preflight'] = 1;
     }
 
     loadJS(image_loop_url, request_data, preview_revision, function() {});
@@ -1072,45 +1074,49 @@ function updatePanoramaNotices() {
     var notice_list = $('#panorama-notices-list');
     notice_list.empty();
 
-    if(source_type !== 'panorama') {
-        notice_container.hide();
-        $('#create-video').prop('disabled', false);
-        return;
-    }
-
     var notices = [];
     var blocking_problem = false;
-    var preflight_pending = !json_data['panorama_preflight'];
+    var preflight_pending;
 
     if(history_seconds > preview_history_limit_seconds) {
         notices.push('The preview shows up to 4 hours. The finished video will still use the full selected period.');
     }
 
-    if(panorama_data['circle_clipped']) {
-        notices.push('Part of the round sky view falls outside the image. The horizon may look incomplete or distorted.');
-    }
+    if(source_type === 'panorama') {
+        preflight_pending = !json_data['panorama_preflight'];
 
-    var preflight = json_data['panorama_preflight'];
-    if(preflight) {
-        if(!preflight['dimensions_match']) {
+        if(panorama_data['circle_clipped']) {
+            notices.push('Part of the round sky view falls outside the image. The horizon may look incomplete or distorted.');
+        }
+
+        var panorama_preflight = json_data['panorama_preflight'];
+        if(panorama_preflight && !panorama_preflight['dimensions_match']) {
             notices.push('Some panorama images in this period have a different size. Choose another period before creating the video.');
             blocking_problem = true;
         }
 
-        if(!preflight['has_enough_local_frames']) {
+        if(panorama_preflight && !panorama_preflight['has_enough_local_frames']) {
             notices.push('At least two panorama images stored on this device are needed. Choose a longer period or another image.');
             blocking_problem = true;
         }
 
         if(
-            panoramaPanMode() === 'linear'
+            panorama_preflight
+            && panoramaPanMode() === 'linear'
             && (
-                !preflight['start_reference']
-                || !preflight['end_reference']
-                || preflight['start_reference']['id'] === preflight['end_reference']['id']
+                !panorama_preflight['start_reference']
+                || !panorama_preflight['end_reference']
+                || panorama_preflight['start_reference']['id'] === panorama_preflight['end_reference']['id']
             )
         ) {
             notices.push('The first and last panorama images are unavailable for setting the pan.');
+            blocking_problem = true;
+        }
+    } else {
+        var standard_preflight = json_data['standard_preflight'];
+        preflight_pending = !standard_preflight;
+        if(standard_preflight && !standard_preflight['has_enough_local_frames']) {
+            notices.push('At least two all-sky images stored on this device are needed. Choose a longer period or another image.');
             blocking_problem = true;
         }
     }
@@ -1132,18 +1138,50 @@ function updatePanoramaNotices() {
     $('#create-video').prop('disabled', blocking_problem || preflight_pending);
 }
 
+function generationPreflight() {
+    return source_type === 'panorama'
+        ? json_data['panorama_preflight']
+        : json_data['standard_preflight'];
+}
+
 function generationFrameCount() {
-    // The preview may be capped, so panorama duration uses the full-period
-    // database count returned by the preflight request.
-    if(
-        source_type === 'panorama'
-        && json_data['panorama_preflight']
-        && typeof json_data['panorama_preflight']['frame_count'] !== 'undefined'
-    ) {
-        return json_data['panorama_preflight']['frame_count'];
+    // The preview may be capped, so duration uses the full-period count.
+    var preflight = generationPreflight();
+    if(preflight && typeof preflight['frame_count'] !== 'undefined') {
+        return preflight['frame_count'];
     }
 
     return json_data['image_list'].length;
+}
+
+function generationFrameRange() {
+    var preflight = generationPreflight();
+    if(!preflight || !preflight['start_reference'] || !preflight['end_reference']) {
+        return '';
+    }
+
+    var start_datetime = preflight['start_reference']['datetime'];
+    var end_datetime = preflight['end_reference']['datetime'];
+    if(!start_datetime || !end_datetime) {
+        return '';
+    }
+
+    if(start_datetime.slice(0, 10) === end_datetime.slice(0, 10)) {
+        return start_datetime + '–' + end_datetime.slice(11);
+    }
+
+    return start_datetime + ' – ' + end_datetime;
+}
+
+function updateVideoLength() {
+    var image_count = generationFrameCount();
+    var duration_seconds = Math.round((image_count / parseFloat(framerate)) * 10) / 10;
+    var frame_range = generationFrameRange();
+    var length_text = image_count + ' frames';
+    if(frame_range) {
+        length_text += ' · ' + frame_range;
+    }
+    $('#video_length').text(length_text + ' · about ' + duration_seconds + ' seconds');
 }
 
 function loadJS(url, data, revision, onDone, onError) {
@@ -1169,12 +1207,12 @@ function loadJS(url, data, revision, onDone, onError) {
             }
             updatePanoramaPanReferences();
 
-            var image_count = generationFrameCount();
-            var duration_seconds = Math.round((image_count / parseFloat(framerate)) * 10) / 10;
-            $('#video_length').text(image_count + ' frames - about ' + duration_seconds + ' seconds');
+            updateVideoLength();
 
             if(rdata['image_list'].length) {
                 $('#message').html(json_data['message']);
+            } else if(generationFrameCount()) {
+                $('#message').text('No images are available in the preview window.');
             } else {
                 $('#message').text('No images are available for the selected time range.');
             }
@@ -1506,7 +1544,10 @@ $( document ).ready(function() {
 
     <div class="tw:alert tw:alert-success tw:py-2.5 tw:rounded-[var(--radius-box)] tw:text-xs tw:font-medium" id="success_message" style="display: none;">
         <i class="tw:icon-[lucide--check-circle] tw:w-4 tw:h-4"></i>
-        <span class="tw:text-center tw:w-full"></span>
+        <span class="tw:text-center tw:w-full">
+            <span id="success_message_text"></span>
+            <a href="{{ url_for('indi_allsky.mini_videoviewer_view') }}" class="tw:link tw:font-bold tw:ml-1">Open Mini Timelapses</a>
+        </span>
     </div>
 
     <div id="create-video-row" class="tw:flex tw:items-center tw:gap-3 tw:w-full">
@@ -1536,6 +1577,7 @@ function updateImages() {
     panorama_end_image = null;
 
     // Do not leave a stale pass/fail result visible while the new period loads.
+    delete json_data['standard_preflight'];
     delete json_data['panorama_preflight'];
     updatePanoramaNotices();
 
@@ -1587,10 +1629,7 @@ $("#POST_SECONDS_SELECT").on("change", function() {
 
 $("#FRAMERATE_SELECT").on("change", function() {
     framerate = $('#FRAMERATE_SELECT').val();
-
-    var image_count = generationFrameCount();
-    var duration_seconds = Math.round((image_count / parseFloat(framerate)) * 10) / 10;
-    $('#video_length').text(image_count + ' frames - about ' + duration_seconds + ' seconds');
+    updateVideoLength();
 });
 
 
@@ -1632,7 +1671,7 @@ $('#form_mini_timelapse').on('submit', function(event) {
             $('#NOTE').val('');
             updatePanoramaNotices();
 
-            $('#success_message span').text(rdata['success-message']);
+            $('#success_message_text').text(rdata['success-message']);
             $('#success_message').show();
             setTimeout(function() { $('#success_message').fadeOut(); }, 15000);
         },

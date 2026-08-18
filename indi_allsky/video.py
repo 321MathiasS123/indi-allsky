@@ -951,10 +951,6 @@ class VideoWorker(Process):
             .yield_per(100)
 
 
-        mini_timelapse_files_entries_count = mini_timelapse_files_entries.count()
-        logger.info('Found %d images for mini timelapse', mini_timelapse_files_entries_count)
-
-
         timelapse_data = IndiAllSkyDbImageTable.query\
             .add_columns(
                 func.max(IndiAllSkyDbImageTable.kpindex).label('image_max_kpindex'),
@@ -1030,8 +1026,12 @@ class VideoWorker(Process):
                 panorama_frame_timestamps.append(entry.createDate.timestamp())
 
 
-        if panorama and len(timelapse_files) < 2:
-            message = 'Not enough panorama images were found to generate a mini timelapse'
+        logger.info('Found %d usable images for mini timelapse', len(timelapse_files))
+
+
+        if len(timelapse_files) < 2:
+            source_label = 'panorama' if panorama else 'all-sky'
+            message = 'Not enough {0:s} images were found to generate a mini timelapse'.format(source_label)
             logger.error(message)
             task.setFailed(message)
             return
@@ -1067,7 +1067,7 @@ class VideoWorker(Process):
             'endDate'       : endDate.timestamp(),
             'night'         : night,
             'framerate'     : framerate,
-            'frames'        : len(timelapse_files) if panorama else mini_timelapse_files_entries_count,
+            'frames'        : len(timelapse_files),
             'note'          : note,
             'camera_uuid'   : camera.uuid,
         }
@@ -1226,7 +1226,7 @@ class VideoWorker(Process):
                 mini_tg.vf_scale = vf_scale
             mini_tg.ffmpeg_extra_options = ffmpeg_extra_options
 
-            mini_tg.generate(video_file, timelapse_files, preserve_order=panorama)
+            mini_tg.generate(video_file, timelapse_files, preserve_order=True)
 
 
             try:
