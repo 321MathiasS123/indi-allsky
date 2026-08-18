@@ -5,7 +5,6 @@
 {% block head %}
 <meta charset="UTF-8">
 <script type="text/javascript">
-var img;
 var camera_id = {{ camera_id }};
 var timestamp = {{ timestamp | int }};
 var panorama_data = {{ panorama | tojson }};
@@ -17,7 +16,6 @@ var json_data = {
     'image_list' : [],
     'message' : '',
 };
-var fullscreen = false;  //initial state
 var panorama_image = new Image();
 var panorama_preview_image = null;
 var panorama_preview_entry = null;
@@ -41,19 +39,6 @@ var preview_resize_observer = null;
 // The animation preview stays bounded, while preflight checks the complete
 // generation period on the server.
 var preview_history_limit_seconds = 14400;
-
-var framerate_delay_lut = {
-    '0.25' : 4000,
-    '0.5'  : 2000,
-    '0.75' : 1333,
-    '1'    : 1000,
-    '2'    : 500,
-    '5'    : 200,
-    '10'   : 100,
-    '25'   : 40,
-    '30'   : 33,
-    '60'   : 17,
-};
 
 function fitVideoPreview() {
     var container = document.getElementById('preview-container');
@@ -106,8 +91,6 @@ function init() {
 }
 
 async function loop(revision) {
-    console.log('Starting loop');
-
     while(json_data['image_list'].length == 0) {
         if(revision !== preview_revision) {
             return;
@@ -120,7 +103,7 @@ async function loop(revision) {
     }
 
     // prevent concurrent updates to list
-    var image_list_copy = JSON.parse(JSON.stringify(json_data['image_list']));
+    var image_list_copy = json_data['image_list'].slice();
 
     for (var i = image_list_copy.length - 1; i >= 0; i--) {
         if(revision !== preview_revision) {
@@ -128,7 +111,7 @@ async function loop(revision) {
         }
 
         showImage(image_list_copy[i], revision);
-        await sleep(framerate_delay_lut[framerate]);
+        await sleep(1000 / parseFloat(framerate));
     }
 
     setTimeout(function() {
@@ -165,10 +148,8 @@ function showImage(entry, revision) {
         return;
     }
 
-    console.log('Showing image ' + entry["url"]);
-
-    img = new Image();
-    img.onload = function() {
+    var image = new Image();
+    image.onload = function() {
         if(revision !== preview_revision || source_type !== 'standard') {
             return;
         }
@@ -179,12 +160,11 @@ function showImage(entry, revision) {
     };
 
 
-    img.src = entry["url"];
+    image.src = entry["url"];
 }
 
 
 function loadImages() {
-    console.log('Loading next images');
     var image_loop_url = "{{ url_for(image_loop_view) }}";
     var request_data = {
         'camera_id' : camera_id,
@@ -206,7 +186,7 @@ function loadImages() {
         request_data['mini_preflight'] = 1;
     }
 
-    loadJS(image_loop_url, request_data, preview_revision, function() {});
+    loadJS(image_loop_url, request_data, preview_revision);
 }
 
 function sleep(time) {
@@ -1184,10 +1164,7 @@ function updateVideoLength() {
     $('#video_length').text(length_text + ' · about ' + duration_seconds + ' seconds');
 }
 
-function loadJS(url, data, revision, onDone, onError) {
-    if(!onDone)onDone=function(){};
-    if(!onError)onError=function(){};
-
+function loadJS(url, data, revision) {
     $("#loader_generate").show();
 
     $.ajax({
@@ -1217,7 +1194,6 @@ function loadJS(url, data, revision, onDone, onError) {
                 $('#message').text('No images are available for the selected time range.');
             }
             updatePanoramaNotices();
-            onDone();
         },
         error: function(rdata){
             if(revision !== preview_revision) {
@@ -1225,7 +1201,6 @@ function loadJS(url, data, revision, onDone, onError) {
             }
 
             $("#loader_generate").hide();
-            onError(rdata.status);
             $('#message').text('Could not load the preview images. Try again or check the logs.');
             $('#video_length').html('');
             updatePanoramaNotices();
@@ -1236,35 +1211,28 @@ function loadJS(url, data, revision, onDone, onError) {
 
 
 function goFullscreen(elem) {
-    if(fullscreen) {
-        closeFullscreen();
-    } else {
-        openFullscreen(elem);
+    if(
+        document.fullscreenElement
+        || document.webkitFullscreenElement
+        || document.msFullscreenElement
+    ) {
+        if(document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if(document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        } else if(document.msExitFullscreen) {
+            document.msExitFullscreen();
+        }
+        return;
     }
-}
 
-function openFullscreen(elem) {
-    if (elem.requestFullscreen) {
+    if(elem.requestFullscreen) {
         elem.requestFullscreen();
-    } else if (elem.webkitRequestFullscreen) { /* Safari */
+    } else if(elem.webkitRequestFullscreen) {
         elem.webkitRequestFullscreen();
-    } else if (elem.msRequestFullscreen) { /* IE11 */
+    } else if(elem.msRequestFullscreen) {
         elem.msRequestFullscreen();
     }
-
-    fullscreen = true;
-}
-
-function closeFullscreen() {
-    if (document.exitFullscreen) {
-        document.exitFullscreen();
-    } else if (document.webkitExitFullscreen) { /* Safari */
-        document.webkitExitFullscreen();
-    } else if (document.msExitFullscreen) { /* IE11 */
-        document.msExitFullscreen();
-    }
-
-    fullscreen = false;
 }
 
 $( document ).ready(function() {
@@ -1509,7 +1477,7 @@ $( document ).ready(function() {
                         </span>
                         <span class="tw:label-text-alt tw:text-xs tw:text-base-content/60">Required</span>
                     </label>
-                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a short description for this video', required=True, aria_required='true') }}
+                    {{ form_mini_timelapse.NOTE(class='tw:input tw:input-bordered tw:input-sm tw:h-9 allsky-input-dark tw:w-full tw:text-xs', placeholder='Add a short description for this video', required=True, aria_required='true', maxlength=255) }}
                 </div>
 
             </div>

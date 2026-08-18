@@ -11562,6 +11562,55 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         super(AjaxMiniTimelapseGeneratorView, self).__init__(**kwargs)
 
 
+    def _parseMiniVideoRequest(self, request_data):
+        try:
+            request_values = {
+                'image_id'    : int(request_data['IMAGE_ID']),
+                'camera_id'   : int(request_data['CAMERA_ID']),
+                'pre_seconds' : int(request_data['PRE_SECONDS']),
+                'post_seconds': int(request_data['POST_SECONDS']),
+                'framerate'   : float(request_data['FRAMERATE']),
+                'note'        : str(request_data.get('NOTE') or ''),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None, 'Check the selected time range and speed, then try again.'
+
+        if not request_values['note'].strip():
+            return None, 'Enter a description for this video.'
+        if len(request_values['note']) > 255:
+            return None, 'Keep the description to 255 characters or fewer.'
+        if (
+            request_values['pre_seconds'] < 1
+            or request_values['pre_seconds'] > 43200
+            or request_values['post_seconds'] < 1
+            or request_values['post_seconds'] > 43200
+            or not math.isfinite(request_values['framerate'])
+            or request_values['framerate'] <= 0
+            or request_values['framerate'] > 60
+        ):
+            return None, 'Check the selected time range and speed, then try again.'
+
+        return request_values, None
+
+
+    def _queueMiniVideo(self, action, job_kwargs):
+        task_mini_video = IndiAllSkyDbTaskQueueTable(
+            queue=TaskQueueQueue.VIDEO,
+            state=TaskQueueState.MANUAL,
+            priority=100,
+            data={
+                'action' : action,
+                'kwargs' : job_kwargs,
+            },
+        )
+        db.session.add(task_mini_video)
+        db.session.commit()
+
+        return jsonify({
+            'success-message' : 'Your mini timelapse is being created. Check Mini Timelapses in a few minutes.',
+        })
+
+
     def _queuePanoramaMiniVideo(self, request_data):
         if not self.indi_allsky_config.get('FISH2PANO', {}).get('ENABLE', False):
             json_data = {
@@ -11569,35 +11618,13 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             }
             return jsonify(json_data), 400
 
+        request_values, error_message = self._parseMiniVideoRequest(request_data)
+        if error_message:
+            return jsonify({'failure-message': error_message}), 400
+
         try:
-            image_id = int(request_data['IMAGE_ID'])
             panorama_image_id = int(request_data['PANORAMA_IMAGE_ID'])
-            camera_id = int(request_data['CAMERA_ID'])
-            pre_seconds = int(request_data['PRE_SECONDS'])
-            post_seconds = int(request_data['POST_SECONDS'])
-            framerate = float(request_data['FRAMERATE'])
-            note = str(request_data.get('NOTE') or '')
         except (KeyError, TypeError, ValueError):
-            json_data = {
-                'failure-message' : 'Check the selected time range and speed, then try again.',
-            }
-            return jsonify(json_data), 400
-
-        if not note.strip():
-            json_data = {
-                'failure-message' : 'Enter a description for this video.',
-            }
-            return jsonify(json_data), 400
-
-        if (
-            pre_seconds < 1
-            or pre_seconds > 43200
-            or post_seconds < 1
-            or post_seconds > 43200
-            or not math.isfinite(framerate)
-            or framerate <= 0
-            or framerate > 60
-        ):
             json_data = {
                 'failure-message' : 'Check the selected time range and speed, then try again.',
             }
@@ -11606,13 +11633,13 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         try:
             image_entry = IndiAllSkyDbImageTable.query\
                 .join(IndiAllSkyDbImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
-                .filter(IndiAllSkyDbImageTable.id == image_id)\
+                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
+                .filter(IndiAllSkyDbImageTable.id == request_values['image_id'])\
                 .one()
 
             panorama_image_entry = IndiAllSkyDbPanoramaImageTable.query\
                 .join(IndiAllSkyDbPanoramaImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
                 .filter(IndiAllSkyDbPanoramaImageTable.id == panorama_image_id)\
                 .filter(IndiAllSkyDbPanoramaImageTable.exclude == sa_false())\
                 .one()
@@ -11633,42 +11660,19 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             }
             return jsonify(json_data), 400
 
-        jobdata = {
-            'action' : 'generatePanoramaMiniVideo',
-            'kwargs' : {
-                'image_id'          : image_id,
-                'panorama_image_id' : panorama_image_id,
-                'camera_id'         : camera_id,
-                'pre_seconds'       : pre_seconds,
-                'post_seconds'      : post_seconds,
-                'framerate'         : framerate,
-                'note'              : note,
-                'crop_x'            : selection['crop_x'],
-                'crop_y'            : selection['crop_y'],
-                'crop_width'        : selection['crop_width'],
-                'crop_height'       : selection['crop_height'],
-                'aspect_ratio'      : selection['aspect_ratio'],
-                'pan_mode'          : selection['pan_mode'],
-                'end_crop_x'        : selection['end_crop_x'],
-                'end_crop_y'        : selection['end_crop_y'],
-                'pan_direction'     : selection['pan_direction'],
-            },
-        }
-
-        task_mini_video = IndiAllSkyDbTaskQueueTable(
-            queue=TaskQueueQueue.VIDEO,
-            state=TaskQueueState.MANUAL,
-            priority=100,
-            data=jobdata,
-        )
-
-        db.session.add(task_mini_video)
-        db.session.commit()
-
-        message = {
-            'success-message' : 'Your mini timelapse is being created. Check Mini Timelapses in a few minutes.',
-        }
-        return jsonify(message)
+        request_values.update({
+            'panorama_image_id' : panorama_image_id,
+            'crop_x'            : selection['crop_x'],
+            'crop_y'            : selection['crop_y'],
+            'crop_width'        : selection['crop_width'],
+            'crop_height'       : selection['crop_height'],
+            'aspect_ratio'      : selection['aspect_ratio'],
+            'pan_mode'          : selection['pan_mode'],
+            'end_crop_x'        : selection['end_crop_x'],
+            'end_crop_y'        : selection['end_crop_y'],
+            'pan_direction'     : selection['pan_direction'],
+        })
+        return self._queueMiniVideo('generatePanoramaMiniVideo', request_values)
 
 
     def dispatch_request(self):
@@ -11689,47 +11693,17 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             return jsonify(json_data), 400
 
 
-        try:
-            image_id = int(request_data['IMAGE_ID'])
-            camera_id = int(request_data['CAMERA_ID'])
-            pre_seconds = int(request_data['PRE_SECONDS'])
-            post_seconds = int(request_data['POST_SECONDS'])
-            framerate = float(request_data['FRAMERATE'])
-            note = str(request_data.get('NOTE') or '')
-        except (KeyError, TypeError, ValueError):
-            json_data = {
-                'failure-message' : 'Check the selected time range and speed, then try again.',
-            }
-            return jsonify(json_data), 400
-
-        if not note.strip():
-            json_data = {
-                'failure-message' : 'Enter a description for this video.',
-            }
-            return jsonify(json_data), 400
-
-
-        if (
-            pre_seconds < 1
-            or pre_seconds > 43200
-            or post_seconds < 1
-            or post_seconds > 43200
-            or not math.isfinite(framerate)
-            or framerate <= 0
-            or framerate > 60
-        ):
-            json_data = {
-                'failure-message' : 'Check the selected time range and speed, then try again.',
-            }
-            return jsonify(json_data), 400
+        request_values, error_message = self._parseMiniVideoRequest(request_data)
+        if error_message:
+            return jsonify({'failure-message': error_message}), 400
 
 
         # sanity check
         try:
             IndiAllSkyDbImageTable.query\
                 .join(IndiAllSkyDbImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == camera_id)\
-                .filter(IndiAllSkyDbImageTable.id == image_id)\
+                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
+                .filter(IndiAllSkyDbImageTable.id == request_values['image_id'])\
                 .one()
         except NoResultFound:
             json_data = {
@@ -11738,34 +11712,7 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
             return jsonify(json_data), 400
 
 
-        jobdata = {
-            'action' : 'generateMiniVideo',
-            'kwargs' : {
-                'image_id'      : image_id,
-                'camera_id'     : camera_id,
-                'pre_seconds'   : pre_seconds,
-                'post_seconds'  : post_seconds,
-                'framerate'     : framerate,
-                'note'          : note,
-            },
-        }
-
-
-        task_mini_video = IndiAllSkyDbTaskQueueTable(
-            queue=TaskQueueQueue.VIDEO,
-            state=TaskQueueState.MANUAL,
-            priority=100,
-            data=jobdata,
-        )
-
-        db.session.add(task_mini_video)
-        db.session.commit()
-
-        message = {
-            'success-message' : 'Your mini timelapse is being created. Check Mini Timelapses in a few minutes.',
-        }
-
-        return jsonify(message)
+        return self._queueMiniVideo('generateMiniVideo', request_values)
 
 
 class FileSpaceUsageView(TemplateView):
