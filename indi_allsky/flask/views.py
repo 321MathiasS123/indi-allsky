@@ -15,6 +15,8 @@ import socket
 import ipaddress
 import re
 import threading
+import uuid
+from dataclasses import replace
 import psutil
 import dbus
 import ephem
@@ -26,12 +28,27 @@ from ..version import __version__
 from .. import constants
 from .. import asi676mc
 from .. import asi676mc_calibration
+from .. import dark_automation
 from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
 from ..lens_solver import applySolvedValuesToConfig
-from ..panorama import panoramaSourceCircleClipped
-from ..panorama import validatePanoramaMiniTimelapseRequest
+from ..dark_library import DarkInventoryFrame
+from ..dark_library import COVERAGE_ACCEPTABLE
+from ..dark_library import COVERAGE_EXACT
+from ..dark_library import DEFAULT_TEMPERATURE_RANGE
+from ..dark_library import analysis_context
+from ..dark_library import analyze_dark_plan
+from ..dark_library import build_dark_plan
+from ..dark_library import camera_temperature_preferences
+from ..dark_library import frame_matches_plan_profile
+from ..dark_library import update_camera_temperature_preferences
+from ..dark_library import validate_temperature_range
+from ..capture_state import CameraCapabilities
+from ..capture_state import build_effective_capture_state
+from ..temperature import resolve_temperature
+from ..temperature import temperature_source_choices
+from ..temperature import temperature_source_signature
 
 from cryptography.fernet import InvalidToken
 
@@ -191,6 +208,17 @@ def _calibration_owner():
     if not owner_token:
         owner_token = os.urandom(16).hex()
         session['asi676mc_calibration_owner'] = owner_token
+    return 'browser:{0}'.format(owner_token)
+
+
+def _dark_automation_owner():
+    """Return the owner allowed to inspect or cancel one dark run."""
+    if current_user.is_authenticated:
+        return 'user:{0}'.format(current_user.username)
+    owner_token = session.get('dark_automation_owner')
+    if not owner_token:
+        owner_token = os.urandom(16).hex()
+        session['dark_automation_owner'] = owner_token
     return 'browser:{0}'.format(owner_token)
 
 
@@ -910,6 +938,497 @@ class CamerasView(TemplateView):
         return context
 
 
+def _dark_inventory_for_camera(camera_id):
+    inventory = []
+    frame_models = (
+        ('dark', IndiAllSkyDbDarkFrameTable),
+        ('bpm', IndiAllSkyDbBadPixelMapTable),
+    )
+    for frame_type, model in frame_models:
+        frames = model.query.filter(model.camera_id == int(camera_id)).all()
+        for frame in frames:
+            try:
+                exists = frame.getFilesystemPath().is_file()
+            except OSError:
+                exists = False
+            inventory.append(DarkInventoryFrame(
+                frame_type=frame_type,
+                frame_id=frame.id,
+                camera_id=frame.camera_id,
+                active=bool(frame.active),
+                exists=exists,
+                bit_depth=frame.bitdepth,
+                exposure=float(frame.exposure),
+                gain=float(frame.gain),
+                binning=int(frame.binmode),
+                temperature=frame.temp,
+                width=frame.width,
+                height=frame.height,
+                create_date=frame.createDate,
+            ))
+    return inventory
+
+
+def _dark_temperature_reading(camera_id, config, source='auto'):
+    latest_image = IndiAllSkyDbImageTable.query\
+        .filter(IndiAllSkyDbImageTable.camera_id == int(camera_id))\
+        .filter(IndiAllSkyDbImageTable.createDate > (datetime.now() - timedelta(minutes=15)))\
+        .order_by(IndiAllSkyDbImageTable.createDate.desc())\
+        .first()
+    if latest_image is None:
+        return None
+    sensor_values = dict(latest_image.data or {})
+    if config.get('CCD_TEMP_SCRIPT'):
+        # Older image rows do not identify whether their main temperature came
+        # from the camera or the configured script. It is still the best recent
+        # value for an explicit script selection.
+        sensor_values['external_script'] = latest_image.temp
+    return resolve_temperature(
+        config,
+        camera_temperature=latest_image.temp,
+        sensor_values=sensor_values,
+        source=source,
+    )
+
+
+def _dark_current_temperature(camera_id, config, source='auto'):
+    reading = _dark_temperature_reading(camera_id, config, source=source)
+    return reading.value if reading is not None else None
+
+
+def _dark_default_temperature_target(config):
+    if not config.get('CCD_COOLING'):
+        return None
+    try:
+        target = float(config.get('CCD_TEMP', 15.0))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(target):
+        return None
+    return max(
+        dark_automation.MIN_TEMPERATURE_TARGET,
+        min(dark_automation.MAX_TEMPERATURE_TARGET, target),
+    )
+
+
+def _dark_capture_options(
+        request_data,
+        config,
+        capabilities,
+        temperature_range_default=DEFAULT_TEMPERATURE_RANGE,
+        temperature_step_default=None,
+):
+    configured_maximum = float(config.get('CCD_EXPOSURE_MAX', 15.0))
+    if capabilities.exposure_max is not None:
+        configured_maximum = min(configured_maximum, float(capabilities.exposure_max))
+    configured_maximum = max(1.0, configured_maximum)
+    try:
+        exposure_max = float(request_data.get('exposure_max', configured_maximum))
+        exposure_step = float(request_data.get('exposure_step', 5.0))
+    except (TypeError, ValueError):
+        raise dark_automation.DarkAutomationError('Enter valid exposure maximum and step values')
+    if not math.isfinite(exposure_max) or exposure_max < 1.0:
+        raise dark_automation.DarkAutomationError('The exposure maximum must be at least 1 second')
+    if abs(exposure_max - round(exposure_max)) > 0.000001:
+        raise dark_automation.DarkAutomationError('The exposure maximum must use whole seconds')
+    if exposure_max > configured_maximum + 0.000001:
+        raise dark_automation.DarkAutomationError(
+            'The dark exposure maximum cannot exceed the current configured camera maximum'
+        )
+    if not math.isfinite(exposure_step) or exposure_step < 1.0:
+        raise dark_automation.DarkAutomationError('The exposure step must be at least 1 second')
+
+    try:
+        temperature_range = validate_temperature_range(
+            request_data.get('temperature_range', temperature_range_default),
+        )
+    except ValueError as error:
+        raise dark_automation.DarkAutomationError(str(error))
+    if temperature_step_default is None:
+        temperature_step_default = temperature_range
+
+    capture_order = str(request_data.get('capture_order') or 'long_first')
+    if capture_order not in dark_automation.CAPTURE_ORDERS:
+        raise dark_automation.DarkAutomationError('Select a valid capture order')
+    temperature_policy = str(request_data.get('temperature_policy') or 'recommended')
+    if temperature_policy not in dark_automation.TEMPERATURE_POLICIES:
+        raise dark_automation.DarkAutomationError('Select a valid temperature policy')
+    temperature_source = str(request_data.get('temperature_source') or 'auto')
+    available_temperature_sources = {
+        choice['key'] for choice in temperature_source_choices(config)
+    }
+    if temperature_source not in available_temperature_sources:
+        raise dark_automation.DarkAutomationError(
+            'The selected temperature source is no longer configured'
+        )
+    capture_mode = str(
+        request_data.get('capture_mode') or dark_automation.CAPTURE_MODE_SINGLE
+    )
+    if capture_mode not in dark_automation.CAPTURE_MODES:
+        raise dark_automation.DarkAutomationError('Select a valid dark capture mode')
+    if capture_mode != dark_automation.CAPTURE_MODE_TEMPERATURE_SERIES:
+        try:
+            temperature_delta = float(request_data.get(
+                'temperature_delta',
+                temperature_step_default,
+            ))
+        except (TypeError, ValueError):
+            temperature_delta = temperature_range
+        if (
+                not math.isfinite(temperature_delta)
+                or temperature_delta < dark_automation.MIN_TEMPERATURE_DELTA
+                or temperature_delta > dark_automation.MAX_TEMPERATURE_DELTA
+        ):
+            temperature_delta = temperature_range
+        temperature_target = None
+    else:
+        try:
+            temperature_delta = float(request_data.get(
+                'temperature_delta',
+                temperature_step_default,
+            ))
+        except (TypeError, ValueError):
+            raise dark_automation.DarkAutomationError('Enter a valid temperature step')
+        if (
+                not math.isfinite(temperature_delta)
+                or temperature_delta < dark_automation.MIN_TEMPERATURE_DELTA
+                or temperature_delta > dark_automation.MAX_TEMPERATURE_DELTA
+        ):
+            raise dark_automation.DarkAutomationError(
+                'Choose a temperature step between {0:g} and {1:g}°C.'.format(
+                    dark_automation.MIN_TEMPERATURE_DELTA,
+                    dark_automation.MAX_TEMPERATURE_DELTA,
+                )
+            )
+        temperature_target_value = request_data.get('temperature_target')
+        if temperature_target_value is None or temperature_target_value == '':
+            temperature_target = None
+        else:
+            try:
+                temperature_target = float(temperature_target_value)
+            except (TypeError, ValueError):
+                raise dark_automation.DarkAutomationError('Enter a valid target sensor temperature')
+            if (
+                    not math.isfinite(temperature_target)
+                    or temperature_target < dark_automation.MIN_TEMPERATURE_TARGET
+                    or temperature_target > dark_automation.MAX_TEMPERATURE_TARGET
+            ):
+                raise dark_automation.DarkAutomationError(
+                    'Target sensor temperature must be between {0:g} and {1:g}°C.'.format(
+                        dark_automation.MIN_TEMPERATURE_TARGET,
+                        dark_automation.MAX_TEMPERATURE_TARGET,
+                    )
+                )
+    return {
+        'exposure_max': exposure_max,
+        'exposure_step': exposure_step,
+        'capture_order': capture_order,
+        'temperature_range': temperature_range,
+        'temperature_policy': temperature_policy,
+        'temperature_source': temperature_source,
+        'capture_mode': capture_mode,
+        'temperature_delta': float(round(temperature_delta, 3)),
+        'temperature_target': (
+            None if temperature_target is None else float(round(temperature_target, 3))
+        ),
+    }
+
+
+def _build_dark_analysis(
+        config,
+        camera,
+        quality='balanced',
+        temperature=None,
+        exposure_max=None,
+        exposure_step=5.0,
+        temperature_range=DEFAULT_TEMPERATURE_RANGE,
+):
+    capabilities = CameraCapabilities.from_camera(camera)
+    capture_state = build_effective_capture_state(
+        config,
+        capabilities,
+        exposure_max=exposure_max,
+        exposure_step=exposure_step,
+    )
+    dark_plan = build_dark_plan(
+        capture_state,
+        capabilities,
+        camera.id,
+        quality=quality,
+        temperature_range=temperature_range,
+    )
+    coverage = analyze_dark_plan(
+        dark_plan,
+        _dark_inventory_for_camera(camera.id),
+        temperature=temperature,
+    )
+    return capabilities, capture_state, coverage
+
+
+def _dark_library_selection_ids(selection):
+    selected_ids = {
+        ('dark', int(frame_id)) for frame_id in selection.get('dark_ids', ())
+    }
+    selected_ids.update(
+        ('bpm', int(frame_id)) for frame_id in selection.get('bpm_ids', ())
+    )
+    return selected_ids
+
+
+def _dark_library_coverage_comparison(camera, config, before_inventory, after_inventory):
+    capabilities = CameraCapabilities.from_camera(camera)
+    capture_state = build_effective_capture_state(config, capabilities)
+    temperature_preferences = camera_temperature_preferences(camera)
+    plan = build_dark_plan(
+        capture_state,
+        capabilities,
+        camera.id,
+        quality='balanced',
+        temperature_range=temperature_preferences['temperature_range'],
+    )
+    current_temperature = _dark_current_temperature(camera.id, config)
+    before = analyze_dark_plan(plan, before_inventory, temperature=current_temperature)
+    after = analyze_dark_plan(plan, after_inventory, temperature=current_temperature)
+    return {
+        'target_count': len(plan.targets),
+        'before_structural_missing': len(before.structural_completion_targets),
+        'after_structural_missing': len(after.structural_completion_targets),
+        'before_temperature_additions': len(before.completion_targets),
+        'after_temperature_additions': len(after.completion_targets),
+        'after_structural_ready': sum(
+            1 for coverage in after.structural_target_coverages
+            if coverage.status in (COVERAGE_EXACT, COVERAGE_ACCEPTABLE)
+        ),
+        'temperature_checked': bool(
+            current_temperature is not None
+            or any(target.temperature is not None for target in plan.targets)
+        ),
+    }
+
+
+def _dark_library_removal_coverage(camera, config, selection):
+    selected_ids = _dark_library_selection_ids(selection)
+    inventory = tuple(_dark_inventory_for_camera(camera.id))
+    remaining_inventory = tuple(
+        frame for frame in inventory
+        if (frame.frame_type, int(frame.frame_id)) not in selected_ids
+    )
+    comparison = _dark_library_coverage_comparison(
+        camera,
+        config,
+        inventory,
+        remaining_inventory,
+    )
+    before_structural_missing = comparison['before_structural_missing']
+    after_structural_missing = comparison['after_structural_missing']
+    before_temperature_additions = comparison['before_temperature_additions']
+    after_temperature_additions = comparison['after_temperature_additions']
+    temperature_checked = comparison['temperature_checked']
+
+    if after_structural_missing > before_structural_missing:
+        level = 'danger'
+        message = (
+            'This would add {0:d} master set{1:s} to the structural completion plan. '
+            'After removal, {2:d} of {3:d} recommended camera settings remain ready.'
+        ).format(
+            after_structural_missing - before_structural_missing,
+            '' if after_structural_missing - before_structural_missing == 1 else 's',
+            comparison['after_structural_ready'],
+            comparison['target_count'],
+        )
+    elif temperature_checked and after_temperature_additions > before_temperature_additions:
+        level = 'warning'
+        message = (
+            'Gain/exposure completeness remains unchanged, but {0:d} additional master '
+            'set{1:s} would be recommended for the configured or current temperature.'
+        ).format(
+            after_temperature_additions - before_temperature_additions,
+            '' if after_temperature_additions - before_temperature_additions == 1 else 's',
+        )
+    else:
+        level = 'safe'
+        message = (
+            'This selection does not reduce recommended gain/exposure coverage'
+            + (
+                ' or configured/current-temperature readiness.'
+                if temperature_checked
+                else '. Temperature readiness is not currently available to evaluate.'
+            )
+        )
+
+    return {
+        'evaluated': True,
+        'level': level,
+        'message': message,
+        'target_count': comparison['target_count'],
+        'before_structural_missing': before_structural_missing,
+        'after_structural_missing': after_structural_missing,
+        'before_temperature_additions': before_temperature_additions,
+        'after_temperature_additions': after_temperature_additions,
+        'temperature_checked': temperature_checked,
+    }
+
+
+def _dark_library_eligibility_coverage(camera, config, selection, active):
+    selected_ids = _dark_library_selection_ids(selection)
+    inventory = tuple(_dark_inventory_for_camera(camera.id))
+    revised_inventory = tuple(
+        replace(frame, active=bool(active))
+        if (frame.frame_type, int(frame.frame_id)) in selected_ids else frame
+        for frame in inventory
+    )
+    comparison = _dark_library_coverage_comparison(
+        camera,
+        config,
+        inventory,
+        revised_inventory,
+    )
+    before_structural_missing = comparison['before_structural_missing']
+    after_structural_missing = comparison['after_structural_missing']
+    before_temperature_additions = comparison['before_temperature_additions']
+    after_temperature_additions = comparison['after_temperature_additions']
+    temperature_checked = comparison['temperature_checked']
+    structural_change = after_structural_missing - before_structural_missing
+    temperature_change = after_temperature_additions - before_temperature_additions
+
+    if active:
+        if structural_change < 0:
+            level = 'safe'
+            message = (
+                'This restores {0:d} recommended camera setting{1:s} to structural coverage.'
+            ).format(-structural_change, '' if structural_change == -1 else 's')
+        elif temperature_checked and temperature_change < 0:
+            level = 'safe'
+            message = (
+                'Gain/exposure completeness is unchanged, and {0:d} fewer master set{1:s} '
+                'would be recommended for the configured or current temperature.'
+            ).format(-temperature_change, '' if temperature_change == -1 else 's')
+        else:
+            level = 'safe'
+            message = (
+                'These master sets become eligible again, but they do not change the current '
+                'camera recommendation. They may still match another temperature or future configuration.'
+            )
+    elif structural_change > 0:
+        level = 'danger'
+        message = (
+            'This would add {0:d} master set{1:s} to the structural completion plan.'
+        ).format(structural_change, '' if structural_change == 1 else 's')
+    elif temperature_checked and temperature_change > 0:
+        level = 'warning'
+        message = (
+            'Gain/exposure completeness remains unchanged, but {0:d} additional master set{1:s} '
+            'would be recommended for the configured or current temperature.'
+        ).format(temperature_change, '' if temperature_change == 1 else 's')
+    else:
+        level = 'safe'
+        message = (
+            'Excluding these master sets does not reduce the current recommended coverage. '
+            'The files remain stored and can be made eligible again later.'
+        )
+
+    return {
+        'evaluated': True,
+        'level': level,
+        'message': message,
+        'target_count': comparison['target_count'],
+        'before_structural_missing': before_structural_missing,
+        'after_structural_missing': after_structural_missing,
+        'before_temperature_additions': before_temperature_additions,
+        'after_temperature_additions': after_temperature_additions,
+        'temperature_checked': temperature_checked,
+    }
+
+
+def _find_active_dark_task(owner=None, camera_id=None):
+    state_list = (
+        TaskQueueState.MANUAL,
+        TaskQueueState.QUEUED,
+        TaskQueueState.RUNNING,
+    )
+    tasks = IndiAllSkyDbTaskQueueTable.query\
+        .filter(IndiAllSkyDbTaskQueueTable.state.in_(state_list))\
+        .order_by(IndiAllSkyDbTaskQueueTable.createDate.desc())\
+        .all()
+    for task in tasks:
+        task_data = task.data or {}
+        if task_data.get('action') != 'dark_automation':
+            continue
+        if task_data.get('status') not in dark_automation.ACTIVE_STATUSES:
+            continue
+        if owner is not None and task_data.get('owner') != owner:
+            continue
+        if camera_id is not None and int(task_data.get('camera_id', -1)) != int(camera_id):
+            continue
+        return task
+    return None
+
+
+def _dark_capture_controller_available(view):
+    try:
+        watchdog = view._miscDb.getState('WATCHDOG')
+    except NoResultFound:
+        return False
+    try:
+        status = view._miscDb.getState('STATUS')
+    except NoResultFound:
+        status = None
+    return dark_automation.capture_controller_available(watchdog, status=status)
+
+
+def _dark_active_config_id(view):
+    try:
+        return int(view._miscDb.getState('CONFIG_ID'))
+    except (NoResultFound, TypeError, ValueError):
+        return None
+
+
+def _dark_config_requires_reload(view):
+    if not _dark_capture_controller_available(view):
+        return False
+    return _dark_active_config_id(view) != int(view.indi_allsky_config_id)
+
+
+def _dark_library_table_summary(rows):
+    return {
+        'total': len(rows),
+        'active': sum(1 for row in rows if row['active']),
+        'inactive': sum(1 for row in rows if not row['active']),
+        'unpaired': sum(1 for row in rows if row['partner_id'] is None),
+        'compatible': sum(1 for row in rows if row['configuration_compatible'] is True),
+        'missing_files': sum(1 for row in rows if not row['exists']),
+    }
+
+
+def _prepare_dark_capture_service(view, operation='capture'):
+    """Start a native service when possible or return durable queue guidance."""
+    if _dark_capture_controller_available(view):
+        return None
+
+    try:
+        active_state, _unit_state = view.getSystemdUnitStatus(
+            app.config['ALLSKY_SERVICE_NAME']
+        )
+        if active_state in ('inactive', 'failed'):
+            view.startSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
+            return None
+        if active_state == 'activating':
+            return None
+    except dbus.exceptions.DBusException as error:
+        app.logger.warning('Unable to start capture service for dark-library task: %s', error)
+
+    if operation == 'flush':
+        return (
+            'Library removal is queued, but the capture controller is not responding and '
+            'could not be started automatically. Start it within 30 minutes.'
+        )
+    return (
+        'The plan is queued, but the capture controller is not responding and could not '
+        'be started automatically. Start it within 30 minutes; otherwise the '
+        'camera-cover confirmation will expire.'
+    )
+
+
 class DarkFramesView(TemplateView):
     page_title = 'Dark Frames'
     decorators = [login_required]
@@ -924,7 +1443,8 @@ class DarkFramesView(TemplateView):
                 IndiAllSkyDbCameraTable.id.desc(),
                 IndiAllSkyDbDarkFrameTable.gain.asc(),
                 IndiAllSkyDbDarkFrameTable.exposure.asc(),
-            )
+            )\
+            .all()
 
         bpm_list = IndiAllSkyDbBadPixelMapTable.query\
             .join(IndiAllSkyDbCameraTable)\
@@ -933,23 +1453,46 @@ class DarkFramesView(TemplateView):
                 IndiAllSkyDbCameraTable.id.desc(),
                 IndiAllSkyDbBadPixelMapTable.gain.asc(),
                 IndiAllSkyDbBadPixelMapTable.exposure.asc(),
-            )
+            )\
+            .all()
 
+        try:
+            temperature_preferences = camera_temperature_preferences(self.camera)
+        except (TypeError, ValueError):
+            temperature_preferences = {
+                'temperature_range': DEFAULT_TEMPERATURE_RANGE,
+                'temperature_step': DEFAULT_TEMPERATURE_RANGE,
+                'range_source': 'legacy_default',
+            }
+        temperature_range = temperature_preferences['temperature_range']
+        partner_index = dark_automation.build_library_partner_index(
+            darkframe_list,
+            bpm_list,
+        )
 
         d_info_list = list()
+        dark_inventory = list()
+        inventory_index = {}
         for d in darkframe_list:
             file_path = d.getFilesystemPath()
 
             try:
                 file_size = file_path.stat().st_size
-            except FileNotFoundError:
+                file_exists = file_path.is_file()
+            except OSError:
                 file_size = 0
+                file_exists = False
+
+            dark_data = d.data or {}
+            eligibility = dark_automation.library_entry_eligibility(d)
 
             d_info = {
                 'id' : d.id,
                 'camera_name'  : d.camera.name,
                 'createDate'   : d.createDate,
                 'active'       : d.active,
+                'eligibility_reason_label': eligibility['reason_label'],
+                'eligibility_staged': eligibility['staged'],
                 'bitdepth'     : d.bitdepth,
                 'gain'         : d.gain,
                 'exposure'     : d.exposure,
@@ -960,49 +1503,920 @@ class DarkFramesView(TemplateView):
                 'adu'          : d.adu,
                 'filename'     : d.filename,
                 'url'          : d.getUrl(),
-                'hot_pixels'   : d.data.get('hot_pixels', -1),
-                'method'       : d.data.get('method', ''),
+                'hot_pixels'   : dark_data.get('hot_pixels', -1),
+                'method'       : dark_data.get('method', ''),
                 'size_mb'      : file_size / 1024 / 1024,
+                'exists'       : file_exists,
+                'temperature_min': (
+                    None if d.temp is None else float(d.temp) - temperature_range
+                ),
+                'temperature_max': (
+                    None if d.temp is None else float(d.temp) + temperature_range
+                ),
+                'configuration_compatible': None,
             }
 
             d_info_list.append(d_info)
+            inventory_frame = DarkInventoryFrame(
+                frame_type='dark',
+                frame_id=d.id,
+                camera_id=d.camera_id,
+                active=bool(d.active),
+                exists=file_exists,
+                bit_depth=d.bitdepth,
+                exposure=float(d.exposure),
+                gain=float(d.gain),
+                binning=int(d.binmode),
+                temperature=d.temp,
+                width=d.width,
+                height=d.height,
+                create_date=d.createDate,
+            )
+            dark_inventory.append(inventory_frame)
+            inventory_index[('dark', int(d.id))] = inventory_frame
 
 
         b_info_list = list()
         for b in bpm_list:
-            file_path = d.getFilesystemPath()
+            file_path = b.getFilesystemPath()
 
             try:
                 file_size = file_path.stat().st_size
-            except FileNotFoundError:
+                file_exists = file_path.is_file()
+            except OSError:
                 file_size = 0
+                file_exists = False
+
+            bpm_data = b.data or {}
+            eligibility = dark_automation.library_entry_eligibility(b)
 
             b_info = {
                 'id' : b.id,
                 'camera_name'  : b.camera.name,
                 'createDate'   : b.createDate,
                 'active'       : b.active,
+                'eligibility_reason_label': eligibility['reason_label'],
+                'eligibility_staged': eligibility['staged'],
                 'bitdepth'     : b.bitdepth,
                 'gain'         : b.gain,
                 'exposure'     : b.exposure,
                 'binmode'      : b.binmode,
-                'width'        : d.width,
-                'height'       : d.height,
+                'width'        : b.width,
+                'height'       : b.height,
                 'temp'         : b.temp,
                 'adu'          : b.adu,
                 'filename'     : b.filename,
                 'url'          : b.getUrl(),
-                'hot_pixels'   : d.data.get('hot_pixels', -1),
+                'hot_pixels'   : bpm_data.get('hot_pixels', -1),
+                'method'       : bpm_data.get('method', ''),
                 'size_mb'      : file_size / 1024 / 1024,
+                'exists'       : file_exists,
+                'temperature_min': (
+                    None if b.temp is None else float(b.temp) - temperature_range
+                ),
+                'temperature_max': (
+                    None if b.temp is None else float(b.temp) + temperature_range
+                ),
+                'configuration_compatible': None,
             }
 
             b_info_list.append(b_info)
+            inventory_frame = DarkInventoryFrame(
+                frame_type='bpm',
+                frame_id=b.id,
+                camera_id=b.camera_id,
+                active=bool(b.active),
+                exists=file_exists,
+                bit_depth=b.bitdepth,
+                exposure=float(b.exposure),
+                gain=float(b.gain),
+                binning=int(b.binmode),
+                temperature=b.temp,
+                width=b.width,
+                height=b.height,
+                create_date=b.createDate,
+            )
+            dark_inventory.append(inventory_frame)
+            inventory_index[('bpm', int(b.id))] = inventory_frame
+
+        info_by_type = {
+            'dark': {int(row['id']): row for row in d_info_list},
+            'bpm': {int(row['id']): row for row in b_info_list},
+        }
+        for frame_type, rows in (('dark', d_info_list), ('bpm', b_info_list)):
+            for row in rows:
+                pairing = partner_index.get((frame_type, int(row['id'])), {})
+                partner_type = pairing.get(
+                    'partner_type',
+                    'bpm' if frame_type == 'dark' else 'dark',
+                )
+                partner_rows = [
+                    info_by_type[partner_type][partner_id]
+                    for partner_id in pairing.get('partner_ids', ())
+                    if partner_id in info_by_type[partner_type]
+                ]
+                partner_rows.sort(key=lambda partner: (
+                    not partner['active'],
+                    not partner['exists'],
+                    -int(partner['id']),
+                ))
+                partner = partner_rows[0] if partner_rows else None
+                row['partner_type'] = partner_type
+                row['partner_id'] = partner['id'] if partner is not None else None
+                row['partner_active'] = (
+                    bool(partner['active']) if partner is not None else False
+                )
+                row['partner_exists'] = (
+                    bool(partner['exists']) if partner is not None else False
+                )
+
+
+        try:
+            camera_capabilities = CameraCapabilities.from_camera(self.camera)
+            capture_state = build_effective_capture_state(
+                self.indi_allsky_config,
+                camera_capabilities,
+            )
+            dark_plan = build_dark_plan(
+                capture_state,
+                camera_capabilities,
+                self.camera.id,
+                quality='balanced',
+                temperature_range=temperature_preferences['temperature_range'],
+            )
+
+            temperature_reading = _dark_temperature_reading(
+                self.camera.id,
+                self.indi_allsky_config,
+            )
+            current_temperature = (
+                temperature_reading.value if temperature_reading is not None else None
+            )
+
+            dark_coverage = analyze_dark_plan(
+                dark_plan,
+                dark_inventory,
+                temperature=current_temperature,
+            )
+            dark_analysis = analysis_context(
+                capture_state,
+                camera_capabilities,
+                dark_coverage,
+            )
+            dark_analysis['temperature_reading'] = (
+                temperature_reading.to_dict() if temperature_reading is not None else None
+            )
+            initial_strategy = (
+                dark_coverage.suggested_action
+                if dark_coverage.suggested_action in ('complete', 'rebuild')
+                else 'complete'
+            )
+            dark_execution_preview = dark_automation.execution_preview(
+                dark_coverage,
+                initial_strategy,
+                temperature_delta=temperature_preferences['temperature_step'],
+                temperature_target=_dark_default_temperature_target(
+                    self.indi_allsky_config,
+                ),
+            )
+            dark_execution_preview['analysis'] = dark_analysis
+            dark_execution_preview['temperature_range_source'] = temperature_preferences[
+                'range_source'
+            ]
+            dark_execution_preview['recommended_method'] = dark_automation.recommended_stacking_method(
+                self.indi_allsky_config,
+                dark_execution_preview['groups'],
+            )
+            for frame_key, inventory_frame in inventory_index.items():
+                info_by_type[frame_key[0]][frame_key[1]][
+                    'configuration_compatible'
+                ] = frame_matches_plan_profile(dark_plan, inventory_frame)
+        except (TypeError, ValueError, KeyError) as e:
+            app.logger.error('Unable to analyse dark library: %s', str(e))
+            dark_analysis = {
+                'available': False,
+                'error': str(e),
+                'warnings': [],
+            }
+            dark_execution_preview = {
+                'strategy': 'complete',
+                'groups': [],
+                'target_count': 0,
+                'frame_count': 10,
+                'estimated_time': '0h 00m 00s',
+                'estimated_library_storage': '0 B',
+                'estimated_peak_storage': '0 B',
+                'exposure_max': 1.0,
+                'exposure_step': 5.0,
+                'capture_order': 'long_first',
+                'temperature_policy': 'recommended',
+                'temperature_range': DEFAULT_TEMPERATURE_RANGE,
+                'temperature_range_source': 'legacy_default',
+                'temperature_source': 'auto',
+                'capture_mode': dark_automation.CAPTURE_MODE_SINGLE,
+                'temperature_delta': DEFAULT_TEMPERATURE_RANGE,
+                'temperature_target': _dark_default_temperature_target(
+                    self.indi_allsky_config,
+                ),
+                'temperature_set_count': None,
+                'estimate_scope': 'complete_task',
+                'config_signature': '',
+                'quality': 'balanced',
+                'recommended_method': 'sigmaclip',
+            }
+
+
+        stored_dark_frames = tuple(
+            frame for frame in dark_inventory if frame.frame_type == 'dark'
+        )
+        stored_bpm_frames = tuple(
+            frame for frame in dark_inventory if frame.frame_type == 'bpm'
+        )
+        dark_analysis.update({
+            'stored_dark_count': len(stored_dark_frames),
+            'stored_bpm_count': len(stored_bpm_frames),
+            'usable_dark_count': sum(
+                1 for frame in stored_dark_frames if frame.active and frame.exists
+            ),
+            'usable_bpm_count': sum(
+                1 for frame in stored_bpm_frames if frame.active and frame.exists
+            ),
+        })
 
 
         context['darkframe_list'] = d_info_list
         context['bpm_list'] = b_info_list
+        context['darkframe_summary'] = _dark_library_table_summary(d_info_list)
+        context['bpm_summary'] = _dark_library_table_summary(b_info_list)
+        context['dark_analysis'] = dark_analysis
+        context['dark_execution_preview'] = dark_execution_preview
+        context['dark_temperature_sources'] = temperature_source_choices(
+            self.indi_allsky_config,
+        )
+        dark_config_can_save = _can_save_standard_configuration()
+        dark_automation_authorized = bool(
+            dark_config_can_save
+            and getattr(self.camera, 'local', False)
+            and dark_analysis.get('available', False)
+        )
+        context['dark_config_requires_reload'] = bool(
+            dark_automation_authorized and _dark_config_requires_reload(self)
+        )
+        context['dark_automation_can_run'] = bool(
+            dark_automation_authorized and not context['dark_config_requires_reload']
+        )
+        active_task = _find_active_dark_task(
+            owner=_dark_automation_owner(),
+            camera_id=self.camera.id,
+        )
+        context['dark_automation_task_id'] = active_task.id if active_task else None
+        dark_library_catalog = dark_automation.build_library_catalog(
+            IndiAllSkyDbCameraTable.query.all(),
+            IndiAllSkyDbDarkFrameTable.query.all(),
+            IndiAllSkyDbBadPixelMapTable.query.all(),
+            current_camera_id=self.camera.id,
+        )
+        maintenance_task = _find_active_dark_task()
+        context['dark_library_catalog'] = dark_library_catalog
+        context['dark_library_task_active'] = maintenance_task is not None
+        context['dark_library_can_manage'] = bool(
+            dark_config_can_save
+            and dark_library_catalog['entry_count'] > 0
+        )
+        # Retain the old context name for extensions that still inspect it.
+        context['dark_library_can_flush'] = context['dark_library_can_manage']
+        context['camera_name'] = str(self.camera.name)
+        context['dark_library_entry_count'] = len(d_info_list) + len(b_info_list)
 
         return context
+
+
+class AjaxDarkAutomationPlanView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        request_data = request.get_json(silent=True) or {}
+        try:
+            camera_id = int(request_data.get('camera_id'))
+            frame_count = int(request_data.get('frame_count', 10))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Select a valid camera and source-frame count.'}), 400
+
+        self.cameraSetup(camera_id=camera_id)
+        if not getattr(self.camera, 'local', False):
+            return jsonify({'error': 'Dark capture is only available for a local camera.'}), 400
+
+        quality = str(request_data.get('quality') or 'balanced')
+        strategy = str(request_data.get('strategy') or 'complete')
+        try:
+            temperature_preferences = camera_temperature_preferences(self.camera)
+            capabilities = CameraCapabilities.from_camera(self.camera)
+            options = _dark_capture_options(
+                request_data,
+                self.indi_allsky_config,
+                capabilities,
+                temperature_range_default=temperature_preferences['temperature_range'],
+                temperature_step_default=temperature_preferences['temperature_step'],
+            )
+            temperature_reading = _dark_temperature_reading(
+                self.camera.id,
+                self.indi_allsky_config,
+                source=options['temperature_source'],
+            )
+            analysis_temperature = (
+                (
+                    temperature_reading.value
+                    if temperature_reading is not None
+                    else None
+                )
+                if options['temperature_policy'] == 'recommended' else None
+            )
+            capabilities, capture_state, coverage = _build_dark_analysis(
+                self.indi_allsky_config,
+                self.camera,
+                quality=quality,
+                temperature=analysis_temperature,
+                exposure_max=options['exposure_max'],
+                exposure_step=options['exposure_step'],
+                temperature_range=options['temperature_range'],
+            )
+            preview = dark_automation.execution_preview(
+                coverage,
+                strategy,
+                frame_count=frame_count,
+                capture_order=options['capture_order'],
+                temperature_policy=options['temperature_policy'],
+                temperature_source=options['temperature_source'],
+                capture_mode=options['capture_mode'],
+                temperature_delta=options['temperature_delta'],
+                temperature_target=options['temperature_target'],
+            )
+            preview['recommended_method'] = dark_automation.recommended_stacking_method(
+                self.indi_allsky_config,
+                preview['groups'],
+            )
+        except (dark_automation.DarkAutomationError, KeyError, TypeError, ValueError) as error:
+            return jsonify({'error': str(error)}), 400
+
+        preview['analysis'] = analysis_context(
+            capture_state,
+            capabilities,
+            coverage,
+        )
+        preview['temperature_range_source'] = (
+            temperature_preferences['range_source']
+            if options['temperature_range'] == temperature_preferences['temperature_range']
+            else 'advanced_override'
+        )
+        preview['analysis']['temperature_reading'] = (
+            temperature_reading.to_dict() if temperature_reading is not None else None
+        )
+        preview['temperature_sources'] = temperature_source_choices(
+            self.indi_allsky_config,
+        )
+        return jsonify(preview)
+
+
+class AjaxDarkAutomationStartView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        if not _can_save_standard_configuration():
+            return jsonify({'error': 'Administrator access is required to start dark calibration.'}), 403
+
+        request_data = request.get_json(silent=True) or {}
+        if request_data.get('camera_covered') is not True:
+            return jsonify({'error': 'Confirm that the camera is fully covered before starting.'}), 400
+
+        try:
+            camera_id = int(request_data.get('camera_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Select a valid camera.'}), 400
+        self.cameraSetup(camera_id=camera_id)
+        if not getattr(self.camera, 'local', False):
+            return jsonify({'error': 'Dark capture is only available for a local camera.'}), 400
+
+        quality = str(request_data.get('quality') or 'balanced')
+        try:
+            temperature_preferences = camera_temperature_preferences(self.camera)
+            capabilities = CameraCapabilities.from_camera(self.camera)
+            options = _dark_capture_options(
+                request_data,
+                self.indi_allsky_config,
+                capabilities,
+                temperature_range_default=temperature_preferences['temperature_range'],
+                temperature_step_default=temperature_preferences['temperature_step'],
+            )
+            temperature_reading = _dark_temperature_reading(
+                self.camera.id,
+                self.indi_allsky_config,
+                source=options['temperature_source'],
+            )
+            analysis_temperature = (
+                (
+                    temperature_reading.value
+                    if temperature_reading is not None
+                    else None
+                )
+                if options['temperature_policy'] == 'recommended' else None
+            )
+            capabilities, capture_state, coverage = _build_dark_analysis(
+                self.indi_allsky_config,
+                self.camera,
+                quality=quality,
+                temperature=analysis_temperature,
+                exposure_max=options['exposure_max'],
+                exposure_step=options['exposure_step'],
+                temperature_range=options['temperature_range'],
+            )
+            execution = dark_automation.normalize_execution_request(
+                coverage,
+                capabilities,
+                capture_state,
+                request_data,
+            )
+            dark_automation.validate_execution_profiles(self.indi_allsky_config, execution)
+        except (dark_automation.DarkAutomationError, KeyError, TypeError, ValueError) as error:
+            return jsonify({'error': str(error)}), 400
+
+        active_task = _find_active_dark_task()
+        if active_task is not None:
+            return jsonify({
+                'error': 'Another dark calibration is already queued or running.',
+                'task_id': active_task.id,
+            }), 409
+
+        if _dark_config_requires_reload(self):
+            return jsonify({
+                'error': (
+                    'The saved configuration used for this plan is not active in the '
+                    'indi-allsky service. Reload indi-allsky, then review the updated plan; '
+                    'no dark frames were taken.'
+                ),
+                'review_required': True,
+            }), 409
+
+        service_start_warning = _prepare_dark_capture_service(self)
+        now_text = datetime.now(timezone.utc).isoformat()
+        task_data = {
+            'action': 'dark_automation',
+            'owner': _dark_automation_owner(),
+            'camera_id': self.camera.id,
+            'camera_uuid': str(getattr(self.camera, 'uuid', '') or ''),
+            'config_id': int(self.indi_allsky_config_id),
+            'capability_signature': capabilities.signature,
+            'generation_id': str(uuid.uuid4()),
+            'status': 'queued',
+            'cancel_requested': False,
+            'created_utc': now_text,
+            'quality': execution['quality'],
+            'strategy': execution['strategy'],
+            'method': execution['method'],
+            'frame_count': execution['frame_count'],
+            'config_signature': execution['config_signature'],
+            'plan_signature': execution['plan_signature'],
+            'groups': execution['groups'],
+            'target_count': execution['target_count'],
+            'estimated_seconds': execution['estimated_seconds'],
+            'estimated_time': execution['estimated_time'],
+            'estimated_library_bytes': execution['estimated_library_bytes'],
+            'estimated_library_storage': execution['estimated_library_storage'],
+            'estimated_peak_bytes': execution['estimated_peak_bytes'],
+            'estimated_peak_storage': execution['estimated_peak_storage'],
+            'exposure_max': execution['exposure_max'],
+            'exposure_step': execution['exposure_step'],
+            'capture_order': execution['capture_order'],
+            'temperature_policy': execution['temperature_policy'],
+            'temperature_range': execution['temperature_range'],
+            'temperature_source': execution['temperature_source'],
+            'temperature_source_signature': temperature_source_signature(
+                self.indi_allsky_config,
+            ),
+            'capture_mode': execution['capture_mode'],
+            'temperature_delta': execution['temperature_delta'],
+            'temperature_target': execution['temperature_target'],
+            'temperature_set_count': execution['temperature_set_count'],
+            'estimate_scope': execution['estimate_scope'],
+            'camera_covered_confirmed_utc': now_text,
+            'capture_restored': False,
+            'error': None,
+            'progress': {
+                'phase': 'queued',
+                'message': service_start_warning or 'Waiting for the capture controller.',
+                'completed_master_sets': 0,
+                'total_master_sets': execution['target_count'],
+                'heartbeat_utc': now_text,
+            },
+        }
+        task = IndiAllSkyDbTaskQueueTable(
+            queue=TaskQueueQueue.MAIN,
+            state=TaskQueueState.MANUAL,
+            priority=10,
+            data=task_data,
+        )
+        update_camera_temperature_preferences(
+            self.camera,
+            execution['temperature_range'],
+            execution['temperature_delta'],
+        )
+        db.session.add(task)
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception('Unable to queue dark-library calibration')
+            return jsonify({
+                'error': 'Dark calibration could not be queued. Wait a moment and try again.',
+            }), 500
+
+        response = dark_automation.task_public_status(task)
+        response['service_start_warning'] = service_start_warning
+        return jsonify(response)
+
+
+class AjaxDarkLibraryFlushView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        if not _can_save_standard_configuration():
+            return jsonify({'error': 'Administrator access is required to remove a dark library.'}), 403
+
+        request_data = request.get_json(silent=True) or {}
+        try:
+            camera_id = int(request_data.get('camera_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Select a valid camera.'}), 400
+        self.cameraSetup(camera_id=camera_id)
+        if getattr(self.camera, 'id', None) != camera_id:
+            return jsonify({'error': 'The selected camera is no longer available.'}), 404
+
+        selection = request_data.get('selection')
+        if request_data.get('scope') == 'all':
+            selection = None
+        try:
+            resolved = dark_automation.select_camera_library_entries(
+                (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
+                self.camera.id,
+                selection=selection,
+            )
+        except dark_automation.DarkAutomationError as error:
+            return jsonify({'error': str(error)}), 400
+        entry_count = resolved['dark_frames'] + resolved['bad_pixel_maps']
+        if entry_count < 1:
+            return jsonify({
+                'error': 'The selected dark frames or bad-pixel maps are no longer available.',
+            }), 400
+
+        removal_label = str(request_data.get('label') or 'selected library records').strip()
+        removal_label = removal_label[:160] or 'selected library records'
+        if str(request_data.get('mode') or 'remove') == 'preview':
+            try:
+                page_camera_id = int(request_data.get('page_camera_id'))
+            except (TypeError, ValueError):
+                page_camera_id = -1
+            if page_camera_id == self.camera.id:
+                try:
+                    coverage_impact = _dark_library_removal_coverage(
+                        self.camera,
+                        self.indi_allsky_config,
+                        resolved['selection'],
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    app.logger.warning('Unable to preview dark-library coverage impact: %s', error)
+                    coverage_impact = {
+                        'evaluated': False,
+                        'level': 'unknown',
+                        'message': (
+                            'Coverage impact could not be evaluated. Review the selected '
+                            'camera and records carefully.'
+                        ),
+                    }
+            else:
+                coverage_impact = {
+                    'evaluated': False,
+                    'level': 'other_camera',
+                    'message': (
+                        'This is another camera’s library. Its files are isolated from the '
+                        'current camera, so current-camera coverage is unaffected.'
+                    ),
+                }
+            return jsonify({
+                'camera_id': self.camera.id,
+                'camera_name': str(self.camera.name),
+                'label': removal_label,
+                'dark_frames': resolved['dark_frames'],
+                'bad_pixel_maps': resolved['bad_pixel_maps'],
+                'entry_count': entry_count,
+                'size_bytes': resolved['size_bytes'],
+                'size': resolved['size'],
+                'selection': resolved['selection'],
+                'selection_signature': resolved['signature'],
+                'coverage_impact': coverage_impact,
+            })
+
+        preview_signature = str(request_data.get('selection_signature') or '')
+        if selection is not None and preview_signature != resolved['signature']:
+            return jsonify({
+                'error': (
+                    'The selected library records changed after review. Preview the '
+                    'removal again before confirming.'
+                ),
+            }), 409
+        confirmation = str(request_data.get('confirmation') or '')
+        if confirmation != str(self.camera.name):
+            return jsonify({
+                'error': 'Enter the camera name exactly to confirm permanent library removal.',
+            }), 400
+
+        active_task = _find_active_dark_task()
+        if active_task is not None:
+            return jsonify({
+                'error': 'Another dark-library task is already queued or running.',
+                'task_id': active_task.id,
+            }), 409
+
+        service_start_warning = _prepare_dark_capture_service(self, operation='flush')
+        now_text = datetime.now(timezone.utc).isoformat()
+        task_data = {
+            'action': 'dark_automation',
+            'operation': 'flush',
+            'owner': _dark_automation_owner(),
+            'camera_id': self.camera.id,
+            'camera_uuid': str(getattr(self.camera, 'uuid', '') or ''),
+            'removal_selection': resolved['selection'],
+            'removal_selection_signature': resolved['signature'],
+            'removal_label': removal_label,
+            'removal_entry_count': entry_count,
+            'removal_size_bytes': resolved['size_bytes'],
+            'status': 'queued',
+            'cancel_requested': False,
+            'created_utc': now_text,
+            'capture_mode': dark_automation.CAPTURE_MODE_SINGLE,
+            'target_count': 0,
+            'estimated_seconds': 0,
+            'estimated_time': '0h 00m 00s',
+            'capture_restored': False,
+            'error': None,
+            'progress': {
+                'phase': 'queued',
+                'message': service_start_warning or (
+                    'Waiting for the capture controller before removing {0:s}.'.format(
+                        removal_label,
+                    )
+                ),
+                'completed_master_sets': 0,
+                'total_master_sets': 0,
+                'heartbeat_utc': now_text,
+            },
+        }
+        task = IndiAllSkyDbTaskQueueTable(
+            queue=TaskQueueQueue.MAIN,
+            state=TaskQueueState.MANUAL,
+            priority=10,
+            data=task_data,
+        )
+        db.session.add(task)
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception('Unable to queue dark-library removal')
+            return jsonify({
+                'error': 'Library removal could not be queued. Wait a moment and try again.',
+            }), 500
+
+        response = dark_automation.task_public_status(task)
+        response['service_start_warning'] = service_start_warning
+        return jsonify(response)
+
+
+class AjaxDarkLibraryEligibilityView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        if not _can_save_standard_configuration():
+            return jsonify({
+                'error': 'Administrator access is required to change dark-library eligibility.',
+            }), 403
+
+        request_data = request.get_json(silent=True) or {}
+        try:
+            camera_id = int(request_data.get('camera_id'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Select a valid camera.'}), 400
+        active = request_data.get('active')
+        if not isinstance(active, bool):
+            return jsonify({'error': 'Choose whether the selected master sets are eligible.'}), 400
+
+        self.cameraSetup(camera_id=camera_id)
+        if getattr(self.camera, 'id', None) != camera_id:
+            return jsonify({'error': 'The selected camera is no longer available.'}), 404
+        if _find_active_dark_task() is not None:
+            return jsonify({
+                'error': 'Wait for the current dark-library task to finish before changing eligibility.',
+            }), 409
+
+        try:
+            resolved = dark_automation.select_camera_master_sets(
+                (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
+                self.camera.id,
+                request_data.get('selection'),
+            )
+        except dark_automation.DarkAutomationError as error:
+            return jsonify({'error': str(error)}), 400
+        entry_count = resolved['dark_frames'] + resolved['bad_pixel_maps']
+        if entry_count < 1:
+            return jsonify({'error': 'The selected master sets are no longer available.'}), 400
+
+        changing_entries = [
+            frame for frame in resolved['entries']
+            if bool(getattr(frame, 'active', False)) != active
+        ]
+        if not changing_entries:
+            return jsonify({
+                'error': (
+                    'The selected master sets are already eligible.' if active
+                    else 'The selected master sets are already excluded.'
+                ),
+            }), 409
+        if active and any(
+                dark_automation.library_entry_eligibility(frame)['staged']
+                for frame in resolved['entries']
+        ):
+            return jsonify({
+                'error': (
+                    'Capture staging files cannot be made eligible manually. '
+                    'Finish or remove the staged run first.'
+                ),
+            }), 409
+
+        label = str(request_data.get('label') or 'selected master sets').strip()
+        label = label[:160] or 'selected master sets'
+        mode = str(request_data.get('mode') or 'preview')
+        if mode == 'preview':
+            try:
+                page_camera_id = int(request_data.get('page_camera_id'))
+            except (TypeError, ValueError):
+                page_camera_id = -1
+            if page_camera_id == self.camera.id:
+                try:
+                    coverage_impact = _dark_library_eligibility_coverage(
+                        self.camera,
+                        self.indi_allsky_config,
+                        resolved['selection'],
+                        active,
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    app.logger.warning('Unable to preview eligibility coverage impact: %s', error)
+                    coverage_impact = {
+                        'evaluated': False,
+                        'level': 'unknown',
+                        'message': 'Coverage impact could not be evaluated. Review the selection carefully.',
+                    }
+            else:
+                coverage_impact = {
+                    'evaluated': False,
+                    'level': 'other_camera',
+                    'message': (
+                        'This is another camera’s library. Current-camera coverage is unaffected.'
+                    ),
+                }
+            return jsonify({
+                'camera_id': self.camera.id,
+                'camera_name': str(self.camera.name),
+                'label': label,
+                'active': active,
+                'dark_frames': sum(
+                    1 for frame in changing_entries if 'DarkFrame' in type(frame).__name__
+                ),
+                'bad_pixel_maps': sum(
+                    1 for frame in changing_entries if 'BadPixelMap' in type(frame).__name__
+                ),
+                'entry_count': len(changing_entries),
+                'selection': resolved['selection'],
+                'selection_signature': resolved['signature'],
+                'coverage_impact': coverage_impact,
+            })
+
+        if mode != 'apply':
+            return jsonify({'error': 'The requested eligibility action is invalid.'}), 400
+        if str(request_data.get('selection_signature') or '') != resolved['signature']:
+            return jsonify({
+                'error': (
+                    'The selected master sets changed after review. Preview the action again.'
+                ),
+            }), 409
+
+        try:
+            changed = dark_automation.update_library_entries_eligibility(
+                resolved['entries'],
+                active,
+            )
+            db.session.commit()
+        except dark_automation.DarkAutomationError as error:
+            db.session.rollback()
+            return jsonify({'error': str(error)}), 409
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception('Unable to update dark-library eligibility')
+            return jsonify({
+                'error': 'Dark-library eligibility could not be changed. Try again.',
+            }), 500
+        return jsonify({
+            'success': True,
+            'active': active,
+            'changed_entry_count': len(changed),
+            'message': (
+                'The selected master sets are eligible for calibration again.' if active
+                else 'The selected master sets are excluded from calibration but remain stored.'
+            ),
+        })
+
+
+class AjaxDarkAutomationStatusView(BaseView):
+    methods = ['GET']
+    decorators = [login_required]
+
+    def dispatch_request(self, task_id):
+        task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=int(task_id)).first()
+        if task is None or (task.data or {}).get('action') != 'dark_automation':
+            return jsonify({'error': 'This dark-calibration run is no longer available.'}), 404
+        task_data = dict(task.data or {})
+        if task_data.get('owner') != _dark_automation_owner():
+            return jsonify({'error': 'This dark-calibration run is not available to this user.'}), 403
+
+        if (
+                task_data.get('status') == 'queued'
+                and task.createDate < (datetime.now() - timedelta(minutes=30))
+        ):
+            task_data['status'] = 'failed'
+            task_data['completed_utc'] = datetime.now(timezone.utc).isoformat()
+            task_data['capture_restored'] = True
+            if task_data.get('operation') == 'flush':
+                task_data['error'] = (
+                    'The capture controller did not accept library removal within 30 minutes. '
+                    'Check that capture is running and try again.'
+                )
+            else:
+                task_data['error'] = (
+                    'The capture controller did not accept the plan within 30 minutes. '
+                    'Check that capture is running, uncover the camera, and start again when ready.'
+                )
+            progress = dict(task_data.get('progress') or {})
+            progress['phase'] = 'failed'
+            progress['message'] = (
+                'Library removal was not accepted.'
+                if task_data.get('operation') == 'flush'
+                else 'The covered-camera confirmation expired before capture started.'
+            )
+            task_data['progress'] = progress
+            task.data = task_data
+            task.state = TaskQueueState.FAILED
+            task.result = 'Dark calibration queue timeout'
+            db.session.commit()
+
+        return jsonify(dark_automation.task_public_status(task))
+
+
+class AjaxDarkAutomationCancelView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+    def dispatch_request(self, task_id):
+        if not _can_save_standard_configuration():
+            return jsonify({'error': 'Administrator access is required to cancel dark calibration.'}), 403
+
+        task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=int(task_id)).first()
+        if task is None or (task.data or {}).get('action') != 'dark_automation':
+            return jsonify({'error': 'This dark-calibration run is no longer available.'}), 404
+        task_data = dict(task.data or {})
+        if task_data.get('owner') != _dark_automation_owner():
+            return jsonify({'error': 'This dark-calibration run is not available to this user.'}), 403
+        if task_data.get('status') in dark_automation.TERMINAL_STATUSES:
+            return jsonify(dark_automation.task_public_status(task))
+
+        task_data['cancel_requested'] = True
+        progress = dict(task_data.get('progress') or {})
+        if task.state == TaskQueueState.MANUAL:
+            task_data['status'] = 'cancelled'
+            task_data['completed_utc'] = datetime.now(timezone.utc).isoformat()
+            task_data['capture_restored'] = True
+            progress['phase'] = 'cancelled'
+            progress['message'] = 'Dark calibration was cancelled before capture paused.'
+            task.state = TaskQueueState.EXPIRED
+            task.result = 'Dark calibration cancelled'
+        else:
+            task_data['status'] = 'cancel_requested'
+            progress['phase'] = 'cancel_requested'
+            progress['message'] = 'Cancellation requested; finishing the current camera operation.'
+        task_data['progress'] = progress
+        task.data = task_data
+        db.session.commit()
+        return jsonify(dark_automation.task_public_status(task))
 
 
 class ImageLagView(TemplateView):
@@ -1175,7 +2589,6 @@ class ImageLoopCanvasView(TemplateView):
 
 class JsonImageLoopView(JsonView):
     model = IndiAllSkyDbImageTable
-    include_id = False
 
     def __init__(self, **kwargs):
         super(JsonImageLoopView, self).__init__(**kwargs)
@@ -1187,8 +2600,7 @@ class JsonImageLoopView(JsonView):
 
 
     def get_objects(self):
-        requested_history_seconds = int(request.args.get('limit_s', self.history_seconds))
-        history_seconds = requested_history_seconds
+        history_seconds = int(request.args.get('limit_s', self.history_seconds))
         self.limit = int(request.args.get('limit', self._limit))
         timestamp = int(request.args.get('timestamp', 0))
         camera_id = int(request.args['camera_id'])
@@ -1221,60 +2633,7 @@ class JsonImageLoopView(JsonView):
         if len(data['image_list']) == 0:
             data['message'] = 'No Timelapse Data'
 
-        if request.args.get('mini_preflight') == '1':
-            data['standard_preflight'] = self.getMiniTimelapsePreflight(
-                camera_id,
-                timestamp,
-                requested_history_seconds,
-            )
-
         return data
-
-
-    def getMiniTimelapsePreflight(self, camera_id, timestamp, history_seconds):
-        history_seconds = max(1, min(history_seconds, 86400))
-        end_dt = datetime.fromtimestamp(timestamp)
-        start_dt = end_dt - timedelta(seconds=history_seconds)
-
-        image_entries = self.model.query\
-            .join(self.model.camera)\
-            .filter(
-                and_(
-                    IndiAllSkyDbCameraTable.id == camera_id,
-                    self.model.exclude == sa_false(),
-                    self.model.createDate >= start_dt,
-                    self.model.createDate <= end_dt,
-                )
-            )\
-            .order_by(self.model.createDate.asc(), self.model.id.asc())\
-            .yield_per(100)
-
-        frame_count = 0
-        start_reference = None
-        end_reference = None
-        for image_entry in image_entries:
-            try:
-                image_path = Path(image_entry.getFilesystemPath())
-                if not image_path.stat().st_size:
-                    continue
-            except (OSError, ValueError):
-                continue
-
-            frame_count += 1
-            frame_reference = {
-                'timestamp' : int(image_entry.createDate.timestamp()),
-                'datetime'  : image_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
-            }
-            if start_reference is None:
-                start_reference = frame_reference
-            end_reference = frame_reference
-
-        return {
-            'frame_count'             : frame_count,
-            'has_enough_local_frames' : frame_count >= 2,
-            'start_reference'         : start_reference,
-            'end_reference'           : end_reference,
-        }
 
 
     def getLoopImages(self, camera_id, loop_dt, history_seconds):
@@ -1329,8 +2688,6 @@ class JsonImageLoopView(JsonView):
                 'height'    : i.height,
                 'timestamp' : int(i.createDate.timestamp()),
             }
-            if self.include_id:
-                data['id'] = i.id
 
 
             try:
@@ -1516,109 +2873,6 @@ class PanoramaLoopImgView(ImageLoopImgView):
 
 class JsonPanoramaLoopView(JsonImageLoopView):
     model = IndiAllSkyDbPanoramaImageTable
-    include_id = True
-
-
-    def get_objects(self):
-        data = super(JsonPanoramaLoopView, self).get_objects()
-
-        expected_width = int(request.args.get('source_width', 0))
-        expected_height = int(request.args.get('source_height', 0))
-        if not expected_width or not expected_height:
-            return data
-
-        requested_history_seconds = int(request.args.get('limit_s', self.history_seconds))
-        requested_history_seconds = max(1, min(requested_history_seconds, 86400))
-        timestamp = int(request.args.get('timestamp', 0))
-        camera_id = int(request.args['camera_id'])
-
-        if not timestamp:
-            timestamp = int(datetime.timestamp(self.camera_now))
-
-        # Preflight must match the exact range used by the video worker.
-        loop_dt = datetime.fromtimestamp(timestamp)
-        start_dt = loop_dt - timedelta(seconds=requested_history_seconds)
-
-        panorama_entries = self.model.query\
-            .join(self.model.camera)\
-            .filter(
-                and_(
-                    IndiAllSkyDbCameraTable.id == camera_id,
-                    self.model.exclude == sa_false(),
-                    self.model.createDate >= start_dt,
-                    self.model.createDate <= loop_dt,
-                )
-            )\
-            .order_by(self.model.createDate.asc(), self.model.id.asc())\
-            .yield_per(100)
-
-        local = not self.web_nonlocal_images or (
-            self.web_local_images_admin and self.verify_admin_network()
-        )
-
-        local_frame_count = 0
-        dimensions_match = True
-        start_reference_entry = None
-        end_reference_entry = None
-        preview_entry_ids = {entry['id'] for entry in data['image_list']}
-        available_preview_entry_ids = set()
-        for panorama_entry in panorama_entries:
-
-            dimension_mismatch = (
-                panorama_entry.width != expected_width
-                or panorama_entry.height != expected_height
-            )
-
-            try:
-                panorama_path = Path(panorama_entry.getFilesystemPath())
-                if not panorama_path.stat().st_size:
-                    continue
-
-                local_frame_count += 1
-                if dimension_mismatch:
-                    dimensions_match = False
-                    continue
-            except (OSError, ValueError):
-                continue
-
-            if panorama_entry.id in preview_entry_ids:
-                available_preview_entry_ids.add(panorama_entry.id)
-            if start_reference_entry is None:
-                start_reference_entry = panorama_entry
-            end_reference_entry = panorama_entry
-
-        data['image_list'] = [
-            entry for entry in data['image_list']
-            if entry['id'] in available_preview_entry_ids
-        ]
-
-        def get_reference(panorama_entry):
-            if panorama_entry is None:
-                return None
-            try:
-                panorama_url = panorama_entry.getUrl(
-                    s3_prefix=self.s3_prefix,
-                    local=local,
-                )
-            except (OSError, ValueError):
-                return None
-
-            return {
-                'id'        : panorama_entry.id,
-                'url'       : str(panorama_url),
-                'timestamp' : int(panorama_entry.createDate.timestamp()),
-                'datetime'  : panorama_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
-            }
-
-        data['panorama_preflight'] = {
-            'frame_count'             : local_frame_count,
-            'has_enough_local_frames' : local_frame_count >= 2,
-            'dimensions_match'        : dimensions_match,
-            'start_reference'         : get_reference(start_reference_entry),
-            'end_reference'           : get_reference(end_reference_entry),
-        }
-
-        return data
 
 
     def getSqmData(self, *args):
@@ -5441,7 +6695,6 @@ class MiniVideoViewerView(FormView):
         context = super(MiniVideoViewerView, self).get_context()
 
         context['youtube__enable'] = int(self.indi_allsky_config.get('YOUTUBE', {}).get('ENABLE', 0))
-        context['mini_video_delete_allowed'] = _can_save_standard_configuration()
 
         form_data = {
             'CAMERA_ID'    : self.camera.id,
@@ -5526,124 +6779,6 @@ class AjaxMiniVideoViewerView(BaseView):
             json_data['MONTH_SELECT'] = (('', 'None'),)
             json_data['video_list'] = tuple()
 
-        return jsonify(json_data)
-
-
-class AjaxMiniVideoDeleteView(BaseView):
-    methods = ['POST']
-    decorators = [login_required]
-
-
-    def dispatch_request(self):
-        if not _can_save_standard_configuration():
-            json_data = {
-                'failure-message' : 'You do not have permission to delete mini timelapses.',
-            }
-            return jsonify(json_data), 403
-
-        request_data = request.get_json(silent=True) or {}
-        try:
-            camera_id = int(request_data['CAMERA_ID'])
-            video_id = int(request_data['VIDEO_ID'])
-        except (KeyError, TypeError, ValueError):
-            json_data = {
-                'failure-message' : 'Invalid mini timelapse deletion request.',
-            }
-            return jsonify(json_data), 400
-
-        try:
-            mini_video_entry = IndiAllSkyDbMiniVideoTable.query\
-                .join(IndiAllSkyDbMiniVideoTable.camera)\
-                .filter(
-                    and_(
-                        IndiAllSkyDbMiniVideoTable.id == video_id,
-                        IndiAllSkyDbCameraTable.id == camera_id,
-                    )
-                )\
-                .one()
-        except NoResultFound:
-            json_data = {
-                'failure-message' : 'Mini timelapse not found.',
-            }
-            return jsonify(json_data), 404
-
-        mini_video_data = mini_video_entry.data if isinstance(mini_video_entry.data, dict) else {}
-        try:
-            generation_task_id = int(mini_video_data.get('generation_task_id') or 0)
-        except (TypeError, ValueError):
-            generation_task_id = 0
-        generation_task_created = str(mini_video_data.get('generation_task_created') or '')
-
-        if generation_task_id and generation_task_created:
-            active_task = IndiAllSkyDbTaskQueueTable.query\
-                .filter(IndiAllSkyDbTaskQueueTable.id == generation_task_id)\
-                .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO)\
-                .filter(
-                    IndiAllSkyDbTaskQueueTable.state.in_((
-                        TaskQueueState.QUEUED,
-                        TaskQueueState.RUNNING,
-                    ))
-                )\
-                .first()
-
-            if active_task and active_task.createDate.isoformat() == generation_task_created:
-                json_data = {
-                    'failure-message' : (
-                        'This mini timelapse is still being created. '
-                        'Try again when it is finished.'
-                    ),
-                }
-                return jsonify(json_data), 409
-
-        related_assets = {(mini_video_entry.__class__.__name__, mini_video_entry.id)}
-        if mini_video_entry.thumbnail_uuid:
-            thumbnail_id = db.session.query(IndiAllSkyDbThumbnailTable.id)\
-                .filter(IndiAllSkyDbThumbnailTable.uuid == mini_video_entry.thumbnail_uuid)\
-                .scalar()
-            if thumbnail_id:
-                related_assets.add((IndiAllSkyDbThumbnailTable.__name__, thumbnail_id))
-
-        active_upload_tasks = IndiAllSkyDbTaskQueueTable.query\
-            .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.UPLOAD)\
-            .filter(
-                IndiAllSkyDbTaskQueueTable.state.in_((
-                    TaskQueueState.MANUAL,
-                    TaskQueueState.QUEUED,
-                    TaskQueueState.RUNNING,
-                ))
-            )
-        for upload_task in active_upload_tasks:
-            upload_data = upload_task.data if isinstance(upload_task.data, dict) else {}
-            try:
-                upload_asset = (str(upload_data.get('model')), int(upload_data.get('id')))
-            except (TypeError, ValueError):
-                continue
-            if upload_asset in related_assets:
-                json_data = {
-                    'failure-message' : (
-                        'This mini timelapse is still being uploaded. '
-                        'Try again when it is finished.'
-                    ),
-                }
-                return jsonify(json_data), 409
-
-        app.logger.info('Removing mini timelapse entry: %s', mini_video_entry.filename)
-
-        try:
-            mini_video_entry.deleteAsset()
-        except OSError as e:
-            app.logger.error('Cannot remove mini timelapse: %s', str(e))
-            json_data = {
-                'failure-message' : 'Unable to remove the mini timelapse file.',
-            }
-            return jsonify(json_data), 400
-
-        db.session.delete(mini_video_entry)
-        db.session.commit()
-
-        json_data = {
-            'success-message' : 'Mini timelapse deleted.',
-        }
         return jsonify(json_data)
 
 
@@ -11340,26 +12475,6 @@ class MiniTimelapseVideoView(TimelapseVideoView):
     file_view = 'indi_allsky.mini_timelapse_video_view'
 
 
-    def get_context(self):
-        context = super(MiniTimelapseVideoView, self).get_context()
-        context['video_delete_allowed'] = False
-
-        if not context.get('video_url'):
-            return context
-
-        mini_video = self.model.query\
-            .filter(self.model.id == context['video_id'])\
-            .first()
-        if not mini_video:
-            return context
-
-        context['video_delete_allowed'] = _can_save_standard_configuration()
-        context['video_camera_id'] = mini_video.camera_id
-        context['video_source'] = (mini_video.data or {}).get('source', 'standard')
-
-        return context
-
-
 class StartrailVideoView(TimelapseVideoView):
     model = IndiAllSkyDbStarTrailsVideoTable
     page_title = 'Startrail Video'
@@ -11377,129 +12492,6 @@ class MiniTimelapseGeneratorView(TemplateView):
 
     page_title = 'Mini Timelapse'
     image_loop_view = 'indi_allsky.js_image_loop_view'
-
-
-    def _getPanoramaContext(self, image_entry):
-        panorama_enabled = bool(
-            self.indi_allsky_config.get('FISH2PANO', {}).get('ENABLE', False)
-        )
-        panorama_data = {
-            'available'      : False,
-            'id'             : 0,
-            'url'            : '',
-            'width'          : 0,
-            'height'         : 0,
-            'circle_clipped' : False,
-        }
-        panorama_suggestions = []
-
-        if not panorama_enabled:
-            return panorama_enabled, panorama_data, panorama_suggestions
-
-        panorama_query = IndiAllSkyDbPanoramaImageTable.query\
-            .join(IndiAllSkyDbPanoramaImageTable.camera)\
-            .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
-            .filter(IndiAllSkyDbPanoramaImageTable.exclude == sa_false())
-
-        # Panorama controls follow the same exact-asset rule as other optional
-        # downloads. Nearby panoramas are navigation choices, never substitutes.
-        panorama_image_entry = panorama_query\
-            .filter(IndiAllSkyDbPanoramaImageTable.createDate == image_entry.createDate)\
-            .order_by(IndiAllSkyDbPanoramaImageTable.id.desc())\
-            .first()
-
-        local = not self.web_nonlocal_images or (
-            self.web_local_images_admin and self.verify_admin_network()
-        )
-
-        if panorama_image_entry:
-            try:
-                panorama_path = Path(panorama_image_entry.getFilesystemPath())
-                panorama_url = ''
-                if panorama_path.stat().st_size:
-                    panorama_url = panorama_image_entry.getUrl(
-                        s3_prefix=self.s3_prefix,
-                        local=local,
-                    )
-            except (OSError, ValueError):
-                panorama_url = ''
-
-            if panorama_url:
-                panorama_image_data = panorama_image_entry.data or {}
-                circle_clipped = panorama_image_data.get('fish2pano_circle_clipped')
-                if circle_clipped is None:
-                    # Older panorama rows predate the stored source geometry.
-                    try:
-                        binning = max(int(image_entry.binmode), 1)
-                        diameter = int(self.indi_allsky_config['FISH2PANO']['DIAMETER'] / binning)
-                        offset_x = int(self.indi_allsky_config.get('LENS_OFFSET_X', 0) / binning)
-                        offset_y = int(self.indi_allsky_config.get('LENS_OFFSET_Y', 0) / binning)
-                        circle_clipped = panoramaSourceCircleClipped(
-                            image_entry.width,
-                            image_entry.height,
-                            diameter,
-                            offset_x,
-                            offset_y,
-                        )
-                    except (KeyError, TypeError, ValueError):
-                        circle_clipped = False
-
-                panorama_data = {
-                    'available'      : True,
-                    'id'             : panorama_image_entry.id,
-                    'url'            : str(panorama_url),
-                    'width'          : panorama_image_entry.width,
-                    'height'         : panorama_image_entry.height,
-                    'circle_clipped' : bool(circle_clipped),
-                }
-
-        if panorama_data['available']:
-            return panorama_enabled, panorama_data, panorama_suggestions
-
-        panorama_before = panorama_query\
-            .filter(IndiAllSkyDbPanoramaImageTable.createDate < image_entry.createDate)\
-            .order_by(
-                IndiAllSkyDbPanoramaImageTable.createDate.desc(),
-                IndiAllSkyDbPanoramaImageTable.id.desc(),
-            )\
-            .first()
-        panorama_after = panorama_query\
-            .filter(IndiAllSkyDbPanoramaImageTable.createDate > image_entry.createDate)\
-            .order_by(
-                IndiAllSkyDbPanoramaImageTable.createDate.asc(),
-                IndiAllSkyDbPanoramaImageTable.id.desc(),
-            )\
-            .first()
-
-        for direction, panorama_candidate in (
-            ('Previous panorama', panorama_before),
-            ('Next panorama', panorama_after),
-        ):
-            if not panorama_candidate:
-                continue
-
-            suggestion_image_entry = IndiAllSkyDbImageTable.query\
-                .join(IndiAllSkyDbImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
-                .filter(IndiAllSkyDbImageTable.createDate == panorama_candidate.createDate)\
-                .order_by(IndiAllSkyDbImageTable.id.desc())\
-                .first()
-
-            if not suggestion_image_entry:
-                continue
-
-            panorama_suggestions.append({
-                'label'    : direction,
-                'datetime' : panorama_candidate.createDate.strftime('%Y-%m-%d %H:%M:%S'),
-                'url'      : url_for(
-                    'indi_allsky.mini_generate_view',
-                    image_id=suggestion_image_entry.id,
-                    source='panorama',
-                ),
-            })
-
-        return panorama_enabled, panorama_data, panorama_suggestions
-
 
     def get_context(self):
         context = super(MiniTimelapseGeneratorView, self).get_context()
@@ -11520,29 +12512,15 @@ class MiniTimelapseGeneratorView(TemplateView):
                 .order_by(IndiAllSkyDbImageTable.createDate.desc())\
                 .first()
 
-        (
-            panorama_enabled,
-            panorama_data,
-            panorama_suggestions,
-        ) = self._getPanoramaContext(image_entry)
-
 
         context['image_loop_view'] = self.image_loop_view
-        context['panorama_image_loop_view'] = 'indi_allsky.js_panorama_loop_view'
 
         context['timestamp'] = int(image_entry.createDate.timestamp())
-        context['panorama'] = panorama_data
-        context['panorama_enabled'] = panorama_enabled
-        context['panorama_suggestions'] = panorama_suggestions
-        if panorama_enabled:
-            context['source_type'] = request.args.get('source', 'standard')
-        else:
-            context['source_type'] = 'standard'
 
 
         form_data = {
             'CAMERA_ID'             : self.camera.id,
-            'IMAGE_ID'              : image_entry.id,
+            'IMAGE_ID'              : image_id,
             'PRE_SECONDS_SELECT'    : '240',
             'POST_SECONDS_SELECT'   : '120',
             'FRAMERATE_SELECT'      : '10',
@@ -11562,157 +12540,58 @@ class AjaxMiniTimelapseGeneratorView(BaseView):
         super(AjaxMiniTimelapseGeneratorView, self).__init__(**kwargs)
 
 
-    def _parseMiniVideoRequest(self, request_data):
-        try:
-            request_values = {
-                'image_id'    : int(request_data['IMAGE_ID']),
-                'camera_id'   : int(request_data['CAMERA_ID']),
-                'pre_seconds' : int(request_data['PRE_SECONDS']),
-                'post_seconds': int(request_data['POST_SECONDS']),
-                'framerate'   : float(request_data['FRAMERATE']),
-                'note'        : str(request_data.get('NOTE') or ''),
+    def dispatch_request(self):
+        if not current_user.is_admin:
+            json_data = {
+                'failure-message' : 'User does not have permission to generate content',
             }
-        except (KeyError, TypeError, ValueError):
-            return None, 'Check the selected time range and speed, then try again.'
-
-        if not request_values['note'].strip():
-            return None, 'Enter a description for this video.'
-        if len(request_values['note']) > 255:
-            return None, 'Keep the description to 255 characters or fewer.'
-        if (
-            request_values['pre_seconds'] < 1
-            or request_values['pre_seconds'] > 43200
-            or request_values['post_seconds'] < 1
-            or request_values['post_seconds'] > 43200
-            or not math.isfinite(request_values['framerate'])
-            or request_values['framerate'] <= 0
-            or request_values['framerate'] > 60
-        ):
-            return None, 'Check the selected time range and speed, then try again.'
-
-        return request_values, None
+            return jsonify(json_data), 400
 
 
-    def _queueMiniVideo(self, action, job_kwargs):
+        image_id = int(request.json['IMAGE_ID'])
+        camera_id = int(request.json['CAMERA_ID'])
+        pre_seconds = int(request.json['PRE_SECONDS'])
+        post_seconds = int(request.json['POST_SECONDS'])
+        framerate = float(request.json['FRAMERATE'])
+        note = str(request.json['NOTE'])
+
+
+        # sanity check
+        IndiAllSkyDbImageTable.query\
+            .join(IndiAllSkyDbImageTable.camera)\
+            .filter(IndiAllSkyDbCameraTable.id == camera_id)\
+            .filter(IndiAllSkyDbImageTable.id == image_id)\
+            .one()
+
+
+        jobdata = {
+            'action' : 'generateMiniVideo',
+            'kwargs' : {
+                'image_id'      : image_id,
+                'camera_id'     : camera_id,
+                'pre_seconds'   : pre_seconds,
+                'post_seconds'  : post_seconds,
+                'framerate'     : framerate,
+                'note'          : note,
+            },
+        }
+
+
         task_mini_video = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO,
             state=TaskQueueState.MANUAL,
             priority=100,
-            data={
-                'action' : action,
-                'kwargs' : job_kwargs,
-            },
+            data=jobdata,
         )
+
         db.session.add(task_mini_video)
         db.session.commit()
 
-        return jsonify({
-            'success-message' : 'Your mini timelapse is being created. Check Mini Timelapses in a few minutes.',
-        })
+        message = {
+            'success-message' : 'Job Submitted - Check the Mini Timelapses view in a few minutes',
+        }
 
-
-    def _queuePanoramaMiniVideo(self, request_data):
-        if not self.indi_allsky_config.get('FISH2PANO', {}).get('ENABLE', False):
-            json_data = {
-                'failure-message' : 'Panorama creation is turned off in the Image Processing settings.',
-            }
-            return jsonify(json_data), 400
-
-        request_values, error_message = self._parseMiniVideoRequest(request_data)
-        if error_message:
-            return jsonify({'failure-message': error_message}), 400
-
-        try:
-            panorama_image_id = int(request_data['PANORAMA_IMAGE_ID'])
-        except (KeyError, TypeError, ValueError):
-            json_data = {
-                'failure-message' : 'Check the selected time range and speed, then try again.',
-            }
-            return jsonify(json_data), 400
-
-        try:
-            image_entry = IndiAllSkyDbImageTable.query\
-                .join(IndiAllSkyDbImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
-                .filter(IndiAllSkyDbImageTable.id == request_values['image_id'])\
-                .one()
-
-            panorama_image_entry = IndiAllSkyDbPanoramaImageTable.query\
-                .join(IndiAllSkyDbPanoramaImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
-                .filter(IndiAllSkyDbPanoramaImageTable.id == panorama_image_id)\
-                .filter(IndiAllSkyDbPanoramaImageTable.exclude == sa_false())\
-                .one()
-
-            # Nearby panoramas are offered as links, never silent substitutes.
-            if panorama_image_entry.createDate != image_entry.createDate:
-                raise ValueError('The selected panorama does not match the selected image')
-
-            selection = validatePanoramaMiniTimelapseRequest(
-                panorama_image_entry.width,
-                panorama_image_entry.height,
-                request_data,
-            )
-        except (KeyError, NoResultFound, TypeError, ValueError) as e:
-            app.logger.warning('Invalid panorama mini timelapse selection: %s', str(e))
-            json_data = {
-                'failure-message' : 'The selected panorama area is not valid. Reset the area and try again.',
-            }
-            return jsonify(json_data), 400
-
-        request_values.update({
-            'panorama_image_id' : panorama_image_id,
-            'crop_x'            : selection['crop_x'],
-            'crop_y'            : selection['crop_y'],
-            'crop_width'        : selection['crop_width'],
-            'crop_height'       : selection['crop_height'],
-            'aspect_ratio'      : selection['aspect_ratio'],
-            'pan_mode'          : selection['pan_mode'],
-            'end_crop_x'        : selection['end_crop_x'],
-            'end_crop_y'        : selection['end_crop_y'],
-            'pan_direction'     : selection['pan_direction'],
-        })
-        return self._queueMiniVideo('generatePanoramaMiniVideo', request_values)
-
-
-    def dispatch_request(self):
-        if not current_user.is_admin:
-            json_data = {
-                'failure-message' : 'You do not have permission to create mini timelapses.',
-            }
-            return jsonify(json_data), 400
-
-        request_data = request.get_json(silent=True) or {}
-        source_type = str(request_data.get('SOURCE_TYPE', 'standard'))
-        if source_type == 'panorama':
-            return self._queuePanoramaMiniVideo(request_data)
-        if source_type != 'standard':
-            json_data = {
-                'failure-message' : 'Choose all-sky images or panorama images.',
-            }
-            return jsonify(json_data), 400
-
-
-        request_values, error_message = self._parseMiniVideoRequest(request_data)
-        if error_message:
-            return jsonify({'failure-message': error_message}), 400
-
-
-        # sanity check
-        try:
-            IndiAllSkyDbImageTable.query\
-                .join(IndiAllSkyDbImageTable.camera)\
-                .filter(IndiAllSkyDbCameraTable.id == request_values['camera_id'])\
-                .filter(IndiAllSkyDbImageTable.id == request_values['image_id'])\
-                .one()
-        except NoResultFound:
-            json_data = {
-                'failure-message' : 'The selected image is no longer available. Choose another image.',
-            }
-            return jsonify(json_data), 400
-
-
-        return self._queueMiniVideo('generateMiniVideo', request_values)
+        return jsonify(message)
 
 
 class FileSpaceUsageView(TemplateView):
@@ -14519,7 +15398,6 @@ bp_allsky.add_url_rule('/ajax/videoviewer', view_func=AjaxVideoViewerView.as_vie
 
 bp_allsky.add_url_rule('/minivideoviewer', view_func=MiniVideoViewerView.as_view('mini_videoviewer_view', template_name='minivideoviewer.html'))
 bp_allsky.add_url_rule('/ajax/minivideoviewer', view_func=AjaxMiniVideoViewerView.as_view('ajax_mini_videoviewer_view'))
-bp_allsky.add_url_rule('/ajax/minivideoviewer/delete', view_func=AjaxMiniVideoDeleteView.as_view('ajax_mini_videodelete_view'))
 
 bp_allsky.add_url_rule('/view_image', view_func=TimelapseImageView.as_view('timelapse_image_view', template_name='view_image.html'))
 bp_allsky.add_url_rule('/view_panorama', view_func=PanoramaImageView.as_view('panorama_image_view', template_name='view_image.html'))
@@ -14604,6 +15482,12 @@ bp_allsky.add_url_rule('/camera', view_func=CameraLensView.as_view('camera_lens_
 bp_allsky.add_url_rule('/lag', view_func=ImageLagView.as_view('image_lag_view', template_name='lag.html'))
 bp_allsky.add_url_rule('/adu', view_func=RollingAduView.as_view('rolling_adu_view', template_name='adu.html'))
 bp_allsky.add_url_rule('/darks', view_func=DarkFramesView.as_view('darks_view', template_name='darks.html'))
+bp_allsky.add_url_rule('/ajax/darks/plan', view_func=AjaxDarkAutomationPlanView.as_view('ajax_darks_plan_view'))
+bp_allsky.add_url_rule('/ajax/darks/start', view_func=AjaxDarkAutomationStartView.as_view('ajax_darks_start_view'))
+bp_allsky.add_url_rule('/ajax/darks/flush', view_func=AjaxDarkLibraryFlushView.as_view('ajax_darks_flush_view'))
+bp_allsky.add_url_rule('/ajax/darks/eligibility', view_func=AjaxDarkLibraryEligibilityView.as_view('ajax_darks_eligibility_view'))
+bp_allsky.add_url_rule('/ajax/darks/status/<int:task_id>', view_func=AjaxDarkAutomationStatusView.as_view('ajax_darks_status_view'))
+bp_allsky.add_url_rule('/ajax/darks/cancel/<int:task_id>', view_func=AjaxDarkAutomationCancelView.as_view('ajax_darks_cancel_view'))
 bp_allsky.add_url_rule('/mask', view_func=MaskView.as_view('mask_view', template_name='mask.html'))
 bp_allsky.add_url_rule('/camerasimulator', view_func=CameraSimulatorView.as_view('camera_simulator_view', template_name='camera_simulator.html'))
 bp_allsky.add_url_rule('/imagecirclehelper', view_func=ImageCircleHelperView.as_view('image_circle_helper_view', template_name='imagecirclehelper.html'))
@@ -14727,4 +15611,5 @@ def manifest():
     response = jsonify(manifest_data)
     response.headers['Content-Type'] = 'application/manifest+json'
     return response
+
 
