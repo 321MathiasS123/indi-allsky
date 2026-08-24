@@ -61,9 +61,12 @@ QUEUED_STALE_SECONDS = 30 * 60
 RUNNING_STALE_SECONDS = 2 * 60 * 60
 DATABASE_GROUP_MIN = 7
 DATABASE_GROUP_MAX = 30
+DATABASE_RESERVE_GROUPS = 3
 DATABASE_CAPTURE_TIME_TOLERANCE = 1.0
 DATABASE_MAX_FILES = 200
-DATABASE_MAX_BYTES = MAX_SESSION_BYTES
+# Database staging can include the requested 30 three-file groups plus three
+# reserve groups. Browser uploads retain their existing 2-GiB limit.
+DATABASE_MAX_BYTES = 5 * 1024 * 1024 * 1024 // 2
 PROGRESS_MANIFEST_INTERVAL_FILES = 50
 POPULATION_PREVIEW_COUNT_PER_GROUP = 2
 POPULATION_PREVIEW_MAX_DIMENSION = 320
@@ -1275,7 +1278,7 @@ def discover_full_retention_database_evidence(
     selected_ids = set()
     selected_pairs = []
     selected_bytes = 0
-    selected_group_count = 0
+    staged_group_count = 0
     two_sided_group_count = 0
     selection_limit_blocked = False
 
@@ -1316,7 +1319,7 @@ def discover_full_retention_database_evidence(
             used_two_sided = False
         if not added:
             continue
-        selected_group_count += 1
+        staged_group_count += 1
         selected_pairs.append(engine.MatchedPair(
             bad=pair.bad,
             references=(
@@ -1334,18 +1337,18 @@ def discover_full_retention_database_evidence(
         ))
         if used_two_sided:
             two_sided_group_count += 1
-        if selected_group_count >= target_groups:
+        if staged_group_count >= target_groups + DATABASE_RESERVE_GROUPS:
             break
 
-    if selected_group_count < minimum:
+    if staged_group_count < minimum:
         limit_detail = ''
         if pairs and selection_limit_blocked:
-            limit_detail = ' within the 200-file/2-GiB evidence staging limit'
+            limit_detail = ' within the 200-file/2.5-GiB evidence staging limit'
         raise engine.CalibrationError(
             'the complete retained database archive was exhausted: {0} '
             'purple frames had compatible adjacent normal evidence{1}; at '
             'least {2} are required'.format(
-                selected_group_count,
+                staged_group_count,
                 limit_detail,
                 minimum,
             )
@@ -1390,7 +1393,13 @@ def discover_full_retention_database_evidence(
         'metadata_signature_count': metadata_signature_count,
         'legacy_fits_inspected_count': legacy_inspected_count,
         'detected_bad_count': detected_bad_count,
-        'selected_group_count': selected_group_count,
+        # selected_group_count remains the requested working-set count for
+        # retained result/report compatibility. The additional staged groups
+        # are reserves and are not fitted unless validation promotes them.
+        'selected_group_count': min(staged_group_count, target_groups),
+        'staged_group_count': staged_group_count,
+        'reserve_group_count': max(0, staged_group_count - target_groups),
+        'validation_exclusion_limit': DATABASE_RESERVE_GROUPS,
         'selected_marked_group_count': sum(
             _database_record_has_role(record, 'bad')
             for record in selected_records
@@ -1398,7 +1407,10 @@ def discover_full_retention_database_evidence(
         'two_sided_group_count': two_sided_group_count,
         'selection_limit_reached': (
             selection_limit_blocked
-            or selected_group_count < min(target_groups, len(pairs))
+            or staged_group_count < min(
+                target_groups + DATABASE_RESERVE_GROUPS,
+                len(pairs),
+            )
         ),
         'selection_limit_file_count': DATABASE_MAX_FILES,
         'selection_limit_bytes': DATABASE_MAX_BYTES,
@@ -1511,7 +1523,7 @@ def _stage_database_files_unlocked(
             if file_size <= 0 or file_size > MAX_FILE_BYTES:
                 staging_rejections['selected FITS size changed'] += 1
                 continue
-            if manifest['total_bytes'] + file_size > MAX_SESSION_BYTES:
+            if manifest['total_bytes'] + file_size > DATABASE_MAX_BYTES:
                 staging_rejections['selected FITS no longer fits staging limit'] += 1
                 continue
             destination = upload_dir.joinpath(
@@ -1915,6 +1927,24 @@ def _result_summary(payload):
         'worst_repaired_reference_error': quality.get(
             'worst_repaired_reference_error'
         ),
+        'requested_group_count': quality.get('requested_group_count'),
+        'used_group_count': quality.get(
+            'used_group_count',
+            quality['pair_count'],
+        ),
+        'examined_group_count': quality.get(
+            'examined_group_count',
+            quality['pair_count'],
+        ),
+        'excluded_marginal_group_count': quality.get(
+            'excluded_marginal_group_count',
+            0,
+        ),
+        'replacement_group_count': quality.get(
+            'replacement_group_count',
+            0,
+        ),
+        'marginal_exclusions': quality.get('marginal_exclusions', []),
         'rejected_file_count': quality['rejected_file_count'],
         'highlight_sample_count': quality['highlight_sample_count'],
         'scanned_file_count': quality.get('scanned_file_count', 0),
@@ -2150,6 +2180,44 @@ def _result_warnings(
     the download points to its own detail section.
     """
     warnings = []
+    marginal_exclusions = list(quality.get('marginal_exclusions') or ())
+    if marginal_exclusions:
+        details = '; '.join(
+            '{0}: {1}'.format(
+                item.get('name', 'Unknown FITS'),
+                item.get('reason', 'the row-shift check was below its margin'),
+            )
+            for item in marginal_exclusions
+        )
+        replacement_count = int(quality.get('replacement_group_count', 0))
+        requested_count = quality.get('requested_group_count')
+        used_count = int(
+            quality.get('used_group_count', quality.get('matched_bad_count', 0))
+        )
+        if replacement_count:
+            outcome = '{0} reserve {1} replaced {2}.'.format(
+                replacement_count,
+                'group' if replacement_count == 1 else 'groups',
+                'it' if len(marginal_exclusions) == 1 else 'them',
+            )
+        elif requested_count is not None and used_count < int(requested_count):
+            outcome = (
+                'No additional suitable reserve was available, so calibration '
+                'used {0} of the requested {1} groups.'.format(
+                    used_count,
+                    int(requested_count),
+                )
+            )
+        else:
+            outcome = 'The remaining evidence was sufficient.'
+        warnings.append(
+            'Calibration excluded {0} from the fit because only the final '
+            'row-shift comparison was marginal ({1}). {2}'.format(
+                _counted_item(len(marginal_exclusions), 'frame group'),
+                details,
+                outcome,
+            )
+        )
     bound_identity_count = int(
         quality.get('bound_session_camera_count', 0)
     )
@@ -2687,7 +2755,10 @@ def _friendly_threshold_analysis_failure(message_text):
 
 def _friendly_failure_message(message):
     """Translate calibration-engine failures into safe, actionable UI copy."""
-    message_text = str(message or '')
+    message_text = str(message or '').split(
+        '; private calibration input cleanup also failed:',
+        1,
+    )[0]
     lowered = message_text.lower()
     # Accept the current wording and older persisted task failures so an
     # interrupted session still receives the same useful explanation after an
@@ -2860,15 +2931,72 @@ def _friendly_failure_message(message):
             'Too few stable scene pixels remained for the final comparison. '
             'Use clearer daylight sequences with less cloud or movement.'
         )
-    if (
-        'repaired frame remains too different' in lowered
-        or 'repair does not materially improve agreement' in lowered
-        or 'evidence does not confirm the asi676mc one-row phase shift' in lowered
-    ):
+    if lowered.startswith('validation_group_count_after_exclusion:'):
+        detail = message_text.split(':', 1)[1].strip()
         return (
-            'The selected high-ratio frames do not behave like the ASI676MC '
-            'one-row purple-frame fault after repair. Check the evidence and '
-            'use untouched purple frames with close normal references.'
+            'Calibration could not continue after marginal groups were '
+            'excluded: {0}. Collect more complete frame groups.'
+        ).format(detail)
+    if lowered.startswith('validation_refit_signature_separation:'):
+        detail = message_text.split(':', 1)[1].strip()
+        return (
+            'Calibration could not safely refit the remaining groups: {0}. '
+            'Collect clearer normal/purple/normal groups.'
+        ).format(detail)
+    validation_match = re.match(
+        r'validation_([a-z_]+): ([^:]+): (.+)',
+        message_text,
+        flags=re.IGNORECASE,
+    )
+    if validation_match:
+        failure_code, filename, measurement = validation_match.groups()
+        if failure_code == 'repaired_reference_error':
+            return (
+                'Final validation failed for {0}: {1}. The repaired frame is '
+                'still too different from its adjacent normal reference.'
+            ).format(filename, measurement)
+        if failure_code == 'original_improvement':
+            return (
+                'Final validation failed for {0}: {1}. Repair did not improve '
+                'this group enough compared with its original purple frame.'
+            ).format(filename, measurement)
+        if failure_code == 'phase_improvement':
+            return (
+                'Final validation failed for {0}: {1}. This group does not '
+                'provide sufficient evidence that row shifting adds value '
+                'beyond colour-gain correction.'
+            ).format(filename, measurement)
+        if failure_code == 'runtime_repair':
+            return (
+                'Final validation failed for {0}: {1}. The rounded fitted '
+                'values could not safely repair this detected purple frame.'
+            ).format(filename, measurement)
+        if failure_code == 'normal_rejected':
+            return (
+                'Final validation failed for {0}: {1}. The fitted detector '
+                'would incorrectly treat this normal reference as purple.'
+            ).format(filename, measurement)
+        if failure_code == 'normal_modified':
+            return (
+                'Final validation failed for {0}: {1}. A normal frame must '
+                'remain byte-for-byte unchanged.'
+            ).format(filename, measurement)
+    if 'repaired frame remains too different' in lowered:
+        return (
+            'A repaired purple frame remained above the maximum allowed '
+            'difference from its normal reference. Use closer, more stable '
+            'normal/purple/normal groups.'
+        )
+    if 'repair does not materially improve agreement' in lowered:
+        return (
+            'Repair did not improve one purple frame enough compared with its '
+            'original pixels. Check that group for scene or exposure change.'
+        )
+    if 'evidence does not confirm the asi676mc one-row phase shift' in lowered:
+        return (
+            'Row shifting did not improve one purple frame enough beyond the '
+            'best colour-gain-only correction. That group may not show the '
+            'ASI676MC one-row phase fault strongly enough.'
         )
     if 'astropy could not be imported' in lowered:
         return (
@@ -2911,6 +3039,20 @@ def task_failure_message(message, limit=255):
     friendly = _friendly_failure_message(message)
     if len(friendly) <= limit:
         return friendly
+    validation_match = re.match(
+        r'validation_[a-z_]+: ([^:]+): (.+)',
+        str(message or ''),
+        flags=re.IGNORECASE,
+    )
+    if validation_match:
+        filename, measurement = validation_match.groups()
+        specific = 'Final validation failed for {0}: {1}.'.format(
+            filename,
+            measurement,
+        )
+        if len(specific) <= limit:
+            return specific
+        return specific[:limit - 1].rstrip() + '…'
     fallback = (
         'Calibration could not use the selected evidence. Open Tools > '
         'Fix ASI676MC purple frames for the complete reasons and next steps.'
@@ -3244,6 +3386,15 @@ def format_threshold_suggestion_report(payload, manifest):
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
+            'Purple-frame groups staged: {0}'.format(
+                source_details.get(
+                    'staged_group_count',
+                    source_details.get('selected_group_count', 0),
+                )
+            ),
+            'Reserve groups staged: {0}'.format(
+                source_details.get('reserve_group_count', 0)
+            ),
             'Selection path: {0}'.format(
                 _database_selection_text(
                     source_details.get('selection_mode')
@@ -3363,6 +3514,70 @@ def format_threshold_suggestion_report(payload, manifest):
         'It is not a configuration file and cannot be imported. Threshold '
         'suggestions are intentionally separate from the seven repair values; '
         'saving them never activates repair or replaces repair constants.',
+    )
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def format_failure_report(message, manifest):
+    """Build a browser-safe downloadable record for a failed calibration."""
+    source_details = manifest.get('source') or {}
+    lines = [
+        'indi-allsky ASI676MC purple-frame calibration report',
+        '=' * 54,
+        'Status: Failed',
+        'Generated: {0}'.format(_format_report_timestamp(
+            manifest.get('completed_utc') or _utc_now_text()
+        )),
+    ]
+    _append_report_section(lines, 'Failure measure')
+    _append_report_paragraph(lines, _friendly_failure_message(message))
+    _append_report_paragraph(
+        lines,
+        'No calibration values were produced and no indi-allsky settings were '
+        'changed.',
+    )
+
+    _append_report_section(lines, 'Evidence source')
+    if source_details.get('kind') == 'database':
+        lines.extend((
+            'Method: Saved FITS search in Tools > Fix ASI676MC purple frames',
+            'Camera: {0}'.format(source_details.get('camera_name', 'Unknown')),
+            'Purple-frame groups requested: {0}'.format(
+                source_details.get('requested_group_count', 0)
+            ),
+            'Purple-frame groups staged: {0}'.format(
+                source_details.get(
+                    'staged_group_count',
+                    source_details.get('selected_group_count', 0),
+                )
+            ),
+            'Reserve groups staged: {0}'.format(
+                source_details.get('reserve_group_count', 0)
+            ),
+            'FITS staged: {0}'.format(len(manifest.get('files', ()))),
+        ))
+        _append_report_paragraph(
+            lines,
+            'Only temporary staging links or copies were removed. The '
+            'database-owned saved FITS were not changed.',
+        )
+    elif source_details.get('kind') == 'upload':
+        lines.append('Method: Manual FITS upload')
+        lines.append('FITS uploaded: {0}'.format(len(manifest.get('files', ()))))
+        _append_report_paragraph(
+            lines,
+            'The private uploaded copies were removed. The original files on '
+            'the user\'s computer were not changed.',
+        )
+    else:
+        lines.append('Method: Tools > Fix ASI676MC purple frames')
+
+    _append_report_section(lines, 'About this report')
+    _append_report_paragraph(
+        lines,
+        'This report records the specific final validation failure shown on '
+        'the calibration page and in the background task result. It is not a '
+        'configuration file and cannot be imported.',
     )
     return '\n'.join(lines).rstrip() + '\n'
 
@@ -3516,6 +3731,15 @@ def format_integrated_report(payload, manifest):
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
+            'Purple-frame groups staged: {0}'.format(
+                source_details.get(
+                    'staged_group_count',
+                    source_details.get('selected_group_count', 0),
+                )
+            ),
+            'Reserve groups staged: {0}'.format(
+                source_details.get('reserve_group_count', 0)
+            ),
             'Selection path: {0}'.format(
                 _database_selection_text(
                     source_details.get('selection_mode')
@@ -3625,6 +3849,14 @@ def format_integrated_report(payload, manifest):
 
     _append_report_section(lines, 'Evidence used')
     evidence_lines = (
+        ('Purple-frame groups requested',
+         quality.get('requested_group_count', quality['pair_count'])),
+        ('Purple-frame groups used',
+         quality.get('used_group_count', quality['pair_count'])),
+        ('Reserve groups promoted',
+         quality.get('replacement_group_count', 0)),
+        ('Marginal groups excluded',
+         quality.get('excluded_marginal_group_count', 0)),
         ('Purple frames with a normal reference', quality['pair_count']),
         ('Purple frames skipped without a reference',
          quality.get('unmatched_bad_count', 0)),
@@ -3679,6 +3911,32 @@ def format_integrated_report(payload, manifest):
     lines.append('Maximum matching separation: {0:g} seconds'.format(
         float(manifest.get('max_pair_seconds', 0))
     ))
+
+    marginal_exclusions = quality.get('marginal_exclusions') or ()
+    if marginal_exclusions:
+        _append_report_section(lines, 'Excluded marginal frame groups')
+        _append_report_paragraph(
+            lines,
+            'Each group below passed repair, the absolute repaired-reference '
+            'limit, and the improvement-over-original check. It was excluded '
+            'only because row shifting did not improve sufficiently over the '
+            'best fitted gain-only correction.',
+        )
+        for item in marginal_exclusions:
+            _append_report_paragraph(
+                lines,
+                '{0}: original error {1:.3%}; gain-only error {2:.3%}; '
+                'repaired error {3:.3%}; improvement over gain-only {4:.3%}; '
+                'required {5:.3%}.'.format(
+                    item.get('name', 'Unknown FITS'),
+                    float(item.get('original_error', 0.0)),
+                    float(item.get('gain_only_error', 0.0)),
+                    float(item.get('repaired_error', 0.0)),
+                    float(item.get('improvement_vs_gain_only', 0.0)),
+                    float(item.get('required_improvement', 0.0)),
+                ),
+                prefix='- ',
+            )
 
     _append_report_section(lines, 'Result notes')
     report_notes = _result_warnings(
@@ -4007,6 +4265,16 @@ def run_calibration_session(
                     14,
                 ),
                 trusted_camera_name=trusted_camera_name,
+                target_group_count=(
+                    source_details.get('requested_group_count')
+                    if source_details.get('kind') == 'database'
+                    else None
+                ),
+                marginal_exclusion_limit=(
+                    source_details.get('validation_exclusion_limit', 0)
+                    if source_details.get('kind') == 'database'
+                    else 0
+                ),
             )
 
         with _file_lock(_session_lock_path(session_dir)):
@@ -4157,6 +4425,21 @@ def run_calibration_session(
                 manifest['error'] = (
                     '{0}; private calibration input cleanup also failed: {1}'
                 ).format(error, cleanup_error)
+            if not cancelled:
+                try:
+                    session_dir.joinpath(
+                        'asi676mc_calibration_report.txt'
+                    ).write_text(
+                        format_failure_report(manifest['error'], manifest),
+                        encoding='utf-8',
+                    )
+                except OSError:
+                    # The primary failure and cleanup state remain available
+                    # through status/task output even if the optional text
+                    # report cannot be persisted.
+                    logger.exception(
+                        'Unable to write ASI676MC calibration failure report'
+                    )
             manifest.pop('worker_token', None)
             _write_manifest(session_dir, manifest)
         raise
@@ -4254,7 +4537,7 @@ def get_completed_result(session_id, owner, storage_root=None):
 def _get_report_details(session_id, owner, storage_root=None):
     """Resolve an owned completed report and its retained session metadata."""
     session_dir, manifest = get_session(session_id, owner, storage_root)
-    if manifest.get('status') != 'success':
+    if manifest.get('status') not in ('success', 'failed'):
         raise CalibrationSessionError('the calibration report is not ready')
     report_path = session_dir.joinpath('asi676mc_calibration_report.txt')
     if not report_path.is_file():

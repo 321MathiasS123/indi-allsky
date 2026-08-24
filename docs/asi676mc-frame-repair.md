@@ -293,12 +293,21 @@ camera identity remains authoritative and is rejected. Missing, corrupt,
 repaired, or incompatible files are skipped and summarized rather than
 silently shortening the search horizon.
 
-The 200-FITS and 2-GiB limits apply to the final purple/reference evidence set,
-not to catalog discovery. Only selected evidence enters the private session. A
-hard link keeps it stable without a second copy; where hard links are
-unavailable, the tool makes a private copy. It never uses a symbolic link whose
-target could change after selection. If a selected source disappears during
-staging, that file is skipped and the remaining evidence is still evaluated.
+The 200-FITS and 2.5-GiB limits apply to the final purple/reference evidence
+set, not to catalog discovery. Only selected evidence enters the private
+session. The saved-FITS path stages up to three groups beyond the requested
+count as validation reserves. If a group passes repair and the normal-reference
+checks, and row shifting still improves on gain-only correction but by less than
+the required ten percent, that marginal group is excluded, a reserve is
+promoted, and the fit is repeated. A row shift that is no better than gain-only
+correction remains a hard failure. The group count is reduced only when no
+reserve remains, and never below the seven-group minimum.
+
+A hard link keeps staged evidence stable without a second copy; where hard
+links are unavailable, the tool makes a private copy. It never uses a symbolic
+link whose target could change after selection. If a selected source disappears
+during staging, that file is skipped and the remaining evidence is still
+evaluated.
 
 Cancellation removes only private links, copies, or partial copies. Source
 FITS pixels and headers are never changed. The only durable discovery update
