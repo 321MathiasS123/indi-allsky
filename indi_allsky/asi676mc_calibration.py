@@ -2183,9 +2183,11 @@ def _result_warnings(
     marginal_exclusions = list(quality.get('marginal_exclusions') or ())
     if marginal_exclusions:
         details = '; '.join(
-            '{0}: {1}'.format(
+            '{0}: full repair was {1:.1%} better than colour-only correction; '
+            'at least {2:.1%} was required'.format(
                 item.get('name', 'Unknown FITS'),
-                item.get('reason', 'the row-shift check was below its margin'),
+                float(item.get('improvement_vs_gain_only', 0.0)),
+                float(item.get('required_improvement', 0.0)),
             )
             for item in marginal_exclusions
         )
@@ -2211,8 +2213,8 @@ def _result_warnings(
         else:
             outcome = 'The remaining evidence was sufficient.'
         warnings.append(
-            'Calibration excluded {0} from the fit because only the final '
-            'row-shift comparison was marginal ({1}). {2}'.format(
+            'Calibration set aside {0} because the result was inconclusive '
+            '({1}). {2}'.format(
                 _counted_item(len(marginal_exclusions), 'frame group'),
                 details,
                 outcome,
@@ -2926,6 +2928,8 @@ def _friendly_failure_message(message):
         'too few stable samples to compare' in lowered
         or 'too few samples for the gain-only phase countercheck' in lowered
         or 'invalid gain-only phase countercheck' in lowered
+        or 'too few stable pixels to compare full repair' in lowered
+        or 'colour-only comparison could not be calculated' in lowered
     ):
         return (
             'Too few stable scene pixels remained for the final comparison. '
@@ -2934,14 +2938,15 @@ def _friendly_failure_message(message):
     if lowered.startswith('validation_group_count_after_exclusion:'):
         detail = message_text.split(':', 1)[1].strip()
         return (
-            'Calibration could not continue after marginal groups were '
-            'excluded: {0}. Collect more complete frame groups.'
+            'Calibration could not continue: {0}. Collect more complete '
+            'normal/purple/normal groups.'
         ).format(detail)
     if lowered.startswith('validation_refit_signature_separation:'):
         detail = message_text.split(':', 1)[1].strip()
         return (
-            'Calibration could not safely refit the remaining groups: {0}. '
-            'Collect clearer normal/purple/normal groups.'
+            'Calibration could not safely use the remaining groups: {0}. '
+            'Collect clearer normal/purple/normal groups with steadier '
+            'lighting.'
         ).format(detail)
     validation_match = re.match(
         r'validation_([a-z_]+): ([^:]+): (.+)',
@@ -2952,51 +2957,53 @@ def _friendly_failure_message(message):
         failure_code, filename, measurement = validation_match.groups()
         if failure_code == 'repaired_reference_error':
             return (
-                'Final validation failed for {0}: {1}. The repaired frame is '
-                'still too different from its adjacent normal reference.'
+                'Could not verify {0}: {1}. The scene probably changed too '
+                'much within this frame group. Try another group with steadier '
+                'clouds, lighting, and exposure.'
             ).format(filename, measurement)
         if failure_code == 'original_improvement':
             return (
-                'Final validation failed for {0}: {1}. Repair did not improve '
-                'this group enough compared with its original purple frame.'
+                'Could not verify {0}: {1}. The change is too small to prove '
+                'that repair worked for this group. Try another group with a '
+                'clear purple frame and stable nearby frames.'
             ).format(filename, measurement)
         if failure_code == 'phase_improvement':
             return (
-                'Final validation failed for {0}: {1}. This group does not '
-                'provide sufficient evidence that row shifting adds value '
-                'beyond colour-gain correction.'
+                'Could not verify {0}: {1}. This group is inconclusive, so it '
+                'cannot safely be used to calculate repair values.'
             ).format(filename, measurement)
         if failure_code == 'runtime_repair':
             return (
-                'Final validation failed for {0}: {1}. The rounded fitted '
-                'values could not safely repair this detected purple frame.'
+                'Could not verify {0}: {1}. Try a larger collection with clear '
+                'purple frames and stable nearby normal frames.'
             ).format(filename, measurement)
         if failure_code == 'normal_rejected':
             return (
-                'Final validation failed for {0}: {1}. The fitted detector '
-                'would incorrectly treat this normal reference as purple.'
+                'Could not verify {0}: {1}. The normal and purple examples are '
+                'not separated clearly enough to use safely.'
             ).format(filename, measurement)
         if failure_code == 'normal_modified':
             return (
-                'Final validation failed for {0}: {1}. A normal frame must '
-                'remain byte-for-byte unchanged.'
+                'Could not verify {0}: {1}. Repair must leave every normal '
+                'frame unchanged, so no values were produced.'
             ).format(filename, measurement)
     if 'repaired frame remains too different' in lowered:
         return (
-            'A repaired purple frame remained above the maximum allowed '
-            'difference from its normal reference. Use closer, more stable '
-            'normal/purple/normal groups.'
+            'A repaired purple frame was still too different from its nearby '
+            'normal frame. The scene probably changed too much within that '
+            'group; use closer, more stable captures.'
         )
     if 'repair does not materially improve agreement' in lowered:
         return (
-            'Repair did not improve one purple frame enough compared with its '
-            'original pixels. Check that group for scene or exposure change.'
+            'Repair did not make one purple frame enough closer to its nearby '
+            'normal frame. Check that group for cloud, lighting, or exposure '
+            'changes.'
         )
     if 'evidence does not confirm the asi676mc one-row phase shift' in lowered:
         return (
-            'Row shifting did not improve one purple frame enough beyond the '
-            'best colour-gain-only correction. That group may not show the '
-            'ASI676MC one-row phase fault strongly enough.'
+            'The complete repair was not enough better than a simple '
+            'colour-only correction for one frame group. That group is '
+            'inconclusive; use another clear purple-frame group.'
         )
     if 'astropy could not be imported' in lowered:
         return (
@@ -3046,7 +3053,7 @@ def task_failure_message(message, limit=255):
     )
     if validation_match:
         filename, measurement = validation_match.groups()
-        specific = 'Final validation failed for {0}: {1}.'.format(
+        specific = 'Could not verify {0}: {1}.'.format(
             filename,
             measurement,
         )
@@ -3914,20 +3921,21 @@ def format_integrated_report(payload, manifest):
 
     marginal_exclusions = quality.get('marginal_exclusions') or ()
     if marginal_exclusions:
-        _append_report_section(lines, 'Excluded marginal frame groups')
+        _append_report_section(lines, 'Frame groups set aside')
         _append_report_paragraph(
             lines,
-            'Each group below passed repair, the absolute repaired-reference '
-            'limit, and the improvement-over-original check. It was excluded '
-            'only because row shifting did not improve sufficiently over the '
-            'best fitted gain-only correction.',
+            'Each group below was repaired successfully and became much closer '
+            'to its nearby normal frame. However, the tool could not prove '
+            'that the complete repair was enough better than correcting the '
+            'colour alone. The group was therefore set aside. For the three '
+            'difference values, lower is better.',
         )
         for item in marginal_exclusions:
             _append_report_paragraph(
                 lines,
-                '{0}: original error {1:.3%}; gain-only error {2:.3%}; '
-                'repaired error {3:.3%}; improvement over gain-only {4:.3%}; '
-                'required {5:.3%}.'.format(
+                '{0}: before repair {1:.3%}; colour-only correction {2:.3%}; '
+                'full repair {3:.3%}; extra improvement from full repair '
+                '{4:.3%}; minimum required {5:.3%}.'.format(
                     item.get('name', 'Unknown FITS'),
                     float(item.get('original_error', 0.0)),
                     float(item.get('gain_only_error', 0.0)),

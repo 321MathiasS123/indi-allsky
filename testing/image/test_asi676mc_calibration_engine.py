@@ -882,8 +882,9 @@ class TestAsi676mcCalibrationEngine(unittest.TestCase):
                             'improvement_vs_gain_only': 0.053,
                             'failure_code': 'phase_improvement',
                             'reason': (
-                                'row-shift repair improved on gain-only '
-                                'correction by 5.3%; at least 10.0% is required'
+                                'full repair matched the nearby normal frame '
+                                '5.3% better than colour-only correction; at '
+                                'least 10.0% is required'
                             ),
                         }
                         return (

@@ -1180,8 +1180,8 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
                 'improvement_vs_gain_only': 0.05279,
                 'required_improvement': 0.10,
                 'reason': (
-                    'row-shift repair improved on gain-only correction by '
-                    '5.3%; at least 10.0% is required'
+                    'full repair matched the nearby normal frame 5.3% better '
+                    'than colour-only correction; at least 10.0% is required'
                 ),
             }],
         })
@@ -1211,13 +1211,21 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('Purple-frame groups staged: 23', report)
         self.assertIn('Reserve groups staged: 3', report)
         self.assertIn('Reserve groups promoted:', report)
-        self.assertIn('Excluded marginal frame groups', report)
+        self.assertIn('Frame groups set aside', report)
         self.assertIn('marginal_bad.fit', report)
-        self.assertIn('improvement over gain-only 5.279%', flat_report)
-        self.assertIn('required 10.000%', flat_report)
+        self.assertIn('extra improvement from full repair 5.279%', flat_report)
+        self.assertIn('minimum required 10.000%', flat_report)
         self.assertIn('marginal_bad.fit', warning)
         self.assertIn('5.3%', warning)
         self.assertIn('1 reserve group replaced it', warning)
+        for technical_term in (
+            'gain-only',
+            'row-shift',
+            'repaired-reference',
+            'adjacent-reference',
+        ):
+            self.assertNotIn(technical_term, report.lower())
+            self.assertNotIn(technical_term, warning.lower())
 
     def test_report_timestamp_uses_explicit_local_timezone(self):
         local_timezone = timezone(timedelta(hours=2), name='CEST')
@@ -1308,8 +1316,9 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
 
     def test_failed_validation_has_same_specific_downloadable_report(self):
         engine_message = (
-            'validation_phase_improvement: marginal_bad.fit: row-shift repair '
-            'improved on gain-only correction by 5.3%; at least 10.0% is required'
+            'validation_phase_improvement: marginal_bad.fit: full repair '
+            'matched the nearby normal frame 5.3% better than colour-only '
+            'correction; at least 10.0% is required'
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1353,6 +1362,8 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
             self.assertIn('marginal_bad.fit', status['error'])
             self.assertIn('5.3%', status['error'])
             self.assertIn('10.0%', status['error'])
+            self.assertIn('colour-only correction', status['error'])
+            self.assertIn('inconclusive', status['error'])
             report_path = asi676mc_calibration.get_report_path(
                 session_id,
                 'alice',
@@ -1363,6 +1374,8 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
             self.assertIn('marginal_bad.fit', report)
             self.assertIn('5.3%', report)
             self.assertIn('10.0%', report)
+            self.assertIn('colour-only correction', report)
+            self.assertIn('inconclusive', report)
             self.assertIn('No calibration values were produced', report)
 
     def test_population_preview_candidates_are_bounded_and_representative(self):
@@ -1942,25 +1955,27 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
             'evidence does not confirm the ASI676MC one-row phase shift: '
             'C:\\private\\purple.fit'
         )
-        self.assertIn('Row shifting did not improve', wrong_failure_type)
+        self.assertIn('complete repair was not enough better', wrong_failure_type)
         self.assertNotIn('purple.fit', wrong_failure_type)
 
         specific_failures = (
             (
                 'validation_repaired_reference_error: bad.fit: '
-                'repaired-to-reference error 36.0% exceeds the 35.0% maximum',
-                ('bad.fit', '36.0%', '35.0%', 'still too different'),
+                'the repaired frame differs from its nearby normal frame by '
+                '36.0%; the maximum allowed is 35.0%',
+                ('bad.fit', '36.0%', '35.0%', 'scene probably changed'),
             ),
             (
-                'validation_original_improvement: bad.fit: repair improved '
-                'adjacent-reference agreement by 7.0%; at least 10.0% is required',
-                ('bad.fit', '7.0%', '10.0%', 'original purple frame'),
+                'validation_original_improvement: bad.fit: full repair made '
+                'the purple frame 7.0% closer to its nearby normal frame; at '
+                'least 10.0% is required',
+                ('bad.fit', '7.0%', '10.0%', 'too small to prove'),
             ),
             (
-                'validation_phase_improvement: bad.fit: row-shift repair '
-                'improved on gain-only correction by 5.3%; at least 10.0% '
-                'is required',
-                ('bad.fit', '5.3%', '10.0%', 'colour-gain correction'),
+                'validation_phase_improvement: bad.fit: full repair matched '
+                'the nearby normal frame 5.3% better than colour-only '
+                'correction; at least 10.0% is required',
+                ('bad.fit', '5.3%', '10.0%', 'inconclusive'),
             ),
         )
         for raw_message, expected_parts in specific_failures:
@@ -1970,12 +1985,16 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
                 )
                 for expected in expected_parts:
                     self.assertIn(expected, friendly)
+                self.assertNotIn('gain-only', friendly.lower())
+                self.assertNotIn('row-shift', friendly.lower())
+                self.assertNotIn('repaired-reference', friendly.lower())
         phase_task_message = asi676mc_calibration.task_failure_message(
             specific_failures[-1][0]
         )
         self.assertIn('bad.fit', phase_task_message)
         self.assertIn('5.3%', phase_task_message)
         self.assertIn('10.0%', phase_task_message)
+        self.assertIn('colour-only correction', phase_task_message)
 
         safety_failure = asi676mc_calibration._friendly_failure_message(
             'normal-frame validation mutated C:\\private\\normal.fit'

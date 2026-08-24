@@ -1745,11 +1745,14 @@ def _best_gain_only_planes(observed_planes, reference_planes, stable_masks):
         )
         if not numpy.any(mask):
             raise CalibrationError(
-                'too few samples for the gain-only phase countercheck'
+                'too few stable pixels to compare full repair with '
+                'colour-only correction'
             )
         ratio = float(numpy.median(observed_float[mask] / reference[mask]))
         if not numpy.isfinite(ratio) or ratio <= 0.0:
-            raise CalibrationError('invalid gain-only phase countercheck')
+            raise CalibrationError(
+                'the colour-only comparison could not be calculated'
+            )
         corrected.append(observed_float / ratio)
     return tuple(corrected)
 
@@ -1795,8 +1798,8 @@ def validate_calibrated_frames(
         result = asi676mc.repair_if_needed(data, settings)
         if not result['repaired'] or result['validation_failed']:
             raise CalibrationError(
-                'validation_runtime_repair: {0}: the rounded calibration did '
-                'not complete a valid repair'.format(
+                'validation_runtime_repair: {0}: the fitted values did not '
+                'produce a valid repaired frame'.format(
                     pair.bad.source_name or pair.bad.path.name
                 )
             )
@@ -1843,8 +1846,9 @@ def validate_calibrated_frames(
         }
         if repaired_error > CALIBRATION_OPTIONS['MAX_REPAIRED_REFERENCE_ERROR']:
             raise CalibrationError(
-                'validation_repaired_reference_error: {0}: repaired-to-reference '
-                'error {1:.1%} exceeds the {2:.1%} maximum'.format(
+                'validation_repaired_reference_error: {0}: the repaired frame '
+                'differs from its nearby normal frame by {1:.1%}; the maximum '
+                'allowed is {2:.1%}'.format(
                     check['name'],
                     repaired_error,
                     CALIBRATION_OPTIONS['MAX_REPAIRED_REFERENCE_ERROR'],
@@ -1852,9 +1856,9 @@ def validate_calibrated_frames(
             )
         if repaired_error > original_error * (1.0 - improvement):
             raise CalibrationError(
-                'validation_original_improvement: {0}: repair improved '
-                'adjacent-reference agreement by {1:.1%}; at least {2:.1%} '
-                'is required'.format(
+                'validation_original_improvement: {0}: full repair made the '
+                'purple frame {1:.1%} closer to its nearby normal frame; at '
+                'least {2:.1%} is required'.format(
                     check['name'],
                     original_improvement,
                     improvement,
@@ -1863,8 +1867,8 @@ def validate_calibrated_frames(
         if repaired_error > unshifted_error * (1.0 - improvement):
             check['failure_code'] = 'phase_improvement'
             check['reason'] = (
-                'row-shift repair improved on gain-only correction by '
-                '{0:.1%}; at least {1:.1%} is required'.format(
+                'full repair matched the nearby normal frame {0:.1%} better '
+                'than colour-only correction; at least {1:.1%} is required'.format(
                     phase_improvement,
                     improvement,
                 )
@@ -1897,15 +1901,15 @@ def validate_calibrated_frames(
         result = asi676mc.repair_if_needed(data, settings)
         if result['repaired'] or result['signature_before']['is_bad']:
             raise CalibrationError(
-                'validation_normal_rejected: {0}: the calibrated detector '
-                'classified a normal reference as purple'.format(
+                'validation_normal_rejected: {0}: the fitted detector mistook '
+                'a normal frame for a purple frame'.format(
                     record.source_name or record.path.name
                 )
             )
         if not numpy.array_equal(data, original):
             raise CalibrationError(
-                'validation_normal_modified: {0}: final validation changed '
-                'pixels in a normal reference'.format(
+                'validation_normal_modified: {0}: the repair changed pixels '
+                'in a normal frame'.format(
                     record.source_name or record.path.name
                 )
             )
@@ -2176,9 +2180,9 @@ def calibrate_folder(
             # validation exclusion has changed the working evidence set.
             if excluded_checks:
                 raise CalibrationError(
-                    'validation_refit_signature_separation: the remaining '
-                    'groups no longer provide clean detector separation after '
-                    'a marginal phase group was excluded'
+                    'validation_refit_signature_separation: after setting '
+                    'aside an inconclusive group, the remaining groups no '
+                    'longer clearly separate normal and purple frames'
                 ) from separation_error
             try:
                 suggestions = build_detection_threshold_suggestions(
@@ -2287,7 +2291,7 @@ def calibrate_folder(
             first_check = phase_failures[0]['check']
             raise CalibrationError(
                 'validation_phase_improvement: {0}: {1}; more than {2} '
-                'marginal groups would need to be excluded'.format(
+                'inconclusive groups would need to be set aside'.format(
                     first_check['name'],
                     first_check['reason'],
                     marginal_exclusion_limit,
@@ -2311,7 +2315,7 @@ def calibrate_folder(
         if len(active_pairs) < minimum:
             raise CalibrationError(
                 'validation_group_count_after_exclusion: only {0} groups '
-                'remain after excluding {1} marginal phase {2}; at least {3} '
+                'remain after setting aside {1} inconclusive {2}; at least {3} '
                 'are required'.format(
                     len(active_pairs),
                     len(excluded_checks),
@@ -2320,7 +2324,7 @@ def calibrate_folder(
                 )
             )
         print(
-            'Excluded {0} marginal phase {1}; promoted {2} reserve {3} and '
+            'Set aside {0} inconclusive {1}; promoted {2} reserve {3} and '
             'refitting.'.format(
                 len(phase_failures),
                 'group' if len(phase_failures) == 1 else 'groups',
