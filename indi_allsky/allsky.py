@@ -32,6 +32,10 @@ from . import dark_automation
 from .exceptions import TimeOutException
 from .exceptions import ConfigSaveException
 
+from .capture_health import capture_error_payload
+from .capture_health import serialize_capture_error
+from .capture_health import CAPTURE_PIPELINE_ERROR_STATE
+
 from .flask import create_app
 from .flask import db
 from .flask.miscDb import miscDb
@@ -426,6 +430,12 @@ class IndiAllSky(object):
                 capture_error, capture_traceback = self.capture_error_q.get_nowait()
                 for line in capture_traceback.split('\n'):
                     logger.error('Capture worker exception: %s', line)
+
+                self._recordCapturePipelineError(
+                    'Capture worker',
+                    'CaptureWorkerError',
+                    capture_error,
+                )
             except queue.Empty:
                 pass
 
@@ -481,6 +491,12 @@ class IndiAllSky(object):
                 image_error, image_traceback = self.image_error_q.get_nowait()
                 for line in image_traceback.split('\n'):
                     logger.error('Image worker exception: %s', line)
+
+                self._recordCapturePipelineError(
+                    'Image worker',
+                    'ImageWorkerError',
+                    image_error,
+                )
             except queue.Empty:
                 pass
 
@@ -515,6 +531,37 @@ class IndiAllSky(object):
                     'WARNING: Image worker was restarted more than 10 times',
                     expire=timedelta(hours=2),
                 )
+
+
+    def _recordCapturePipelineError(self, component, notification_item, error):
+        payload = capture_error_payload(component, error)
+
+        try:
+            with app.app_context():
+                self._miscDb.setState(
+                    CAPTURE_PIPELINE_ERROR_STATE,
+                    serialize_capture_error(
+                        payload['component'],
+                        payload['message'],
+                        timestamp=payload['timestamp'],
+                    ),
+                )
+
+                self._miscDb.addNotification(
+                    NotificationCategory.WORKER,
+                    notification_item,
+                    '{0:s} stopped unexpectedly: {1:s}'.format(
+                        payload['component'],
+                        payload['message'],
+                    ),
+                    expire=timedelta(hours=2),
+                )
+        except Exception as e:
+            logger.error(
+                'Unable to record %s failure: %s',
+                payload['component'],
+                str(e),
+            )
 
 
     def _stopImageWorker(self):

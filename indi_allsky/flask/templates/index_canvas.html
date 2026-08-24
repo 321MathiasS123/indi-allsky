@@ -22,6 +22,7 @@ var json_data = {
 var max_age = 900;
 var camera_id = {{ camera_id }};
 var refreshInterval = {{ refreshInterval | int }};
+var dataRefreshInterval = {{ dataRefreshInterval | int }};
 var night = {{ night }};
 var fullscreen = false;  //initial state
 
@@ -64,11 +65,22 @@ function showImage(entry) {
 
 function loadNextImage() {
     loadJS("{{ url_for(latest_image_view) }}", {'camera_id' : camera_id, 'limit_s' : max_age, 'night' : night}, function() {});
-    setTimeout(loadNextImage, refreshInterval);
+    setTimeout(loadNextImage, dataRefreshInterval);
 }
 
 function sleep(time) {
     return new Promise(resolve => setTimeout(resolve, time));
+}
+
+function showCaptureHealth(health) {
+    const overlay = $('#capture-health-overlay');
+
+    if (health && health.status === 'error' && health.message) {
+        $('#capture-health-message').text(health.message);
+        overlay.removeClass('tw:hidden');
+    } else {
+        overlay.addClass('tw:hidden');
+    }
 }
 
 function loadJS(url, data, onDone, onError) {
@@ -90,6 +102,7 @@ function loadJS(url, data, onDone, onError) {
             } else {
                 overlay.addClass('tw:hidden');
             }
+            showCaptureHealth(json_data['capture_health']);
         },
         error: function(rdata){
             onError(rdata.status);
@@ -163,6 +176,18 @@ $( document ).ready(function() {
 <div class="tw:flex tw:flex-col tw:h-full tw:gap-4">
     <div class="tw:flex-1 tw:bg-base-300 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300 tw:shadow-inner tw:flex tw:items-center tw:justify-center tw:overflow-hidden tw:min-h-[50vh] tw:relative">
         <div class="tw:absolute tw:inset-0 tw:bg-base-content/2 tw:pointer-events-none"></div>
+
+        <!-- Capture Health Overlay -->
+        <div id="capture-health-overlay" class="tw:absolute tw:top-4 tw:left-4 tw:right-4 tw:z-30 tw:hidden tw:flex tw:justify-center">
+            <div role="alert" class="tw:alert tw:alert-error tw:max-w-3xl tw:border tw:border-error/40 tw:shadow-xl tw:backdrop-blur-md">
+                <i class="tw:icon-[lucide--triangle-alert] tw:w-5 tw:h-5 tw:flex-none"></i>
+                <div>
+                    <div class="tw:text-xs tw:font-black tw:uppercase tw:tracking-wider">Capture warning</div>
+                    <div id="capture-health-message" class="tw:text-sm tw:font-semibold"></div>
+                </div>
+                <a href="{{ url_for('indi_allsky.log_view') }}" class="tw:btn tw:btn-sm tw:btn-ghost tw:ml-auto tw:flex-none">Capture Log</a>
+            </div>
+        </div>
         
         <!-- Status Overlay -->
         <div id="status-overlay" class="tw:absolute tw:top-4 tw:left-4 tw:z-20 tw:hidden">

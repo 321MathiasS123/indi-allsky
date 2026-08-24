@@ -51,6 +51,10 @@ from ..capture_state import build_effective_capture_state
 from ..temperature import resolve_temperature
 from ..temperature import temperature_source_choices
 from ..temperature import temperature_source_signature
+from ..capture_health import capture_health_status
+from ..capture_health import capture_stale_seconds
+from ..capture_health import parse_capture_error
+from ..capture_health import CAPTURE_PIPELINE_ERROR_STATE
 
 from cryptography.fernet import InvalidToken
 
@@ -323,6 +327,7 @@ class IndexCanvasView(TemplateView):
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000
         context['refreshInterval'] = refreshInterval_ms + 1000  # additional time for exposures to download
+        context['dataRefreshInterval'] = min(context['refreshInterval'], 15000)
 
         return context
 
@@ -330,12 +335,114 @@ class IndexCanvasView(TemplateView):
 class JsonLatestImageView(JsonView):
     model = IndiAllSkyDbImageTable
     latest_image_t = 'images/latest.{0}'
+    capture_health_enabled = True
 
 
     def __init__(self, **kwargs):
         super(JsonLatestImageView, self).__init__(**kwargs)
 
         self.history_seconds = 900
+
+
+    def getCaptureHealth(self, night):
+        now_timestamp = time.time()
+        stale_seconds = capture_stale_seconds(self.indi_allsky_config, night)
+
+        if not self.local_indi_allsky:
+            return capture_health_status(
+                now_timestamp,
+                None,
+                None,
+                stale_seconds,
+                capture_expected=False,
+            )
+
+        capture_expected = True
+        system_error = None
+
+        if self.capture_pause:
+            capture_expected = False
+        elif not night and not self.daytime_capture:
+            capture_expected = False
+
+
+        try:
+            active_camera_id = int(self._miscDb.getState('DB_CAMERA_ID'))
+        except (NoResultFound, TypeError, ValueError):
+            active_camera_id = None
+
+        if active_camera_id is not None and active_camera_id != self.camera.id:
+            return capture_health_status(
+                now_timestamp,
+                None,
+                None,
+                stale_seconds,
+                capture_expected=False,
+            )
+
+
+        try:
+            capture_status = int(self._miscDb.getState('STATUS'))
+        except (NoResultFound, TypeError, ValueError):
+            capture_status = None
+
+        status_error_map = {
+            constants.STATUS_NOCAMERA: 'Capture unavailable: no camera detected.',
+            constants.STATUS_CAMERAERROR: 'Capture unavailable: camera error.',
+            constants.STATUS_NOINDISERVER: 'Capture unavailable: INDI server is not running.',
+        }
+
+        if capture_status in status_error_map and capture_expected:
+            system_error = status_error_map[capture_status]
+        elif capture_status is not None and capture_status != constants.STATUS_RUNNING:
+            capture_expected = False
+
+
+        latest_success_timestamp = None
+
+        image_dir = Path(self.indi_allsky_config['IMAGE_FOLDER']).absolute()
+        latest_image_p = image_dir.joinpath(
+            'latest.{0:s}'.format(
+                self.indi_allsky_config.get('IMAGE_FILE_TYPE', 'jpg'),
+            )
+        )
+
+        try:
+            latest_success_timestamp = latest_image_p.stat().st_mtime
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            app.logger.error('Unable to stat latest image: %s', str(e))
+
+        if latest_success_timestamp is None:
+            latest_image_date = db.session.query(
+                IndiAllSkyDbImageTable.createDate,
+            )\
+                .join(IndiAllSkyDbImageTable.camera)\
+                .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
+                .order_by(IndiAllSkyDbImageTable.createDate.desc())\
+                .first()
+
+            if latest_image_date:
+                latest_success_timestamp = latest_image_date[0].timestamp()
+
+
+        try:
+            failure = parse_capture_error(
+                self._miscDb.getState(CAPTURE_PIPELINE_ERROR_STATE),
+            )
+        except NoResultFound:
+            failure = None
+
+
+        return capture_health_status(
+            now_timestamp,
+            latest_success_timestamp,
+            failure,
+            stale_seconds,
+            capture_expected=capture_expected,
+            system_error=system_error,
+        )
 
 
     def get_objects(self):
@@ -366,6 +473,9 @@ class JsonLatestImageView(JsonView):
                 'height'  : 1,
             },
         }
+
+        if self.capture_health_enabled:
+            data['capture_health'] = self.getCaptureHealth(night)
 
 
         if self.indi_allsky_config.get('FOCUS_MODE', False):
@@ -521,6 +631,7 @@ class IndexImgView(TemplateView):
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000
         context['refreshInterval'] = refreshInterval_ms + 1000  # additional time for exposures to download
+        context['dataRefreshInterval'] = min(context['refreshInterval'], 15000)
 
         return context
 
@@ -878,6 +989,7 @@ class LatestPanoramaImgView(IndexImgView):
 class JsonLatestPanoramaView(JsonLatestImageView):
     model = IndiAllSkyDbPanoramaImageTable
     latest_image_t = 'images/panorama.{0}'
+    capture_health_enabled = False
 
 
 class LatestRawImageCanvasView(IndexCanvasView):
@@ -893,6 +1005,7 @@ class LatestRawImageImgView(IndexImgView):
 class JsonLatestRawImageView(JsonLatestImageView):
     model = IndiAllSkyDbRawImageTable
     latest_image_t = 'na'
+    capture_health_enabled = False
 
 
 class PublicIndexView(BaseView):
