@@ -1377,6 +1377,25 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
             self.assertIn('colour-only correction', report)
             self.assertIn('inconclusive', report)
             self.assertIn('No calibration values were produced', report)
+            self.assertIn('private uploaded copies were removed', report)
+
+            cleanup_pending = asi676mc_calibration.format_failure_report(
+                engine_message,
+                {
+                    'source': {'kind': 'upload'},
+                    'files': [{}] * 14,
+                    'sources_deleted_utc': None,
+                },
+            )
+            cleanup_pending = ' '.join(cleanup_pending.split())
+            self.assertIn(
+                'could not be removed immediately',
+                cleanup_pending,
+            )
+            self.assertIn(
+                'will be removed automatically later',
+                cleanup_pending,
+            )
 
     def test_population_preview_candidates_are_bounded_and_representative(self):
         evidence = []
@@ -1536,6 +1555,8 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('Current value is already safe', report)
         self.assertIn('Post-repair standard FITS excluded: 2', report)
         self.assertNotIn('Recommended calibration values', report)
+        self.assertNotIn('Purple-frame groups staged', report)
+        self.assertNotIn('Reserve groups staged', report)
         self.assertNotIn('operator', report.lower())
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1616,6 +1637,9 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('Method: Manual FITS upload', report)
         self.assertIn('FITS selected: 21', report)
         self.assertIn('private uploaded copies were removed', report)
+        self.assertNotIn('Purple-frame groups requested', report)
+        self.assertNotIn('Reserve groups promoted', report)
+        self.assertNotIn('Inconclusive groups set aside', report)
         self.assertIn(
             '21 uploaded FITS files did not name the camera model',
             report,
@@ -1723,9 +1747,20 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
             call_kwargs = calibrate_folder.call_args.kwargs
             self.assertTrue(call_kwargs['allow_unmatched'])
             self.assertFalse(call_kwargs['recursive'])
+            self.assertIsNone(call_kwargs['target_group_count'])
+            self.assertEqual(call_kwargs['marginal_exclusion_limit'], 0)
             self.assertNotIn('report_title', call_kwargs)
             self.assertEqual(result['quality']['matched_bad_count'], 7)
             self.assertEqual(len(result['values']), 7)
+            for reserve_key in (
+                'requested_group_count',
+                'staged_group_count',
+                'used_group_count',
+                'replacement_group_count',
+                'excluded_marginal_group_count',
+                'marginal_exclusions',
+            ):
+                self.assertNotIn(reserve_key, result['quality'])
             self.assertFalse(root.joinpath(session_id, 'uploads').exists())
             self.assertEqual(success_saw_deleted_sources, [True])
 
@@ -2379,7 +2414,7 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('function showCalibrationSetupView()', template)
         self.assertIn('function showCalibrationProgressView()', template)
         self.assertIn(
-            'function showCalibrationFailure(sessionId, message)',
+            'function showCalibrationFailure(sessionId, message, reportAvailable)',
             template,
         )
         self.assertIn(

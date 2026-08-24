@@ -1927,24 +1927,6 @@ def _result_summary(payload):
         'worst_repaired_reference_error': quality.get(
             'worst_repaired_reference_error'
         ),
-        'requested_group_count': quality.get('requested_group_count'),
-        'used_group_count': quality.get(
-            'used_group_count',
-            quality['pair_count'],
-        ),
-        'examined_group_count': quality.get(
-            'examined_group_count',
-            quality['pair_count'],
-        ),
-        'excluded_marginal_group_count': quality.get(
-            'excluded_marginal_group_count',
-            0,
-        ),
-        'replacement_group_count': quality.get(
-            'replacement_group_count',
-            0,
-        ),
-        'marginal_exclusions': quality.get('marginal_exclusions', []),
         'rejected_file_count': quality['rejected_file_count'],
         'highlight_sample_count': quality['highlight_sample_count'],
         'scanned_file_count': quality.get('scanned_file_count', 0),
@@ -1963,6 +1945,17 @@ def _result_summary(payload):
             0,
         ),
     }
+    if 'requested_group_count' in quality:
+        quality_summary.update({
+            'requested_group_count': quality['requested_group_count'],
+            'used_group_count': quality['used_group_count'],
+            'examined_group_count': quality['examined_group_count'],
+            'excluded_marginal_group_count': quality[
+                'excluded_marginal_group_count'
+            ],
+            'replacement_group_count': quality['replacement_group_count'],
+            'marginal_exclusions': quality['marginal_exclusions'],
+        })
 
     return {
         'outcome': 'calibration',
@@ -3393,15 +3386,6 @@ def format_threshold_suggestion_report(payload, manifest):
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
-            'Purple-frame groups staged: {0}'.format(
-                source_details.get(
-                    'staged_group_count',
-                    source_details.get('selected_group_count', 0),
-                )
-            ),
-            'Reserve groups staged: {0}'.format(
-                source_details.get('reserve_group_count', 0)
-            ),
             'Selection path: {0}'.format(
                 _database_selection_text(
                     source_details.get('selection_mode')
@@ -3528,6 +3512,7 @@ def format_threshold_suggestion_report(payload, manifest):
 def format_failure_report(message, manifest):
     """Build a browser-safe downloadable record for a failed calibration."""
     source_details = manifest.get('source') or {}
+    cleanup_complete = bool(manifest.get('sources_deleted_utc'))
     lines = [
         'indi-allsky ASI676MC purple-frame calibration report',
         '=' * 54,
@@ -3536,7 +3521,7 @@ def format_failure_report(message, manifest):
             manifest.get('completed_utc') or _utc_now_text()
         )),
     ]
-    _append_report_section(lines, 'Failure measure')
+    _append_report_section(lines, 'Why calibration stopped')
     _append_report_paragraph(lines, _friendly_failure_message(message))
     _append_report_paragraph(
         lines,
@@ -3563,28 +3548,42 @@ def format_failure_report(message, manifest):
             ),
             'FITS staged: {0}'.format(len(manifest.get('files', ()))),
         ))
-        _append_report_paragraph(
-            lines,
-            'Only temporary staging links or copies were removed. The '
-            'database-owned saved FITS were not changed.',
-        )
+        if cleanup_complete:
+            cleanup_text = (
+                'Only temporary staging links or copies were removed. The '
+                'database-owned saved FITS were not changed.'
+            )
+        else:
+            cleanup_text = (
+                'Some temporary staging links or copies could not be removed '
+                'immediately. They will be removed automatically later. The '
+                'database-owned saved FITS were not changed.'
+            )
+        _append_report_paragraph(lines, cleanup_text)
     elif source_details.get('kind') == 'upload':
         lines.append('Method: Manual FITS upload')
         lines.append('FITS uploaded: {0}'.format(len(manifest.get('files', ()))))
-        _append_report_paragraph(
-            lines,
-            'The private uploaded copies were removed. The original files on '
-            'the user\'s computer were not changed.',
-        )
+        if cleanup_complete:
+            cleanup_text = (
+                'The private uploaded copies were removed. The original files '
+                'on the user\'s computer were not changed.'
+            )
+        else:
+            cleanup_text = (
+                'Some private uploaded copies could not be removed '
+                'immediately. They will be removed automatically later. The '
+                'original files on the user\'s computer were not changed.'
+            )
+        _append_report_paragraph(lines, cleanup_text)
     else:
         lines.append('Method: Tools > Fix ASI676MC purple frames')
 
     _append_report_section(lines, 'About this report')
     _append_report_paragraph(
         lines,
-        'This report records the specific final validation failure shown on '
-        'the calibration page and in the background task result. It is not a '
-        'configuration file and cannot be imported.',
+        'This report records the same reason shown on the calibration page and '
+        'in the background task result. It is not a configuration file and '
+        'cannot be imported.',
     )
     return '\n'.join(lines).rstrip() + '\n'
 
@@ -3738,14 +3737,17 @@ def format_integrated_report(payload, manifest):
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
-            'Purple-frame groups staged: {0}'.format(
-                source_details.get(
-                    'staged_group_count',
-                    source_details.get('selected_group_count', 0),
+            *(
+                (
+                    'Purple-frame groups staged: {0}'.format(
+                        source_details['staged_group_count']
+                    ),
+                    'Reserve groups staged: {0}'.format(
+                        source_details.get('reserve_group_count', 0)
+                    ),
                 )
-            ),
-            'Reserve groups staged: {0}'.format(
-                source_details.get('reserve_group_count', 0)
+                if 'staged_group_count' in source_details
+                else ()
             ),
             'Selection path: {0}'.format(
                 _database_selection_text(
@@ -3855,15 +3857,16 @@ def format_integrated_report(payload, manifest):
         )
 
     _append_report_section(lines, 'Evidence used')
-    evidence_lines = (
-        ('Purple-frame groups requested',
-         quality.get('requested_group_count', quality['pair_count'])),
-        ('Purple-frame groups used',
-         quality.get('used_group_count', quality['pair_count'])),
-        ('Reserve groups promoted',
-         quality.get('replacement_group_count', 0)),
-        ('Marginal groups excluded',
-         quality.get('excluded_marginal_group_count', 0)),
+    evidence_lines = []
+    if source_kind == 'database' and 'requested_group_count' in quality:
+        evidence_lines.extend((
+            ('Purple-frame groups requested', quality['requested_group_count']),
+            ('Purple-frame groups used', quality['used_group_count']),
+            ('Reserve groups promoted', quality['replacement_group_count']),
+            ('Inconclusive groups set aside',
+             quality['excluded_marginal_group_count']),
+        ))
+    evidence_lines.extend((
         ('Purple frames with a normal reference', quality['pair_count']),
         ('Purple frames skipped without a reference',
          quality.get('unmatched_bad_count', 0)),
@@ -3880,7 +3883,7 @@ def format_integrated_report(payload, manifest):
          quality.get('validated_normal_frames', 0)),
         ('FITS files unreadable or unusable',
          quality.get('rejected_file_count', 0)),
-    )
+    ))
     evidence_width = max(len(label) for label, _value in evidence_lines)
     lines.extend(
         '{0:<{1}}  {2}'.format(label + ':', evidence_width + 1, value)
@@ -4275,13 +4278,12 @@ def run_calibration_session(
                 trusted_camera_name=trusted_camera_name,
                 target_group_count=(
                     source_details.get('requested_group_count')
-                    if source_details.get('kind') == 'database'
+                    if source_details.get('validation_exclusion_limit')
                     else None
                 ),
-                marginal_exclusion_limit=(
-                    source_details.get('validation_exclusion_limit', 0)
-                    if source_details.get('kind') == 'database'
-                    else 0
+                marginal_exclusion_limit=source_details.get(
+                    'validation_exclusion_limit',
+                    0,
                 ),
             )
 

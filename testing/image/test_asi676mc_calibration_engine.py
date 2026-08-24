@@ -329,6 +329,64 @@ class TestAsi676mcCalibrationEngine(unittest.TestCase):
             1.26,
         )
 
+    def test_upload_analysis_keeps_unmatched_frames_in_detector_evidence(self):
+        records = self._threshold_population_records()
+        for record in records:
+            record.signature['is_bad'] = record.path.name.startswith(
+                'likely_purple_'
+            )
+        unmatched_bad = self._threshold_record(
+            'unmatched_bad.fit',
+            100000,
+            0.001,
+            (2.20, 1.70, 2.20),
+        )
+        unmatched_bad.signature['is_bad'] = True
+        records.append(unmatched_bad)
+        preliminary = {
+            'outcome': 'threshold_suggestion',
+            'quality': {},
+            'threshold_suggestions': [],
+            'signature_ranges': {},
+        }
+
+        with mock.patch.object(
+            calibration_engine,
+            'scan_folder',
+            return_value=(records, []),
+        ), mock.patch.object(
+            calibration_engine,
+            'validate_evidence',
+            wraps=calibration_engine.validate_evidence,
+        ) as validate_evidence, mock.patch.object(
+            calibration_engine,
+            'signature_ranges',
+            wraps=calibration_engine.signature_ranges,
+        ) as signature_ranges, mock.patch.object(
+            calibration_engine,
+            'validate_signature_separation',
+            side_effect=calibration_engine.CalibrationError('test stop'),
+        ), mock.patch.object(
+            calibration_engine,
+            'build_detection_threshold_suggestions',
+            return_value=[],
+        ), mock.patch.object(
+            calibration_engine,
+            'threshold_suggestion_payload',
+            return_value=preliminary,
+        ):
+            calibration_engine.calibrate_folder(
+                Path('unused'),
+                allow_unmatched=True,
+            )
+
+        self.assertEqual(validate_evidence.call_args.args[0], records)
+        self.assertEqual(signature_ranges.call_args.args[0], records)
+        self.assertIn(
+            unmatched_bad,
+            validate_evidence.call_args.args[2],
+        )
+
     def test_all_rejected_failure_preserves_grouped_reasons_without_paths(self):
         rejected = [
             (Path('private_one.fit'), 'missing explicit BAYERPAT=RGGB metadata'),
@@ -970,38 +1028,45 @@ class TestAsi676mcCalibrationEngine(unittest.TestCase):
             numpy.ones((8, 8), dtype=bool) for _index in range(4)
         )
 
-        with mock.patch.object(
-            calibration_engine,
-            '_read_fits',
-            return_value=(numpy.zeros((16, 16), dtype=numpy.uint16), {}, 0),
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_planes',
-            return_value=(placeholder_planes, placeholder_masks),
-        ), mock.patch.object(
-            calibration_engine,
-            '_sample_array_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_best_gain_only_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_error',
-            side_effect=(0.493104, 0.081437, 0.085976),
-        ), mock.patch.object(
-            calibration_engine.asi676mc,
-            'repair_if_needed',
-            return_value={'repaired': True, 'validation_failed': False},
-        ):
-            repaired, normal, checks, failures = (
-                calibration_engine.validate_calibrated_frames(
+        def validate(reference_errors):
+            with mock.patch.object(
+                calibration_engine,
+                '_read_fits',
+                return_value=(
+                    numpy.zeros((16, 16), dtype=numpy.uint16),
+                    {},
+                    0,
+                ),
+            ), mock.patch.object(
+                calibration_engine,
+                '_reference_planes',
+                return_value=(placeholder_planes, placeholder_masks),
+            ), mock.patch.object(
+                calibration_engine,
+                '_sample_array_planes',
+                return_value=placeholder_planes,
+            ), mock.patch.object(
+                calibration_engine,
+                '_best_gain_only_planes',
+                return_value=placeholder_planes,
+            ), mock.patch.object(
+                calibration_engine,
+                '_reference_error',
+                side_effect=reference_errors,
+            ), mock.patch.object(
+                calibration_engine.asi676mc,
+                'repair_if_needed',
+                return_value={'repaired': True, 'validation_failed': False},
+            ):
+                return calibration_engine.validate_calibrated_frames(
                     [pair],
                     calibration_engine.DEFAULT_SETTINGS,
                     collect_phase_failures=True,
                 )
-            )
+
+        repaired, normal, checks, failures = validate(
+            (0.493104, 0.081437, 0.085976)
+        )
 
         self.assertEqual((repaired, normal, checks), (0, 0, []))
         self.assertEqual(len(failures), 1)
@@ -1010,75 +1075,17 @@ class TestAsi676mcCalibrationEngine(unittest.TestCase):
             1.0 - 0.081437 / 0.085976,
         )
 
-        with mock.patch.object(
-            calibration_engine,
-            '_read_fits',
-            return_value=(numpy.zeros((16, 16), dtype=numpy.uint16), {}, 0),
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_planes',
-            return_value=(placeholder_planes, placeholder_masks),
-        ), mock.patch.object(
-            calibration_engine,
-            '_sample_array_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_best_gain_only_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_error',
-            side_effect=(0.100, 0.095, 0.200),
-        ), mock.patch.object(
-            calibration_engine.asi676mc,
-            'repair_if_needed',
-            return_value={'repaired': True, 'validation_failed': False},
+        with self.assertRaisesRegex(
+            calibration_engine.CalibrationError,
+            'validation_original_improvement',
         ):
-            with self.assertRaisesRegex(
-                calibration_engine.CalibrationError,
-                'validation_original_improvement',
-            ):
-                calibration_engine.validate_calibrated_frames(
-                    [pair],
-                    calibration_engine.DEFAULT_SETTINGS,
-                    collect_phase_failures=True,
-                )
+            validate((0.100, 0.095, 0.200))
 
-        with mock.patch.object(
-            calibration_engine,
-            '_read_fits',
-            return_value=(numpy.zeros((16, 16), dtype=numpy.uint16), {}, 0),
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_planes',
-            return_value=(placeholder_planes, placeholder_masks),
-        ), mock.patch.object(
-            calibration_engine,
-            '_sample_array_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_best_gain_only_planes',
-            return_value=placeholder_planes,
-        ), mock.patch.object(
-            calibration_engine,
-            '_reference_error',
-            side_effect=(0.490, 0.090, 0.086),
-        ), mock.patch.object(
-            calibration_engine.asi676mc,
-            'repair_if_needed',
-            return_value={'repaired': True, 'validation_failed': False},
+        with self.assertRaisesRegex(
+            calibration_engine.CalibrationError,
+            'validation_phase_improvement',
         ):
-            with self.assertRaisesRegex(
-                calibration_engine.CalibrationError,
-                'validation_phase_improvement',
-            ):
-                calibration_engine.validate_calibrated_frames(
-                    [pair],
-                    calibration_engine.DEFAULT_SETTINGS,
-                    collect_phase_failures=True,
-                )
+            validate((0.490, 0.090, 0.086))
 
     def test_two_normal_colour_regimes_do_not_pass_as_phase_shift_failure(self):
         normal = self._normal_frame()

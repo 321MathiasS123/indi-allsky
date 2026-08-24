@@ -830,12 +830,11 @@ function showCalibrationProgressView() {
     }
 }
 
-function showCalibrationFailure(sessionId, message) {
+function showCalibrationFailure(sessionId, message, reportAvailable) {
     // A worker failure is a completed, discardable session. Keep its message
     // beside the final progress state so a long setup form cannot hide the
     // reason below the fold, and offer the same deliberate reset as results.
     completedCalibrationSessionId = sessionId;
-    const reportAvailable = Boolean(arguments[2]);
     completedCalibrationOutcome = 'failed';
     activeCalibrationSessionId = null;
     pollingCalibrationSessionId = null;

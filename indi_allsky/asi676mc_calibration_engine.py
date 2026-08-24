@@ -1798,8 +1798,8 @@ def validate_calibrated_frames(
         result = asi676mc.repair_if_needed(data, settings)
         if not result['repaired'] or result['validation_failed']:
             raise CalibrationError(
-                'validation_runtime_repair: {0}: the fitted values did not '
-                'produce a valid repaired frame'.format(
+                'validation_runtime_repair: {0}: the calculated repair values '
+                'did not produce a valid repaired frame'.format(
                     pair.bad.source_name or pair.bad.path.name
                 )
             )
@@ -1901,8 +1901,8 @@ def validate_calibrated_frames(
         result = asi676mc.repair_if_needed(data, settings)
         if result['repaired'] or result['signature_before']['is_bad']:
             raise CalibrationError(
-                'validation_normal_rejected: {0}: the fitted detector mistook '
-                'a normal frame for a purple frame'.format(
+                'validation_normal_rejected: {0}: the calculated detection '
+                'settings mistook a normal frame for a purple frame'.format(
                     record.source_name or record.path.name
                 )
             )
@@ -2139,8 +2139,9 @@ def calibrate_folder(
     )
 
     pairs, unmatched = match_pairs(records, max_pair_seconds)
+    database_reserve_mode = target_group_count is not None
     marginal_exclusion_limit = max(0, int(marginal_exclusion_limit or 0))
-    if target_group_count is None:
+    if not database_reserve_mode:
         requested_group_count = len(pairs)
     else:
         requested_group_count = max(0, int(target_group_count))
@@ -2163,11 +2164,19 @@ def calibrate_folder(
         return selected
 
     while True:
-        active_records = records_for_pairs(active_pairs)
+        # Preserve the original upload and progressive-search behavior: their
+        # evidence and detector ranges include the complete inspected
+        # collection, including unmatched frames. Only the saved-FITS reserve
+        # path intentionally fits a requested subset of the staged groups.
+        active_records = (
+            records_for_pairs(active_pairs)
+            if database_reserve_mode
+            else records
+        )
         evidence = validate_evidence(
             active_records,
             active_pairs,
-            unmatched if target_group_count is None else [],
+            [] if database_reserve_mode else unmatched,
             allow_unmatched=allow_unmatched,
         )
         ranges = signature_ranges(active_records)
@@ -2339,12 +2348,13 @@ def calibrate_folder(
     payload['quality']['worst_repaired_reference_error'] = max(
         check['repaired_error'] for check in similarity_checks
     )
-    payload['quality']['requested_group_count'] = requested_group_count
-    payload['quality']['used_group_count'] = len(active_pairs)
-    payload['quality']['examined_group_count'] = (
-        working_group_count + replacement_count
-    )
-    payload['quality']['excluded_marginal_group_count'] = len(excluded_checks)
-    payload['quality']['replacement_group_count'] = replacement_count
-    payload['quality']['marginal_exclusions'] = excluded_checks
+    if database_reserve_mode:
+        payload['quality'].update({
+            'requested_group_count': requested_group_count,
+            'used_group_count': len(active_pairs),
+            'examined_group_count': working_group_count + replacement_count,
+            'excluded_marginal_group_count': len(excluded_checks),
+            'replacement_group_count': replacement_count,
+            'marginal_exclusions': excluded_checks,
+        })
     return finish_scan_payload(payload)
