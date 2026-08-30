@@ -4570,11 +4570,11 @@ function renderDarkPlan(plan, preservedGroupState) {
                         <div class="tw:min-h-8 tw:flex tw:flex-col tw:justify-center tw:text-sm">${darkEscape(bitDepth)} output<br>${darkEscape(temperature)}</div>
                     </div>
                     <label class="dark-plan-field tw:form-control">
-                        <span class="tw:label-text tw:text-xs tw:font-semibold tw:mb-1">Gains</span>
+                        <span class="tw:label-text tw:text-xs tw:font-semibold tw:mb-1">Gains (at least one; comma-separated)</span>
                         <input class="dark-group-gains tw:input tw:input-bordered tw:input-sm tw:font-mono" value="${darkEscape(darkNumberList(group.gains))}" aria-label="Gains for ${darkEscape(group.source_label)}">
                     </label>
                     <label class="dark-plan-field tw:form-control">
-                        <span class="tw:label-text tw:text-xs tw:font-semibold tw:mb-1">Exposures</span>
+                        <span class="tw:label-text tw:text-xs tw:font-semibold tw:mb-1">Exposures (at least one; comma-separated)</span>
                         <input class="dark-group-exposures tw:input tw:input-bordered tw:input-sm tw:font-mono" value="${darkEscape(darkNumberList(group.exposures))}" aria-label="Exposure lengths for ${darkEscape(group.source_label)}">
                     </label>
                 </div>
