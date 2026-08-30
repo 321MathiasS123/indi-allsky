@@ -135,7 +135,12 @@ def _render_builder(
         'camera_id': 1,
         'dark_execution_preview': preview,
         'dark_analysis': analysis,
-        'dark_temperature_sources': [],
+        'dark_temperature_sources': [{
+            'key': 'auto',
+            'label': 'Automatic camera temperature',
+            'category': 'automatic',
+            'slot': None,
+        }],
         'dark_automation_can_review': automation_can_run or config_requires_reload,
         'dark_automation_can_run': automation_can_run,
         'dark_config_requires_reload': config_requires_reload,
@@ -1013,7 +1018,7 @@ def test_recommendation_origin_and_overviews_are_explicitly_labelled():
     assert 'id="dark-saved-exposure-max">30 seconds</strong> (capped by the camera if necessary)' in html
     assert 'Strategy: <strong>Exposure priority</strong>' in html
     assert 'Builder settings' in html
-    assert 'id="dark-input-temperature-source">Automatic</strong>' in html
+    assert 'id="dark-input-temperature-source">Automatic camera temperature</strong>' in html
     assert 'id="dark-input-temperature-range">5</span>°C' in html
     assert 'id="dark-input-exposure-step">5</span> seconds' in html
     assert 'Step 1 supplies temperature settings; Step 3 → Advanced options supplies the interval' in html
@@ -1282,7 +1287,7 @@ def test_primary_temperature_matching_and_advanced_series_are_separated():
     assert 'id="dark-temperature-range"' in workflow
     assert 'class="dark-builder-step-eyebrow">Step 1' in workflow
     assert 'Choose temperature matching' in workflow
-    assert 'The page updates immediately.' in workflow
+    assert 'The page updates after each exposure.' in workflow
     assert 'Allowed temperature difference' in workflow
     assert 'A larger range needs fewer new temperature layers.' in workflow
     assert 'saved for this camera when capture starts' in workflow
@@ -1326,7 +1331,7 @@ def test_primary_temperature_matching_and_advanced_series_are_separated():
     assert capture_position < advanced_position
 
 
-def test_temperature_guidance_explains_automatic_and_both_one_run_policies():
+def test_builder_refreshes_camera_temperature_after_completed_exposures():
     html = _render_builder(
         'complete',
         stored_dark_count=20,
@@ -1335,10 +1340,31 @@ def test_temperature_guidance_explains_automatic_and_both_one_run_policies():
         suggested_count=12,
     )
 
-    assert 'Automatic prefers the camera sensor.' in html
-    assert 'one unambiguous source from Config → Sensors' in html
-    assert 'never guesses from its name.' in html
-    assert 'Automatic found no unique recent reading.' in html
+    assert 'const darkEventsPath =' in html
+    assert 'new WebSocket(eventsUrl.toString())' in html
+    assert "message.event !== 'exposure_complete'" in html
+    assert 'Number(data.camera_id) !== Number(camera_id)' in html
+    assert 'refreshDarkPlan({preserve_group_edits: true});' in html
+    assert "option[value=\"temperature_series\"]" in html
+    assert ".prop('disabled', !cameraTemperatureAvailable)" in html
+    assert 'No camera temperature sensor found' in html
+    assert 'Waiting for the next camera exposure' in html
+
+
+def test_temperature_guidance_explains_camera_only_and_sensorless_matching():
+    html = _render_builder(
+        'complete',
+        stored_dark_count=20,
+        stored_bpm_count=20,
+        ready_count=5,
+        suggested_count=12,
+    )
+
+    assert 'Use the camera temperature' in html
+    assert 'The page updates after each exposure.' in html
+    assert 'Waiting for the next camera exposure' in html
+    assert 'Masters use legacy no-sensor matching.' in html
+    assert 'The builder matches masters captured without camera temperature.' in html
     assert 'any stored temperature counts' in html
     assert 'Cooled profiles still use targets from Config → Camera.' in html
     assert 'Stored masters from ' in html

@@ -996,6 +996,16 @@ def _dark_current_temperature(camera_id, config, source='auto'):
     return reading.value if reading is not None else None
 
 
+def _dark_validate_temperature_series(options, reading):
+    if options['capture_mode'] != dark_automation.CAPTURE_MODE_TEMPERATURE_SERIES:
+        return
+    if reading is None or reading.source.category == 'unavailable':
+        raise dark_automation.DarkAutomationError(
+            'Temperature-series capture needs a camera temperature reading. '
+            'Wait for the next exposure and try again.'
+        )
+
+
 def _dark_default_temperature_target(config):
     if not config.get('CCD_COOLING'):
         return None
@@ -1824,6 +1834,7 @@ class AjaxDarkAutomationPlanView(BaseView):
                 self.indi_allsky_config,
                 source=options['temperature_source'],
             )
+            _dark_validate_temperature_series(options, temperature_reading)
             analysis_temperature = (
                 (
                     temperature_reading.value
@@ -1914,6 +1925,7 @@ class AjaxDarkAutomationStartView(BaseView):
                 self.indi_allsky_config,
                 source=options['temperature_source'],
             )
+            _dark_validate_temperature_series(options, temperature_reading)
             analysis_temperature = (
                 (
                     temperature_reading.value

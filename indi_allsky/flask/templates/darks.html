@@ -2205,6 +2205,7 @@ const darkFlushUrl = "{{ url_for('indi_allsky.ajax_darks_flush_view') }}";
 const darkEligibilityUrl = "{{ url_for('indi_allsky.ajax_darks_eligibility_view') }}";
 const darkStatusUrlTemplate = "{{ url_for('indi_allsky.ajax_darks_status_view', task_id=0) }}";
 const darkCancelUrlTemplate = "{{ url_for('indi_allsky.ajax_darks_cancel_view', task_id=0) }}";
+const darkEventsPath = "{{ url_for('indi_allsky.ws_events_view') }}";
 const darkCsrfToken = "{{ csrf_token() }}";
 const darkAutomationCanReview = {{ dark_automation_can_review | tojson }};
 const darkAutomationCanRun = {{ dark_automation_can_run | tojson }};
@@ -2278,6 +2279,7 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
 
             {% if dark_analysis.available %}
             {% set dark_library_empty = dark_analysis.stored_dark_count == 0 and dark_analysis.stored_bpm_count == 0 %}
+            {% set dark_camera_temperature_unavailable = dark_analysis.temperature_reading and dark_analysis.temperature_reading.category == 'unavailable' %}
             {% if dark_config_requires_reload %}
             <div id="dark-config-reload-warning" class="tw:alert tw:alert-warning tw:items-start">
                 <i class="tw:icon-[lucide--refresh-cw] tw:w-5 tw:h-5 tw:mt-0.5 tw:shrink-0"></i>
@@ -2294,7 +2296,7 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                     <div class="dark-builder-step-heading">
                         <div class="dark-builder-step-eyebrow">Step 1</div>
                         <h5 id="dark-temperature-workflow-title" class="dark-builder-step-title">Choose temperature matching</h5>
-                        <p class="dark-builder-step-copy">Choose which sensor supplies the temperature and how close a stored master must be. The page updates immediately. Cooled targets come from Config → Camera.</p>
+                        <p class="dark-builder-step-copy">Use the camera temperature and choose how close a stored master must be. The page updates after each exposure. Cooled targets come from Config → Camera.</p>
                     </div>
                 </header>
 
@@ -2303,11 +2305,11 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                         <span class="tw:label-text tw:text-xs tw:font-semibold tw:mb-1">Temperature sensor</span>
                         <select id="dark-temperature-source" aria-label="Temperature sensor" class="tw:select tw:select-bordered tw:select-sm tw:w-full tw:max-w-full tw:min-w-0">
                             {% for source in dark_temperature_sources %}
-                            <option value="{{ source.key }}" {% if source.key == dark_execution_preview.temperature_source %}selected{% endif %}>{{ source.label }}</option>
+                            <option value="{{ source.key }}" {% if source.key == dark_execution_preview.temperature_source %}selected{% endif %}>{% if source.key == 'auto' and dark_camera_temperature_unavailable %}No camera temperature sensor found{% else %}{{ source.label }}{% endif %}</option>
                             {% endfor %}
                         </select>
                         <span id="dark-temperature-source-help" class="tw:label-text-alt tw:text-base-content/50 tw:mt-1 tw:leading-snug">
-                            Automatic prefers the camera sensor. If it is unavailable, it uses one unambiguous source from Config → Sensors and never guesses from its name. {% if dark_analysis.temperature_reading %}Using {{ dark_analysis.temperature_reading.label }} at {{ "%0.1f"|format(dark_analysis.temperature_reading.value) }}°C from the latest image.{% else %}No recent reading is available; choose a named sensor if possible.{% endif %}
+                            {% if dark_camera_temperature_unavailable %}The latest exposure reported no camera temperature. Masters use legacy no-sensor matching.{% elif dark_analysis.temperature_reading %}Using {{ dark_analysis.temperature_reading.label }} at {{ "%0.1f"|format(dark_analysis.temperature_reading.value) }}°C from the latest image.{% else %}Waiting for the next camera exposure to check for a temperature reading.{% endif %}
                         </span>
                     </label>
                     <label class="tw:form-control tw:min-w-0">
@@ -2325,7 +2327,7 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
 
                 <div id="dark-temperature-evaluation-summary" class="tw:alert tw:alert-info tw:py-2 tw:text-xs tw:items-start" aria-live="polite">
                     <i class="tw:icon-[lucide--thermometer] tw:w-4 tw:h-4 tw:mt-0.5 tw:shrink-0"></i>
-                    <span>{% if dark_analysis.temperature_reading %}Using {{ dark_analysis.temperature_reading.label }} at {{ "%0.1f"|format(dark_analysis.temperature_reading.value) }}°C. Masters from {{ "%0.1f"|format(dark_analysis.temperature_reading.value - dark_analysis.temperature_range) }}°C to {{ "%0.1f"|format(dark_analysis.temperature_reading.value + dark_analysis.temperature_range) }}°C match.{% else %}No recent reading is available. Uncooled coverage is shown without temperature matching.{% endif %}</span>
+                    <span>{% if dark_camera_temperature_unavailable %}No camera temperature is available. The builder checks the legacy no-sensor library group.{% elif dark_analysis.temperature_reading %}Using {{ dark_analysis.temperature_reading.label }} at {{ "%0.1f"|format(dark_analysis.temperature_reading.value) }}°C. Masters from {{ "%0.1f"|format(dark_analysis.temperature_reading.value - dark_analysis.temperature_range) }}°C to {{ "%0.1f"|format(dark_analysis.temperature_reading.value + dark_analysis.temperature_range) }}°C match.{% else %}Waiting for the next camera exposure before checking temperature coverage.{% endif %}</span>
                 </div>
 
                 <div class="dark-builder-step-actions">
@@ -2450,6 +2452,9 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                         {% set selected_temperature_source.label = source.label %}
                     {% endif %}
                 {% endfor %}
+                {% if dark_camera_temperature_unavailable %}
+                    {% set selected_temperature_source.label = 'No camera temperature sensor found' %}
+                {% endif %}
                 <div class="tw:bg-base-200 tw:rounded-[var(--radius-box)] tw:p-3 tw:text-xs tw:text-base-content/70">
                     <div class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50 tw:mb-2">Inputs used</div>
                     <dl class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-[minmax(9rem,auto)_minmax(0,1fr)] tw:gap-x-4 tw:gap-y-2">
@@ -2472,7 +2477,10 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                     </div>
                     <div class="tw:bg-base-200 tw:rounded-[var(--radius-box)] tw:p-3">
                         <div class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Step 1 temperature coverage</div>
-                        {% if dark_analysis.target_temperatures %}
+                        {% if dark_camera_temperature_unavailable %}
+                        <div id="dark-temperature-check-value" class="tw:font-semibold tw:mt-1">{{ dark_analysis.temperature_ready_target_count }} of {{ dark_analysis.target_count }} ready without camera temperature</div>
+                        <div id="dark-temperature-check-note" class="tw:text-xs tw:text-base-content/70 tw:mt-1 tw:leading-relaxed">The builder matches masters captured without camera temperature.</div>
+                        {% elif dark_analysis.target_temperatures %}
                         <div id="dark-temperature-check-value" class="tw:font-semibold tw:mt-1">{{ dark_analysis.temperature_ready_target_count }} of {{ dark_analysis.target_count }} ready</div>
                         <div id="dark-temperature-check-note" class="tw:text-xs tw:text-base-content/70 tw:mt-1 tw:leading-relaxed">
                             Cooler targets: {{ dark_analysis.target_temperatures | join(', ') }}°C. Each accepts masters within ±{{ "%g"|format(dark_analysis.temperature_range) }}°C; for example, {{ "%0.1f"|format(dark_analysis.target_temperatures[0]) }}°C accepts {{ "%0.1f"|format(dark_analysis.target_temperatures[0] - dark_analysis.temperature_range) }}°C to {{ "%0.1f"|format(dark_analysis.target_temperatures[0] + dark_analysis.temperature_range) }}°C. Each set is checked separately, and existing layers stay stored.
@@ -2570,7 +2578,7 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                             <td>{{ group.sources }}</td>
                             <td>{{ group.binning }}</td>
                             <td>{{ group.bit_depth if group.bit_depth is not none else 'Unknown' }}</td>
-                            <td>{% if group.temperature is not none %}{{ "%0.1f"|format(group.temperature) }}°C{% else %}Current sensor reading{% endif %}</td>
+                            <td>{% if group.temperature is not none %}{{ "%0.1f"|format(group.temperature) }}°C{% elif dark_camera_temperature_unavailable %}No camera temperature{% else %}Current camera temperature{% endif %}</td>
                             <td class="tw:font-mono tw:text-xs tw:max-w-xl tw:whitespace-normal">{{ group.gains }}</td>
                             <td class="tw:font-mono tw:text-xs tw:max-w-xl tw:whitespace-normal">{{ group.suggested_gains }}</td>
                             <td class="tw:font-mono tw:text-xs tw:whitespace-normal">{{ group.exposures }}</td>
@@ -3042,7 +3050,7 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                                         data-deactivate-selection='{{ master.active_selection | default(master.selection) | tojson | forceescape }}'
                                         aria-label="Add gain {{ '%g'|format(master.gain) }}, {{ '%g'|format(master.exposure) }} second master set to the selection"
                                         {% if dark_library_task_active %}disabled{% endif %}></td>
-                                    <td><span class="dark-library-master-details"><span class="tw:font-mono tw:font-semibold">gain {{ "%g"|format(master.gain) }} · {{ "%g"|format(master.exposure) }}s · {% if master.temperature is not none %}{{ "%0.1f"|format(master.temperature) }}°C{% else %}no temperature{% endif %}</span><span class="tw:text-base-content/50">{% if master.paired %}dark + map{% else %}unpaired{% endif %}{% if master.eligibility_reason_label and not master.staged %} · {{ master.eligibility_reason_label }}{% endif %}</span></span></td>
+                                    <td><span class="dark-library-master-details"><span class="tw:font-mono tw:font-semibold">gain {{ "%g"|format(master.gain) }} · {{ "%g"|format(master.exposure) }}s · {% if master.temperature is not none and master.temperature < -100 %}no camera temperature{% elif master.temperature is not none %}{{ "%0.1f"|format(master.temperature) }}°C{% else %}no temperature{% endif %}</span><span class="tw:text-base-content/50">{% if master.paired %}dark + map{% else %}unpaired{% endif %}{% if master.eligibility_reason_label and not master.staged %} · {{ master.eligibility_reason_label }}{% endif %}</span></span></td>
                                     <td>{% if master.staged %}<span class="tw:badge tw:badge-info tw:badge-sm">Being captured</span>{% elif master.status == 'active' %}<span class="tw:badge tw:badge-success tw:badge-sm">Active</span>{% elif master.status == 'inactive' %}<span class="tw:badge tw:badge-warning tw:badge-sm">Inactive</span>{% else %}<span class="tw:badge tw:badge-warning tw:badge-outline tw:badge-sm">Mixed</span>{% endif %}</td>
                                     <td class="tw:whitespace-nowrap tw:text-base-content/60">{{ master.size }}</td>
                                     <td><span class="dark-library-master-buttons">
@@ -3233,6 +3241,8 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                                     <td class="tw:font-mono tw:whitespace-nowrap">
                                         {% if dark.temp is none %}
                                         <span class="tw:text-warning">Not recorded</span>
+                                        {% elif dark.temp < -100 %}
+                                        <span class="tw:text-base-content">No camera temperature</span>
                                         {% else %}
                                         <span class="tw:text-base-content">{{ "%0.1f"|format(dark.temp | float) }}°C</span>
                                         <span class="tw:block tw:text-[0.625rem] tw:text-base-content/50">usable {{ "%0.1f"|format(dark.temperature_min) }} to {{ "%0.1f"|format(dark.temperature_max) }}°C</span>
@@ -3368,6 +3378,8 @@ const initialDarkTaskId = {{ dark_automation_task_id | tojson }};
                                     <td class="tw:font-mono tw:whitespace-nowrap">
                                         {% if bpm.temp is none %}
                                         <span class="tw:text-warning">Not recorded</span>
+                                        {% elif bpm.temp < -100 %}
+                                        <span class="tw:text-base-content">No camera temperature</span>
                                         {% else %}
                                         <span class="tw:text-base-content">{{ "%0.1f"|format(bpm.temp | float) }}°C</span>
                                         <span class="tw:block tw:text-[0.625rem] tw:text-base-content/50">usable {{ "%0.1f"|format(bpm.temperature_min) }} to {{ "%0.1f"|format(bpm.temperature_max) }}°C</span>
@@ -3507,6 +3519,13 @@ let badPixelDataTable = null;
 const darkRemovalConfirmationText = 'DELETE';
 let darkPlanRequestRevision = 0;
 let darkPlanRefreshTimer = null;
+let darkTemperatureSocket = null;
+let darkTemperatureReconnectTimer = null;
+let darkTemperatureRefreshTimer = null;
+let darkTemperaturePendingKey = null;
+let darkTemperaturePlanKey = null;
+let darkTemperatureLastRefresh = 0;
+let darkTemperaturePageClosing = false;
 let pendingDarkRemoval = null;
 let pendingDarkEligibility = null;
 let darkSelectionConfirmationOpen = false;
@@ -4036,7 +4055,17 @@ function updateDarkPlanValidation(masterCount, includeGroups) {
 }
 
 function updateDarkCaptureModeControls() {
-    const temperatureSeries = $('#dark-capture-mode').val() === 'temperature_series';
+    const temperatureReading = ((currentDarkPlan || {}).analysis || {}).temperature_reading || null;
+    const cameraTemperatureAvailable = Boolean(
+        temperatureReading && temperatureReading.category !== 'unavailable'
+    );
+    const captureMode = $('#dark-capture-mode');
+    captureMode.find('option[value="temperature_series"]')
+        .prop('disabled', !cameraTemperatureAvailable);
+    if (!cameraTemperatureAvailable && captureMode.val() === 'temperature_series') {
+        captureMode.val('single');
+    }
+    const temperatureSeries = captureMode.val() === 'temperature_series';
     const strategyControl = $('#dark-strategy');
     const temperaturePolicyControl = $('#dark-temperature-policy');
     const wasTemperatureSeries = strategyControl.prop('disabled');
@@ -4087,13 +4116,19 @@ function updateDarkOptionGuidance(plan) {
     const analysis = (plan || {}).analysis || {};
     const hasContinuousGain = Boolean(analysis.continuous_gain);
     const temperatureReading = analysis.temperature_reading || null;
+    const cameraTemperatureUnavailable = Boolean(
+        temperatureReading && temperatureReading.category === 'unavailable'
+    );
     const parsedTemperatureRange = Number(analysis.temperature_range);
     const temperatureRange = Number.isFinite(parsedTemperatureRange) ? parsedTemperatureRange : 5;
     const temperatureRangeLabel = Number.isInteger(temperatureRange)
         ? temperatureRange.toFixed(0)
         : temperatureRange.toFixed(1);
-    const temperatureSourceLabel = $('#dark-temperature-source option:selected').text().trim()
-        || 'Automatic';
+    const automaticOption = $('#dark-temperature-source option[value="auto"]');
+    automaticOption.text(cameraTemperatureUnavailable
+        ? 'No camera temperature sensor found'
+        : 'Automatic camera temperature');
+    const temperatureSourceLabel = automaticOption.text().trim();
     const temperatureRangeSource = (plan || {}).temperature_range_source || 'legacy_default';
     const targetTemperatures = (analysis.target_temperatures || [])
         .map(Number)
@@ -4148,20 +4183,20 @@ function updateDarkOptionGuidance(plan) {
             ? 'This sensor supplies uncooled profiles; cooled profiles use targets from Config → Camera. '
             : 'This sensor supplies the temperature used for matching. ');
     const automaticSource = temperatureSource === 'auto';
-    $('#dark-temperature-source-help').text(temperatureReading
-        ? temperatureSourcePurpose
-            + (automaticSource ? 'Automatic selected ' : 'Selected ')
-            + temperatureReading.label + ' at ' + Number(temperatureReading.value).toFixed(1)
-            + '°C from the latest image. Automatic uses the camera first, then one unambiguous source from Config → Sensors.'
-        : temperatureSourcePurpose + (automaticSource
-            ? 'Automatic found no unique recent reading. Choose a sensor.'
-            : 'This sensor has no recent reading. It will be checked again when capture starts.'));
+    $('#dark-temperature-source-help').text(cameraTemperatureUnavailable
+        ? 'The latest exposure reported no camera temperature. Masters use legacy no-sensor matching.'
+        : (temperatureReading
+            ? temperatureSourcePurpose + 'Using ' + temperatureReading.label + ' at '
+                + Number(temperatureReading.value).toFixed(1) + '°C from the latest image.'
+            : 'Waiting for the next camera exposure to check for a temperature reading.'));
 
     let temperatureEvaluationText;
     if (!temperatureSeries && temperaturePolicy === 'ignore') {
         temperatureEvaluationText = targetTemperatures.length
             ? 'Any temperature counts for uncooled profiles; cooled profiles still use targets from Config → Camera.'
             : 'Any stored temperature counts, so the plan adds only missing pairs.';
+    } else if (cameraTemperatureUnavailable) {
+        temperatureEvaluationText = 'No camera temperature is available. The builder checks the legacy no-sensor library group.';
     } else if (temperatureReading) {
         const readingValue = Number(temperatureReading.value).toFixed(1);
         const automaticSuffix = automaticSource ? ' (selected automatically)' : '';
@@ -4177,13 +4212,21 @@ function updateDarkOptionGuidance(plan) {
                 + (Number(readingValue) + temperatureRange).toFixed(1) + '°C count as matched.';
         }
     } else {
-        temperatureEvaluationText = automaticSource
-            ? 'Automatic found no unique recent reading. Temperature coverage is not checked; choose a sensor.'
-            : 'This sensor has no recent reading, so temperature coverage is not checked.';
+        temperatureEvaluationText = 'Waiting for the next camera exposure before checking temperature coverage.';
     }
     $('#dark-temperature-evaluation-summary span').text(temperatureEvaluationText);
 
-    if (targetTemperatures.length) {
+    if (cameraTemperatureUnavailable) {
+        $('#dark-temperature-check-value').text(
+            String(Number(analysis.temperature_ready_target_count) || 0)
+            + ' of ' + String(Number(analysis.target_count) || 0)
+            + ' ready without camera temperature'
+        );
+        $('#dark-temperature-check-note')
+            .removeClass('tw:text-warning tw:text-base-content/50')
+            .addClass('tw:text-base-content/70')
+            .text('The builder matches masters captured without camera temperature.');
+    } else if (targetTemperatures.length) {
         const exampleTarget = targetTemperatures[0];
         $('#dark-temperature-check-value').text(
             String(Number(analysis.temperature_ready_target_count) || 0)
@@ -4288,6 +4331,10 @@ function scheduleDarkPlanRefresh(delay, options) {
 function renderDarkRecommendation(plan) {
     const analysis = (plan || {}).analysis || {};
     if (!analysis.available) return;
+    const cameraTemperatureUnavailable = Boolean(
+        analysis.temperature_reading
+        && analysis.temperature_reading.category === 'unavailable'
+    );
 
     const targetCount = Number(analysis.target_count) || 0;
     const suggestedCount = Number(analysis.suggested_target_count) || 0;
@@ -4429,7 +4476,7 @@ function renderDarkRecommendation(plan) {
     overviewBody.empty();
     (analysis.groups || []).forEach((group) => {
         const temperature = group.temperature === null || group.temperature === undefined
-            ? 'Current sensor reading'
+            ? (cameraTemperatureUnavailable ? 'No camera temperature' : 'Current camera temperature')
             : Number(group.temperature).toFixed(1) + '°C';
         const bitDepth = group.bit_depth === null || group.bit_depth === undefined
             ? 'Unknown'
@@ -4452,6 +4499,7 @@ function renderDarkRecommendation(plan) {
 
 function renderDarkPlan(plan, preservedGroupState) {
     currentDarkPlan = plan;
+    darkTemperaturePlanKey = darkTemperatureKeyFromPlan(plan);
     if (plan.exposure_max !== undefined) $('#dark-exposure-max').val(plan.exposure_max);
     if (plan.exposure_step !== undefined) $('#dark-exposure-step').val(plan.exposure_step);
     if (plan.capture_order) $('#dark-capture-order').val(plan.capture_order);
@@ -4476,8 +4524,11 @@ function renderDarkPlan(plan, preservedGroupState) {
     body.empty();
 
     (plan.groups || []).forEach((group) => {
+        const cameraTemperatureUnavailable = Boolean(
+            ((plan.analysis || {}).temperature_reading || {}).category === 'unavailable'
+        );
         const temperature = group.temperature === null || group.temperature === undefined
-            ? 'Current temperature'
+            ? (cameraTemperatureUnavailable ? 'No camera temperature' : 'Current camera temperature')
             : Number(group.temperature).toString() + '°C';
         const bitDepth = group.bit_depth === null || group.bit_depth === undefined
             ? 'unknown bits'
@@ -4852,6 +4903,86 @@ async function darkJsonRequest(url, options) {
     }
     if (!response.ok) throw new Error(data.error || 'The request could not be completed.');
     return data;
+}
+
+function darkTemperatureKeyFromPlan(plan) {
+    const reading = (((plan || {}).analysis || {}).temperature_reading || null);
+    if (!reading) return 'waiting';
+    if (reading.category === 'unavailable') return 'unavailable';
+    if (reading.value === null || reading.value === undefined || reading.value === '') return 'waiting';
+    const value = Number(reading.value);
+    return Number.isFinite(value) ? 'value:' + value.toFixed(1) : 'waiting';
+}
+
+function darkTemperatureKeyFromEvent(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const temperature = Number(value);
+    if (!Number.isFinite(temperature)) return null;
+    return temperature < -100 || temperature > 100
+        ? 'unavailable'
+        : 'value:' + temperature.toFixed(1);
+}
+
+function scheduleDarkTemperatureRefresh(key, immediate) {
+    if (!key || activeDarkTaskId) return;
+    if (key === darkTemperaturePlanKey) {
+        darkTemperaturePendingKey = null;
+        return;
+    }
+    darkTemperaturePendingKey = key;
+    if (key === 'unavailable') $('#dark-capture-mode').val('single');
+    if (document.hidden || darkTemperatureRefreshTimer) return;
+    const elapsed = Date.now() - darkTemperatureLastRefresh;
+    const delay = immediate ? 200 : Math.max(200, 10000 - elapsed);
+    darkTemperatureRefreshTimer = setTimeout(function() {
+        darkTemperatureRefreshTimer = null;
+        if (document.hidden || activeDarkTaskId || !darkTemperaturePendingKey) return;
+        darkTemperaturePendingKey = null;
+        darkTemperatureLastRefresh = Date.now();
+        refreshDarkPlan({preserve_group_edits: true});
+    }, delay);
+}
+
+function connectDarkTemperatureEvents() {
+    if (!darkAutomationCanReview || activeDarkTaskId
+            || darkTemperaturePageClosing || typeof WebSocket === 'undefined') return;
+    const eventsUrl = new URL(darkEventsPath, window.location.href);
+    eventsUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    darkTemperatureSocket = new WebSocket(eventsUrl.toString());
+    darkTemperatureSocket.onmessage = function(event) {
+        let message;
+        try {
+            message = JSON.parse(event.data);
+        } catch (_error) {
+            return;
+        }
+        const data = message.data || {};
+        if (message.event !== 'exposure_complete' || Number(data.camera_id) !== Number(camera_id)) return;
+        const key = darkTemperatureKeyFromEvent(data.temp);
+        const availabilityChanged = key && key.split(':', 1)[0]
+            !== String(darkTemperaturePlanKey || 'waiting').split(':', 1)[0];
+        scheduleDarkTemperatureRefresh(key, availabilityChanged);
+    };
+    darkTemperatureSocket.onclose = function() {
+        darkTemperatureSocket = null;
+        if (darkTemperaturePageClosing || darkTemperatureReconnectTimer) return;
+        darkTemperatureReconnectTimer = setTimeout(function() {
+            darkTemperatureReconnectTimer = null;
+            connectDarkTemperatureEvents();
+        }, 5000);
+    };
+    darkTemperatureSocket.onerror = function() {
+        darkTemperatureSocket.close();
+    };
+}
+
+function handleDarkPageVisibility() {
+    if (document.hidden) return;
+    if (darkTemperaturePendingKey) {
+        scheduleDarkTemperatureRefresh(darkTemperaturePendingKey, true);
+    } else if (!darkTemperatureSocket) {
+        connectDarkTemperatureEvents();
+    }
 }
 
 async function refreshDarkPlan(options) {
@@ -5538,7 +5669,9 @@ function renderDarkCompletedMasterSets(details) {
         row.append($('<td>', {'class': 'tw:font-mono tw:whitespace-nowrap'}).text(
             detail.temperature === null || detail.temperature === undefined
                 ? 'Not reported'
-                : Number(detail.temperature).toFixed(1) + '°C'
+                : (Number(detail.temperature) < -100
+                    ? 'No camera temperature'
+                    : Number(detail.temperature).toFixed(1) + '°C')
         ));
         row.append($('<td>', {'class': 'tw:font-mono'}).text(
             detail.frame_count === null || detail.frame_count === undefined
@@ -5852,6 +5985,8 @@ $( document ).ready(function() {
         });
         showDarkBuilderStep(1, {scroll: false, validate: false});
         renderDarkPlan(initialDarkPlan);
+        connectDarkTemperatureEvents();
+        document.addEventListener('visibilitychange', handleDarkPageVisibility);
         $('#dark-camera-covered').on('change', function() { updateDarkPlanSummary(); });
         $('#dark-method').on('change', function() {
             darkMethodTouched = true;
@@ -5920,6 +6055,13 @@ $( document ).ready(function() {
         $('#dark-refresh-plan').on('click', restoreDarkRecommendedCaptureGroups);
         $('#dark-start').on('click', startDarkCalibration);
     }
+
+    window.addEventListener('beforeunload', function() {
+        darkTemperaturePageClosing = true;
+        if (darkTemperatureReconnectTimer) clearTimeout(darkTemperatureReconnectTimer);
+        if (darkTemperatureRefreshTimer) clearTimeout(darkTemperatureRefreshTimer);
+        if (darkTemperatureSocket) darkTemperatureSocket.close();
+    });
 
     $('#dark-cancel').on('click', cancelDarkCalibration);
     $('#dark-review-library').on('click', function() {

@@ -1225,7 +1225,7 @@ def test_adjusted_execution_plan_is_validated_and_counted():
         'strategy': 'refresh',
         'method': 'sigmaclip',
         'frame_count': 12,
-        'temperature_source': 'sensor_user_10',
+        'temperature_source': 'auto',
         'config_signature': plan.config_signature,
         'groups': [{
             'id': source_group['id'],
@@ -1244,7 +1244,7 @@ def test_adjusted_execution_plan_is_validated_and_counted():
 
     assert execution['target_count'] == 6
     assert execution['frame_count'] == 12
-    assert execution['temperature_source'] == 'sensor_user_10'
+    assert execution['temperature_source'] == 'auto'
     assert execution['groups'][0]['gains'] == [0.0, 100.0, 300.0]
     assert len(execution['plan_signature']) == 64
 
@@ -2206,6 +2206,27 @@ def test_library_catalog_groups_nearby_legacy_temperatures_across_old_bucket_bou
     assert len(layers) == 1
     assert layers[0]['temperature_label'] == '42.1 to 43.2°C'
     assert layers[0]['master_set_count'] == 4
+
+
+def test_library_catalog_labels_sensorless_camera_group_without_sentinel_value():
+    camera = SimpleNamespace(id=1, name='Camera', friendlyName=None)
+    create_date = datetime(2026, 8, 21, 12, 0, 0)
+    dark_frames = [
+        _catalog_frame(1, 1, create_date, temperature=-273.15),
+    ]
+    bad_pixel_maps = [
+        _catalog_frame(101, 1, create_date, temperature=-273.15),
+    ]
+
+    catalog = build_library_catalog(
+        (camera,),
+        dark_frames,
+        bad_pixel_maps,
+        current_camera_id=1,
+    )
+
+    layers = catalog['cameras'][0]['profiles'][0]['layers']
+    assert layers[0]['temperature_label'] == 'No camera temperature'
 
 
 def test_library_catalog_starts_a_new_group_at_saved_matching_distance():
