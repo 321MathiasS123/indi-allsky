@@ -44,7 +44,6 @@ from .dark_fits import set_master_fits_metadata
 from .temperature import TEMPERATURE_SOURCE_AUTO
 from .temperature import TEMPERATURE_SOURCE_CAMERA
 from .temperature import TEMPERATURE_SOURCE_SCRIPT
-from .temperature import configured_temperature_sources
 from .temperature import master_capture_temperature
 from .temperature import resolve_temperature
 from .temperature import usable_temperature
@@ -2044,7 +2043,9 @@ class IndiAllSkyDarks(object):
             # by the filename, database rows, manifests, and both FITS headers.
             master_temperature = master_capture_temperature(
                 measured_temperature,
-                preserve_legacy_value=not automation_capture,
+                # Sensorless cameras use the same -273.15°C marker as the
+                # legacy CLI and normal image processing.
+                preserve_legacy_value=True,
             )
             self._progress_current_temperature = master_temperature
             logger.info('Camera temperature: %0.1f', measured_temperature)
@@ -2075,7 +2076,7 @@ class IndiAllSkyDarks(object):
         # libcamera does not know the temperature until the first exposure is taken
         if master_temperature is None:
             raise RuntimeError(
-                'A usable temperature is required after the final source image'
+                'A camera temperature value is required after the final source image'
             )
         exp_date = datetime.now()
         date_str = exp_date.strftime('%Y%m%d_%H%M%S')
@@ -2376,27 +2377,16 @@ class IndiAllSkyDarks(object):
             or TEMPERATURE_SOURCE_AUTO
         )
         sensor_values = {}
-        if self.automation_manifest.get('automation'):
-            for source in configured_temperature_sources(self.config):
-                if not source.slot:
-                    continue
-                try:
-                    sensor_index = int(source.slot.rsplit('_', 1)[1])
-                    sensor_values[source.slot] = self.sensors_user_av[sensor_index]
-                except (IndexError, ValueError):
-                    continue
-
-        reading = resolve_temperature(
-            self.config,
-            camera_temperature=camera_temp,
-            sensor_values=sensor_values,
-            source=selected_source,
-        )
 
         if (
-                reading is None
-                and selected_source in (TEMPERATURE_SOURCE_AUTO, TEMPERATURE_SOURCE_SCRIPT)
-                and self.config.get('CCD_TEMP_SCRIPT')
+                self.config.get('CCD_TEMP_SCRIPT')
+                and (
+                    selected_source == TEMPERATURE_SOURCE_SCRIPT
+                    or (
+                        selected_source == TEMPERATURE_SOURCE_AUTO
+                        and usable_temperature(camera_temp) is None
+                    )
+                )
         ):
             try:
                 sensor_values[TEMPERATURE_SOURCE_SCRIPT] = self.getExternalTemperature(
@@ -2404,12 +2394,13 @@ class IndiAllSkyDarks(object):
                 )
             except TemperatureException as e:
                 logger.error('Exception querying external temperature: %s', str(e))
-            reading = resolve_temperature(
-                self.config,
-                camera_temperature=camera_temp,
-                sensor_values=sensor_values,
-                source=selected_source,
-            )
+
+        reading = resolve_temperature(
+            self.config,
+            camera_temperature=camera_temp,
+            sensor_values=sensor_values,
+            source=selected_source,
+        )
 
         if reading is None:
             temp_val_f = float(camera_temp)

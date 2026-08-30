@@ -2,7 +2,7 @@
 
 
 def set_master_fits_metadata(header, image_type, temperature):
-    """Set master identity and keep unusable temperatures out of the header."""
+    """Set master identity and keep missing temperatures out of the header."""
     header['IMAGETYP'] = image_type
     if temperature is None:
         if 'CCD-TEMP' in header:

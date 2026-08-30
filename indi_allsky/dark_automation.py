@@ -15,6 +15,7 @@ from pathlib import Path
 from . import constants
 from .dark_library import DEFAULT_TEMPERATURE_RANGE
 from .dark_library import camera_temperature_preferences
+from .temperature import NO_CAMERA_TEMPERATURE
 
 
 STRATEGY_COMPLETE = 'complete'
@@ -1388,6 +1389,11 @@ def _library_temperature_label(temperatures):
         return 'Temperature not recorded'
     minimum = min(temperatures)
     maximum = max(temperatures)
+    if (
+            abs(minimum - NO_CAMERA_TEMPERATURE) <= 0.05
+            and abs(maximum - NO_CAMERA_TEMPERATURE) <= 0.05
+    ):
+        return 'No camera temperature'
     if abs(maximum - minimum) <= 0.05:
         return '{0:0.1f}°C'.format(minimum)
     return '{0:0.1f} to {1:0.1f}°C'.format(minimum, maximum)
