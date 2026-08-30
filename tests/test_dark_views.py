@@ -9,6 +9,21 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 VIEWS_PATH = REPOSITORY_ROOT.joinpath('indi_allsky', 'flask', 'views.py')
 
 
+def _view_function(function_name, namespace):
+    """Load one module-level helper without importing optional web dependencies."""
+    module = ast.parse(VIEWS_PATH.read_text(encoding='utf-8'))
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == function_name
+    )
+    extracted = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(extracted)
+    exec(compile(extracted, str(VIEWS_PATH), 'exec'), namespace)
+    return namespace[function_name]
+
+
 def _dark_flush_dispatch(namespace):
     """Load the real view method without importing optional web dependencies."""
     module = ast.parse(VIEWS_PATH.read_text(encoding='utf-8'))
@@ -29,6 +44,62 @@ def _dark_flush_dispatch(namespace):
     ast.fix_missing_locations(extracted)
     exec(compile(extracted, str(VIEWS_PATH), 'exec'), namespace)
     return namespace['dispatch_request']
+
+
+def test_dark_task_candidates_only_query_main_queue():
+    class FakeField:
+        def __init__(self, name):
+            self.name = name
+
+        def __eq__(self, value):
+            return ('equals', self.name, value)
+
+        def in_(self, values):
+            return ('in', self.name, tuple(values))
+
+        def desc(self):
+            return ('descending', self.name)
+
+    class FakeQuery:
+        def __init__(self):
+            self.filters = []
+            self.order = None
+
+        def filter(self, expression):
+            self.filters.append(expression)
+            return self
+
+        def order_by(self, expression):
+            self.order = expression
+            return self
+
+        def all(self):
+            return ['candidate']
+
+    query = FakeQuery()
+    task_model = SimpleNamespace(
+        query=query,
+        queue=FakeField('queue'),
+        state=FakeField('state'),
+        createDate=FakeField('createDate'),
+    )
+    queue_state = SimpleNamespace(
+        MANUAL='manual',
+        QUEUED='queued',
+        RUNNING='running',
+        SUCCESS='success',
+        FAILED='failed',
+        EXPIRED='expired',
+    )
+    helper = _view_function('_dark_task_candidates', {
+        'IndiAllSkyDbTaskQueueTable': task_model,
+        'TaskQueueQueue': SimpleNamespace(MAIN='main'),
+        'TaskQueueState': queue_state,
+    })
+
+    assert helper() == ['candidate']
+    assert ('equals', 'queue', 'main') in query.filters
+    assert query.order == ('descending', 'createDate')
 
 
 def test_confirmed_library_deletion_queues_aggregate_storage_size():

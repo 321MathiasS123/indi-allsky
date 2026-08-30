@@ -14,6 +14,7 @@ from pathlib import Path
 import socket
 import ipaddress
 import re
+import stat
 import threading
 import uuid
 from dataclasses import replace
@@ -1464,7 +1465,7 @@ def _dark_library_eligibility_coverage(camera, config, selection, active):
     }
 
 
-def _find_active_dark_task(owner=None, camera_id=None):
+def _dark_task_candidates():
     state_list = (
         TaskQueueState.MANUAL,
         TaskQueueState.QUEUED,
@@ -1473,10 +1474,18 @@ def _find_active_dark_task(owner=None, camera_id=None):
         TaskQueueState.FAILED,
         TaskQueueState.EXPIRED,
     )
-    tasks = IndiAllSkyDbTaskQueueTable.query\
+    # Dark-library jobs always use MAIN. Keeping the queue filter here avoids
+    # materializing the much larger image, video, and upload histories.
+    return IndiAllSkyDbTaskQueueTable.query\
+        .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.MAIN)\
         .filter(IndiAllSkyDbTaskQueueTable.state.in_(state_list))\
         .order_by(IndiAllSkyDbTaskQueueTable.createDate.desc())\
         .all()
+
+
+def _find_active_dark_task(owner=None, camera_id=None, tasks=None):
+    if tasks is None:
+        tasks = _dark_task_candidates()
     for task in tasks:
         task_data = task.data or {}
         if task_data.get('action') != 'dark_automation':
@@ -1597,15 +1606,19 @@ class DarkFramesView(TemplateView):
         d_info_list = list()
         dark_inventory = list()
         inventory_index = {}
+        # Reuse these filesystem results when the maintenance catalog is built below.
+        library_frame_sizes = {}
         for d in darkframe_list:
             file_path = d.getFilesystemPath()
 
             try:
-                file_size = file_path.stat().st_size
-                file_exists = file_path.is_file()
+                file_stat = file_path.stat()
+                file_exists = stat.S_ISREG(file_stat.st_mode)
+                file_size = file_stat.st_size if file_exists else 0
             except OSError:
                 file_size = 0
                 file_exists = False
+            library_frame_sizes[('dark', int(d.id))] = file_size
 
             dark_data = d.data or {}
             eligibility = dark_automation.library_entry_eligibility(d)
@@ -1665,11 +1678,13 @@ class DarkFramesView(TemplateView):
             file_path = b.getFilesystemPath()
 
             try:
-                file_size = file_path.stat().st_size
-                file_exists = file_path.is_file()
+                file_stat = file_path.stat()
+                file_exists = stat.S_ISREG(file_stat.st_mode)
+                file_size = file_stat.st_size if file_exists else 0
             except OSError:
                 file_size = 0
                 file_exists = False
+            library_frame_sizes[('bpm', int(b.id))] = file_size
 
             bpm_data = b.data or {}
             eligibility = dark_automation.library_entry_eligibility(b)
@@ -1890,9 +1905,11 @@ class DarkFramesView(TemplateView):
         context['dark_automation_can_run'] = bool(
             dark_automation_authorized and not context['dark_config_requires_reload']
         )
+        dark_task_candidates = _dark_task_candidates()
         active_task = _find_active_dark_task(
             owner=_dark_automation_owner(),
             camera_id=self.camera.id,
+            tasks=dark_task_candidates,
         )
         context['dark_automation_task_id'] = active_task.id if active_task else None
         dark_library_catalog = dark_automation.build_library_catalog(
@@ -1900,8 +1917,9 @@ class DarkFramesView(TemplateView):
             IndiAllSkyDbDarkFrameTable.query.all(),
             IndiAllSkyDbBadPixelMapTable.query.all(),
             current_camera_id=self.camera.id,
+            frame_sizes=library_frame_sizes,
         )
-        maintenance_task = _find_active_dark_task()
+        maintenance_task = _find_active_dark_task(tasks=dark_task_candidates)
         context['dark_library_catalog'] = dark_library_catalog
         context['dark_library_task_active'] = maintenance_task is not None
         context['dark_library_can_manage'] = bool(

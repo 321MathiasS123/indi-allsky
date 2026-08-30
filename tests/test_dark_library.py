@@ -2179,6 +2179,29 @@ def test_library_catalog_groups_cameras_profiles_layers_and_pairs():
     }
 
 
+def test_library_catalog_reuses_prechecked_frame_sizes():
+    camera = SimpleNamespace(id=1, name='Camera', friendlyName=None)
+    create_date = datetime(2026, 8, 21, 12, 0, 0)
+    dark = _catalog_frame(1, 1, create_date, file_size=1)
+    bpm = _catalog_frame(2, 1, create_date, file_size=1)
+
+    def unexpected_filesystem_check():
+        raise AssertionError('Cached frame sizes should avoid another filesystem check')
+
+    dark.getFilesystemPath = unexpected_filesystem_check
+    bpm.getFilesystemPath = unexpected_filesystem_check
+
+    catalog = build_library_catalog(
+        (camera,),
+        (dark,),
+        (bpm,),
+        current_camera_id=1,
+        frame_sizes={('dark', 1): 2048, ('bpm', 2): 1024},
+    )
+
+    assert catalog['size_bytes'] == 3072
+
+
 def test_library_catalog_groups_nearby_legacy_temperatures_across_old_bucket_boundary():
     camera = SimpleNamespace(
         id=1,

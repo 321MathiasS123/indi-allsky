@@ -4,6 +4,7 @@ import math
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -730,8 +731,18 @@ def format_bytes(byte_count):
         value /= 1024.0
 
 
-def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_id=None):
-    """Group calibration files into camera, sensor-profile, and temperature layers."""
+def build_library_catalog(
+        cameras,
+        dark_frames,
+        bad_pixel_maps,
+        current_camera_id=None,
+        frame_sizes=None,
+):
+    """Group calibration files into camera, sensor-profile, and temperature layers.
+
+    ``frame_sizes`` may contain sizes keyed by ``(frame_type, frame_id)`` when
+    the caller has already inspected those files during the same request.
+    """
     camera_frames = {}
     for frame_type, frames in (('dark', dark_frames), ('bpm', bad_pixel_maps)):
         for frame in frames:
@@ -769,7 +780,11 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                 if not eligibility['staged']:
                     activatable_selection[selection_key].append(frame_id)
 
-            frame_bytes = _library_frame_bytes(frame)
+            frame_key = (frame_type, frame_id)
+            if frame_sizes is not None and frame_key in frame_sizes:
+                frame_bytes = max(0, int(frame_sizes[frame_key]))
+            else:
+                frame_bytes = _library_frame_bytes(frame)
             camera_bytes += frame_bytes
             create_date = getattr(frame, 'createDate', None)
             if create_date is not None and (
@@ -1284,9 +1299,10 @@ def _library_frame_bytes(frame):
         file_path = None
     if file_path is not None:
         try:
-            if not file_path.is_file():
+            file_stat = file_path.stat()
+            if not stat.S_ISREG(file_stat.st_mode):
                 return 0
-            return max(0, int(file_path.stat().st_size))
+            return max(0, int(file_stat.st_size))
         except OSError:
             return 0
 
