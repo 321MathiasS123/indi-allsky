@@ -1038,6 +1038,8 @@ def test_recommendation_origin_and_overviews_are_explicitly_labelled():
     assert 'Defaults come from Config → Camera.' in html
     assert 'Normally keep the Config → Camera maximum or camera limit.' in html
     assert 'Each row is a day, night, moon or SQM profile from Config → Camera.' in html
+    assert 'Gains (at least one; comma-separated)' in html
+    assert 'Exposures (at least one; comma-separated)' in html
 
 
 def test_recalculated_plan_updates_every_recommendation_surface():
