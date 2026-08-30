@@ -2371,7 +2371,7 @@ class AjaxDarkLibraryFlushView(BaseView):
             'removal_batches': public_batches,
             'removal_label': removal_label,
             'removal_entry_count': entry_count,
-            'removal_size_bytes': resolved['size_bytes'],
+            'removal_size_bytes': size_bytes,
             'status': 'queued',
             'cancel_requested': False,
             'created_utc': now_text,
