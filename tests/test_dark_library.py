@@ -1,4 +1,5 @@
 from datetime import datetime
+from datetime import timezone
 from dataclasses import replace
 import math
 from pathlib import Path
@@ -55,6 +56,7 @@ from indi_allsky.dark_automation import temperature_thresholds
 from indi_allsky.dark_automation import validate_execution_profiles
 from indi_allsky.dark_automation import library_entry_eligibility
 from indi_allsky.dark_automation import update_library_entries_eligibility
+from indi_allsky.dark_automation import utc_now_naive
 from indi_allsky.gain import EXPOSURE_MODE_BASIC
 from indi_allsky.gain import EXPOSURE_MODE_DB
 from indi_allsky.gain import EXPOSURE_MODE_DB_1_10
@@ -71,6 +73,15 @@ from indi_allsky.capture_state import build_effective_capture_state
 from indi_allsky.capture_state import camera_geometry_from_ccd_info
 from indi_allsky.capture_state import record_binning_dimensions
 from indi_allsky.capture_state import validate_captured_geometry
+
+
+def test_utc_now_naive_uses_the_utc_database_clock():
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = utc_now_naive()
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    assert result.tzinfo is None
+    assert before <= result <= after
 
 
 def _config(exposure_mode=EXPOSURE_MODE_BASIC, exposure_max=30.0):
