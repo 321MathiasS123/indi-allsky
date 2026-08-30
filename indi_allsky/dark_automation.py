@@ -13,7 +13,6 @@ from datetime import timezone
 from pathlib import Path
 
 from . import constants
-from .capture_state import binned_dimension
 from .dark_library import DEFAULT_TEMPERATURE_RANGE
 from .dark_library import camera_temperature_preferences
 
@@ -39,6 +38,7 @@ CAPTURE_MODES = (
 )
 ACTIVE_STATUSES = ('queued', 'preparing', 'running', 'cancel_requested')
 TERMINAL_STATUSES = ('success', 'failed', 'cancelled', 'review_required')
+CANCEL_REQUESTED_MESSAGE = 'Cancelling after the current camera operation finishes.'
 MAX_MASTER_SETS = 2000
 MIN_FRAME_COUNT = 3
 MAX_FRAME_COUNT = 50
@@ -46,6 +46,7 @@ CAPTURE_ORDERS = ('long_first', 'short_first')
 TEMPERATURE_POLICIES = ('recommended', 'ignore')
 COVER_CONFIRMATION_MAX_AGE_SECONDS = 30 * 60
 CONTROLLER_HEARTBEAT_MAX_AGE_SECONDS = 10 * 60
+ETA_OVERHEAD_PRIOR_SETS = 3.0
 MIN_TEMPERATURE_DELTA = 0.1
 MAX_TEMPERATURE_DELTA = 50.0
 MIN_TEMPERATURE_TARGET = -100.0
@@ -68,9 +69,9 @@ ELIGIBILITY_REASON_MANUAL_RESTORE = 'manual_restore'
 
 ELIGIBILITY_REASON_LABELS = {
     ELIGIBILITY_REASON_CAPTURE_COMPLETED: 'Activated after capture',
-    ELIGIBILITY_REASON_CAPTURE_STAGING: 'Capture staging',
-    ELIGIBILITY_REASON_REFRESH_REPLACED: 'Retired by a refresh run',
-    ELIGIBILITY_REASON_REBUILD_REPLACED: 'Retired by a rebuild run',
+    ELIGIBILITY_REASON_CAPTURE_STAGING: 'Being captured',
+    ELIGIBILITY_REASON_REFRESH_REPLACED: 'Replaced by a recommended-set update',
+    ELIGIBILITY_REASON_REBUILD_REPLACED: 'Replaced by a profile rebuild',
     ELIGIBILITY_REASON_MANUAL_EXCLUSION: 'Manually deactivated',
     ELIGIBILITY_REASON_MANUAL_RESTORE: 'Manually activated',
 }
@@ -147,7 +148,7 @@ def reject_task_for_config_drift(task, active_config_id):
     })
     data['progress'] = progress
     task.data = data
-    task.result = 'Reload indi-allsky before dark calibration'
+    task.result = 'Reload indi-allsky before dark acquisition'
     task.setExpired()
     return True
 
@@ -525,8 +526,8 @@ def normalize_execution_request(analysis, capabilities, capture_state, request_d
 
         normalised_group = dict(source_group)
         normalised_group['binning'] = binning
-        normalised_group['width'] = binned_dimension(capabilities.width, binning)
-        normalised_group['height'] = binned_dimension(capabilities.height, binning)
+        normalised_group['width'] = capabilities.binned_width(binning)
+        normalised_group['height'] = capabilities.binned_height(binning)
         normalised_group['bitmax'] = bitmax
         normalised_group['gains'] = gains
         normalised_group['exposures'] = exposures
@@ -749,7 +750,9 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             temperature_range,
         )
         profiles = {}
+        active_selection = {'dark_ids': [], 'bpm_ids': []}
         inactive_selection = {'dark_ids': [], 'bpm_ids': []}
+        activatable_selection = {'dark_ids': [], 'bpm_ids': []}
         camera_selection = {'dark_ids': [], 'bpm_ids': []}
         camera_bytes = 0
         camera_latest = None
@@ -757,8 +760,13 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             frame_id = int(frame.id)
             selection_key = '{0:s}_ids'.format(frame_type)
             camera_selection[selection_key].append(frame_id)
-            if not bool(frame.active):
+            eligibility = library_entry_eligibility(frame)
+            if bool(frame.active):
+                active_selection[selection_key].append(frame_id)
+            else:
                 inactive_selection[selection_key].append(frame_id)
+                if not eligibility['staged']:
+                    activatable_selection[selection_key].append(frame_id)
 
             frame_bytes = _library_frame_bytes(frame)
             camera_bytes += frame_bytes
@@ -773,10 +781,19 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                 'entries': [],
                 'layers': {},
                 'selection': {'dark_ids': [], 'bpm_ids': []},
+                'active_selection': {'dark_ids': [], 'bpm_ids': []},
+                'inactive_selection': {'dark_ids': [], 'bpm_ids': []},
+                'activatable_selection': {'dark_ids': [], 'bpm_ids': []},
                 'size_bytes': 0,
             })
             profile['entries'].append((frame_type, frame))
             profile['selection'][selection_key].append(frame_id)
+            if bool(frame.active):
+                profile['active_selection'][selection_key].append(frame_id)
+            else:
+                profile['inactive_selection'][selection_key].append(frame_id)
+                if not eligibility['staged']:
+                    profile['activatable_selection'][selection_key].append(frame_id)
             profile['size_bytes'] += frame_bytes
 
             automation_data = _frame_automation_data(frame)
@@ -786,6 +803,9 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                 'entries': [],
                 'master_sets': {},
                 'selection': {'dark_ids': [], 'bpm_ids': []},
+                'active_selection': {'dark_ids': [], 'bpm_ids': []},
+                'inactive_selection': {'dark_ids': [], 'bpm_ids': []},
+                'activatable_selection': {'dark_ids': [], 'bpm_ids': []},
                 'size_bytes': 0,
                 'temperatures': [],
                 'latest_date': None,
@@ -793,6 +813,12 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             })
             layer['entries'].append((frame_type, frame))
             layer['selection'][selection_key].append(frame_id)
+            if bool(frame.active):
+                layer['active_selection'][selection_key].append(frame_id)
+            else:
+                layer['inactive_selection'][selection_key].append(frame_id)
+                if not eligibility['staged']:
+                    layer['activatable_selection'][selection_key].append(frame_id)
             layer['size_bytes'] += frame_bytes
             if frame.temp is not None:
                 layer['temperatures'].append(float(frame.temp))
@@ -805,6 +831,9 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             master = layer['master_sets'].setdefault(master_key, {
                 'entries': [],
                 'selection': {'dark_ids': [], 'bpm_ids': []},
+                'active_selection': {'dark_ids': [], 'bpm_ids': []},
+                'inactive_selection': {'dark_ids': [], 'bpm_ids': []},
+                'activatable_selection': {'dark_ids': [], 'bpm_ids': []},
                 'size_bytes': 0,
                 'gain': float(frame.gain),
                 'exposure': float(frame.exposure),
@@ -817,11 +846,16 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             })
             master['entries'].append((frame_type, frame))
             master['selection'][selection_key].append(frame_id)
+            if bool(frame.active):
+                master['active_selection'][selection_key].append(frame_id)
+            else:
+                master['inactive_selection'][selection_key].append(frame_id)
+                if not eligibility['staged']:
+                    master['activatable_selection'][selection_key].append(frame_id)
             master['size_bytes'] += frame_bytes
             master['active'] = master['active'] or bool(frame.active)
             if bool(frame.active):
                 master['active_entry_count'] += 1
-            eligibility = library_entry_eligibility(frame)
             if eligibility['reason']:
                 master['eligibility_reasons'].add(eligibility['reason'])
             if eligibility['staged']:
@@ -877,6 +911,15 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                         'size': format_bytes(master['size_bytes']),
                         'latest_date': master['latest_date'],
                         'selection': _sorted_library_selection(master['selection']),
+                        'active_selection': _sorted_library_selection(
+                            master['active_selection'],
+                        ),
+                        'inactive_selection': _sorted_library_selection(
+                            master['inactive_selection'],
+                        ),
+                        'activatable_selection': _sorted_library_selection(
+                            master['activatable_selection'],
+                        ),
                     })
                 master_sets.sort(key=lambda item: (
                     item['gain'],
@@ -909,6 +952,15 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                     'size': format_bytes(layer['size_bytes']),
                     'latest_date': layer['latest_date'],
                     'selection': _sorted_library_selection(layer['selection']),
+                    'active_selection': _sorted_library_selection(
+                        layer['active_selection'],
+                    ),
+                    'inactive_selection': _sorted_library_selection(
+                        layer['inactive_selection'],
+                    ),
+                    'activatable_selection': _sorted_library_selection(
+                        layer['activatable_selection'],
+                    ),
                     'master_sets': master_sets,
                 })
             context_layers.sort(key=lambda item: (
@@ -936,6 +988,15 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
                 'size_bytes': profile['size_bytes'],
                 'size': format_bytes(profile['size_bytes']),
                 'selection': _sorted_library_selection(profile['selection']),
+                'active_selection': _sorted_library_selection(
+                    profile['active_selection'],
+                ),
+                'inactive_selection': _sorted_library_selection(
+                    profile['inactive_selection'],
+                ),
+                'activatable_selection': _sorted_library_selection(
+                    profile['activatable_selection'],
+                ),
                 'layers': context_layers,
             })
         context_profiles.sort(key=lambda item: (
@@ -945,7 +1006,9 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             -(item['height'] or 0),
         ))
 
+        active_selection = _sorted_library_selection(active_selection)
         inactive_selection = _sorted_library_selection(inactive_selection)
+        activatable_selection = _sorted_library_selection(activatable_selection)
         camera_selection = _sorted_library_selection(camera_selection)
         camera_master_set_count = sum(
             profile['master_set_count'] for profile in context_profiles
@@ -979,7 +1042,9 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
             'size': format_bytes(camera_bytes),
             'latest_date': camera_latest,
             'selection': camera_selection,
+            'active_selection': active_selection,
             'inactive_selection': inactive_selection,
+            'activatable_selection': activatable_selection,
             'profiles': context_profiles,
         })
 
@@ -994,6 +1059,28 @@ def build_library_catalog(cameras, dark_frames, bad_pixel_maps, current_camera_i
         'entry_count': total_entries,
         'size_bytes': total_bytes,
         'size': format_bytes(total_bytes),
+        'selection_batches': [
+            {'camera_id': item['id'], 'selection': item['selection']}
+            for item in catalog
+        ],
+        'active_selection_batches': [
+            {'camera_id': item['id'], 'selection': item['active_selection']}
+            for item in catalog
+            if item['active_selection']['dark_ids']
+            or item['active_selection']['bpm_ids']
+        ],
+        'inactive_selection_batches': [
+            {'camera_id': item['id'], 'selection': item['inactive_selection']}
+            for item in catalog
+            if item['inactive_selection']['dark_ids']
+            or item['inactive_selection']['bpm_ids']
+        ],
+        'activatable_selection_batches': [
+            {'camera_id': item['id'], 'selection': item['activatable_selection']}
+            for item in catalog
+            if item['activatable_selection']['dark_ids']
+            or item['activatable_selection']['bpm_ids']
+        ],
     }
 
 
@@ -1125,6 +1212,27 @@ def select_camera_master_sets(models, camera_id, selection):
     )
 
 
+def library_selection_batches_signature(resolved_batches):
+    """Sign a normalized set of camera-scoped library selections."""
+    identities = [
+        {
+            'camera_id': int(batch['camera_id']),
+            'signature': str(batch['signature']),
+        }
+        for batch in resolved_batches
+    ]
+    # Browser selections may arrive in any hierarchy order. Sorting makes the
+    # preview signature describe the selection itself, not its click order.
+    identities.sort(key=lambda item: item['camera_id'])
+    return hashlib.sha256(
+        json.dumps(
+            identities,
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+    ).hexdigest()
+
+
 def library_entry_eligibility(frame):
     """Return explicit eligibility history while preserving legacy records."""
     automation_data = _frame_automation_data(frame)
@@ -1150,7 +1258,7 @@ def update_library_entries_eligibility(entries, active, changed_utc=None):
     entries = tuple(entries)
     if active and any(library_entry_eligibility(frame)['staged'] for frame in entries):
         raise DarkAutomationError(
-            'Capture staging files cannot be activated manually. Finish the run or delete the staged files first.'
+            'Files being captured cannot be activated manually. Finish the run or delete them first.'
         )
     changed_utc = changed_utc or _utc_now_text()
     changed = []
@@ -1339,15 +1447,160 @@ def _library_entry_identity(entry, selection_key):
     }
 
 
+def _completed_master_details(value):
+    """Return compact, ordered details for committed dark/BPM master pairs."""
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    details = []
+    for raw_detail in value:
+        if not isinstance(raw_detail, dict):
+            continue
+        detail = {
+            'sequence': len(details) + 1,
+            'capture_profile': str(raw_detail.get('capture_profile') or ''),
+            'gain': raw_detail.get('gain'),
+            'exposure': raw_detail.get('exposure'),
+            'binning': raw_detail.get('binning'),
+            'temperature': raw_detail.get('temperature'),
+            'frame_count': raw_detail.get('frame_count'),
+            'temperature_set': raw_detail.get('temperature_set'),
+            'completed_utc': str(raw_detail.get('completed_utc') or ''),
+            'duration_seconds': raw_detail.get('duration_seconds'),
+        }
+        details.append(detail)
+    return details
+
+
+def _planned_remaining_seconds(
+        task_data,
+        progress,
+        completed_details,
+        total,
+        completed,
+        frame_count,
+        fractional_cell,
+):
+    """Estimate remaining work without treating long and short masters equally."""
+    estimated_seconds = float(task_data.get('estimated_seconds') or 0.0)
+    if total <= 0 or frame_count <= 0 or estimated_seconds <= 0:
+        return None
+
+    per_cycle_sets = 0
+    per_cycle_capture_seconds = 0.0
+    for group in task_data.get('groups') or ():
+        if not isinstance(group, dict):
+            return None
+        gains = group.get('gains') or ()
+        try:
+            exposures = {float(exposure) for exposure in group.get('exposures') or ()}
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not gains or not exposures or any(
+                not math.isfinite(exposure) or exposure <= 0
+                for exposure in exposures
+        ):
+            return None
+        per_cycle_sets += len(gains) * len(exposures)
+        per_cycle_capture_seconds += len(gains) * sum(exposures) * frame_count
+    if per_cycle_sets <= 0 or total % per_cycle_sets != 0:
+        return None
+
+    planned_capture_seconds = (
+        per_cycle_capture_seconds * (total // per_cycle_sets)
+    )
+    nominal_overhead = max(
+        0.0,
+        (estimated_seconds - planned_capture_seconds) / total,
+    )
+    completed_count = min(max(0, int(completed)), total)
+    if len(completed_details) < completed_count:
+        return None
+
+    completed_capture_seconds = 0.0
+    observed_overheads = []
+    completed_detail_start = len(completed_details) - completed_count
+    for detail_index, detail in enumerate(completed_details):
+        try:
+            exposure = float(detail.get('exposure'))
+            detail_frame_count = int(detail.get('frame_count') or frame_count)
+        except (TypeError, ValueError):
+            return None
+        if (
+                not math.isfinite(exposure)
+                or exposure <= 0
+                or detail_frame_count <= 0
+        ):
+            return None
+        capture_seconds = exposure * detail_frame_count
+        if detail_index >= completed_detail_start:
+            completed_capture_seconds += capture_seconds
+        try:
+            duration = float(detail.get('duration_seconds'))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(duration) and duration >= 0:
+            observed_overheads.append(max(0.0, duration - capture_seconds))
+
+    adjusted_overhead = (
+        (nominal_overhead * ETA_OVERHEAD_PRIOR_SETS) + sum(observed_overheads)
+    ) / (ETA_OVERHEAD_PRIOR_SETS + len(observed_overheads))
+    current_capture_seconds = 0.0
+    if completed_count < total and fractional_cell > 0:
+        try:
+            current_exposure = float(progress.get('current_exposure'))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(current_exposure) or current_exposure <= 0:
+            return None
+        current_capture_seconds = current_exposure * frame_count * fractional_cell
+
+    remaining_capture_seconds = max(
+        0.0,
+        planned_capture_seconds - completed_capture_seconds - current_capture_seconds,
+    )
+    remaining_master_sets = max(0.0, total - completed_count - fractional_cell)
+    remaining_seconds = (
+        remaining_capture_seconds + (remaining_master_sets * adjusted_overhead)
+    )
+    return max(0, int(round(remaining_seconds)))
+
+
+def task_requires_progress(task_data):
+    """Return whether a task should replace the normal page with progress."""
+    task_data = task_data or {}
+    task_status = task_data.get('status')
+    if task_status in ACTIVE_STATUSES:
+        return True
+    return (
+        task_status in TERMINAL_STATUSES
+        and not task_data.get('capture_restored')
+    )
+
+
+def _protect_cancel_requested_progress(data, progress):
+    """Keep accepted cancellation authoritative over stale child progress."""
+    progress = dict(progress or {})
+    if data.get('status') == 'cancel_requested':
+        progress['phase'] = 'cancel_requested'
+        progress['message'] = CANCEL_REQUESTED_MESSAGE
+    return progress
+
+
 def task_public_status(task):
     data = dict(task.data or {})
-    progress = dict(data.get('progress') or {})
+    progress = _protect_cancel_requested_progress(data, data.get('progress'))
+    completed_master_details = _completed_master_details(
+        progress.get('completed_master_details')
+    )
     per_set_total = int(data.get('target_count') or progress.get('total_master_sets') or 0)
     raw_completed = int(progress.get('completed_master_sets') or 0)
-    planned_temperature_sets = (
-        progress.get('planned_temperature_sets')
-        or data.get('temperature_set_count')
-    )
+    planned_temperature_sets = progress.get('planned_temperature_sets')
+    if planned_temperature_sets is None:
+        planned_temperature_sets = data.get('temperature_set_count')
+    target_temperature = progress.get('target_temperature')
+    if target_temperature is None:
+        target_temperature = data.get('temperature_target')
     if (
             data.get('capture_mode') == CAPTURE_MODE_TEMPERATURE_SERIES
             and planned_temperature_sets
@@ -1380,7 +1633,20 @@ def task_public_status(task):
             and not planned_temperature_sets
     ):
         estimate_elapsed = _elapsed_seconds(progress.get('temperature_set_started_utc'))
-    if total > 0 and progress_units > 0 and estimate_elapsed > 0:
+    planned_remaining_seconds = _planned_remaining_seconds(
+        data,
+        progress,
+        completed_master_details,
+        total,
+        completed,
+        frame_count,
+        fractional_cell,
+    )
+    if data.get('status') == 'success':
+        remaining_seconds = 0
+    elif planned_remaining_seconds is not None:
+        remaining_seconds = planned_remaining_seconds
+    elif total > 0 and progress_units > 0 and estimate_elapsed > 0:
         remaining_seconds = max(
             0,
             int(round(estimate_elapsed * (total - progress_units) / progress_units)),
@@ -1404,18 +1670,18 @@ def task_public_status(task):
         'frame_count': data.get('frame_count'),
         'target_count': total,
         'completed_master_sets': completed,
+        'completed_master_details': completed_master_details,
         'percent': round(percent, 1),
         'current_gain': progress.get('current_gain'),
         'current_exposure': progress.get('current_exposure'),
         'current_frame': progress.get('current_frame'),
         'current_frame_count': progress.get('current_frame_count'),
         'current_binning': progress.get('current_binning'),
+        'resolved_width': progress.get('resolved_width'),
+        'resolved_height': progress.get('resolved_height'),
         'current_temperature': progress.get('current_temperature'),
         'next_temperature': progress.get('next_temperature'),
-        'target_temperature': progress.get(
-            'target_temperature',
-            data.get('temperature_target'),
-        ),
+        'target_temperature': target_temperature,
         'completed_temperature_sets': progress.get('completed_temperature_sets', 0),
         'planned_temperature_sets': planned_temperature_sets,
         'temperature_range': data.get('temperature_range', DEFAULT_TEMPERATURE_RANGE),
@@ -1517,7 +1783,10 @@ def run_task(app, task_id, repository_root, stop_requested=None):
             current_progress = dict(data.get('progress') or {})
             current_progress.update(progress)
             current_progress['heartbeat_utc'] = _utc_now_text()
-            data['progress'] = current_progress
+            data['progress'] = _protect_cancel_requested_progress(
+                data,
+                current_progress,
+            )
         task.data = data
         if state is not None:
             task.state = state
@@ -1530,7 +1799,7 @@ def run_task(app, task_id, repository_root, stop_requested=None):
         with app.app_context():
             task, task_data = load_task()
             if task_data.get('cancel_requested'):
-                raise DarkAutomationCancelled('Dark calibration was cancelled before capture started')
+                raise DarkAutomationCancelled('Dark capture was cancelled before it started')
 
             if task_data.get('operation') == 'flush':
                 removal_label = str(
@@ -1550,13 +1819,21 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                     },
                     state=TaskQueueState.RUNNING,
                 )
-                deletion = flush_camera_library(
-                    db,
-                    (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
-                    int(task_data['camera_id']),
-                    selection=task_data.get('removal_selection'),
-                    expected_signature=task_data.get('removal_selection_signature'),
-                )
+                removal_batches = task_data.get('removal_batches')
+                if removal_batches:
+                    deletion = flush_library_batches(
+                        db,
+                        (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
+                        removal_batches,
+                    )
+                else:
+                    deletion = flush_camera_library(
+                        db,
+                        (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
+                        int(task_data['camera_id']),
+                        selection=task_data.get('removal_selection'),
+                        expected_signature=task_data.get('removal_selection_signature'),
+                    )
                 update_data(
                     changes={
                         'status': 'success',
@@ -1671,6 +1948,7 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                     'phase': 'preparing_camera',
                     'message': 'Capture is paused; preparing the camera.',
                     'completed_master_sets': 0,
+                    'completed_master_details': [],
                     'total_master_sets': int(task_data['target_count']),
                 },
                 state=TaskQueueState.RUNNING,
@@ -1764,12 +2042,13 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                 )
 
         completed_offset = 0
+        completed_master_details = []
         groups = list(task_data['groups'])
         with tempfile.TemporaryDirectory(prefix='indi-allsky-dark-automation-') as temporary_dir:
             temporary_path = Path(temporary_dir)
             for group_index, group in enumerate(groups, start=1):
                 if _task_cancelled(app, task_id) or stop_requested():
-                    raise DarkAutomationCancelled('Dark calibration was cancelled')
+                    raise DarkAutomationCancelled('Dark capture was cancelled')
 
                 progress_path = temporary_path.joinpath('progress-{0:d}.json'.format(group_index))
                 log_path = temporary_path.joinpath('capture-{0:d}.log'.format(group_index))
@@ -1807,13 +2086,32 @@ def run_task(app, task_id, repository_root, stop_requested=None):
 
                 return_code, last_progress = _monitor_capture_child(
                     app, task_id, child, progress_path, update_data,
-                    (completed_offset, int(task_data['target_count']), group_index, len(groups)),
+                    (
+                        completed_offset,
+                        int(task_data['target_count']),
+                        group_index,
+                        len(groups),
+                        tuple(completed_master_details),
+                    ),
                     stop_requested,
+                )
+                group_progress = _overall_progress(
+                    last_progress,
+                    completed_offset,
+                    int(task_data['target_count']),
+                    group_index,
+                    len(groups),
+                    completed_master_details,
+                )
+                with app.app_context():
+                    update_data(progress=group_progress)
+                completed_master_details = list(
+                    group_progress.get('completed_master_details') or ()
                 )
                 group_count = int(group['target_count'])
                 if return_code != 0:
                     if _task_cancelled(app, task_id) or stop_requested() or return_code == 130:
-                        raise DarkAutomationCancelled('Dark calibration was cancelled')
+                        raise DarkAutomationCancelled('Dark capture was cancelled')
                     if return_code == 75 or last_progress.get('phase') == 'review_required':
                         raise DarkAutomationReviewRequired(
                             last_progress.get('message')
@@ -1832,21 +2130,36 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                         )
                     )
 
+                resolved_width = last_progress.get('resolved_width')
+                resolved_height = last_progress.get('resolved_height')
+                if resolved_width is None or resolved_height is None:
+                    raise DarkAutomationError(
+                        'The camera did not report the captured frame dimensions for group {0:d}'.format(
+                            group_index,
+                        )
+                    )
+                group['width'] = int(resolved_width)
+                group['height'] = int(resolved_height)
+                task_data['groups'] = groups
+
                 completed_offset += group_count
                 with app.app_context():
-                    update_data(progress={
+                    update_data(changes={'groups': groups}, progress={
                         'phase': 'capturing',
                         'message': 'Completed capture group {0:d} of {1:d}.'.format(
                             group_index,
                             len(groups),
                         ),
                         'completed_master_sets': completed_offset,
+                        'completed_master_details': list(completed_master_details),
                         'total_master_sets': int(task_data['target_count']),
                         'current_gain': None,
                         'current_exposure': None,
                         'current_frame': None,
                         'current_frame_count': int(task_data['frame_count']),
                         'current_binning': None,
+                        'resolved_width': int(resolved_width),
+                        'resolved_height': int(resolved_height),
                         'current_temperature': None,
                     })
 
@@ -1922,7 +2235,7 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                 state=TaskQueueState.EXPIRED,
                 result=(
                     'Dark-library deletion requires review'
-                    if removal_review else 'Dark calibration plan requires review'
+                    if removal_review else 'Dark capture plan requires review'
                 ),
             )
         return 'review_required'
@@ -1937,7 +2250,7 @@ def run_task(app, task_id, repository_root, stop_requested=None):
                 progress={
                     'phase': 'restoring_capture',
                     'message': (
-                        'Dark calibration stopped; completed master sets remain active; '
+                        'Dark capture stopped; completed master sets remain active; '
                         'restarting normal capture.'
                     ),
                 },
@@ -2054,7 +2367,7 @@ def _mark_task_capture_restored(task):
             )
         else:
             progress['message'] = (
-                'Dark calibration cancelled; completed master sets remain active '
+                'Dark capture cancelled; completed master sets remain active '
                 'and {0:s}.'.format(restore_phrase)
             )
     elif data.get('status') == 'review_required':
@@ -2072,7 +2385,7 @@ def _mark_task_capture_restored(task):
             )
     else:
         progress['message'] = (
-            'Completed master sets remain active; {0:s} after the calibration error.'.format(
+            'Completed master sets remain active; {0:s} after the capture error.'.format(
                 restore_phrase,
             )
         )
@@ -2081,31 +2394,14 @@ def _mark_task_capture_restored(task):
     task.data = data
 
 
-def flush_camera_library(
-        db,
-        models,
-        camera_id,
-        selection=None,
-        expected_signature=None,
-):
-    """Delete one camera's dark/BPM rows before unlinking their files.
+def _delete_library_entries(db, entries):
+    """Commit row deletion before unlinking unique files from disk.
 
-    Committing the database first avoids leaving live calibration rows pointing
-    at missing files after a transaction failure or process interruption.  A
-    later file error can only leave an unused orphan, which is reported.
+    A database failure therefore leaves the live library untouched. A later
+    filesystem failure can only leave an unused orphan and is returned as a
+    warning for the operator.
     """
-    resolved = select_camera_library_entries(models, camera_id, selection=selection)
-    if expected_signature is not None and resolved['signature'] != str(expected_signature):
-        raise DarkAutomationReviewRequired(
-            'The selected library records changed after preview. Preview the deletion again.'
-        )
-    entries = resolved.pop('entries')
-    resolved.pop('selection')
-    resolved.pop('size_bytes')
-    resolved.pop('size')
-    resolved.pop('signature')
-    counts = resolved
-
+    entries = tuple(entries)
     file_paths = []
     seen_paths = set()
     for entry in entries:
@@ -2135,11 +2431,69 @@ def flush_camera_library(
         except OSError as error:
             warnings.append('{0:s}: {1:s}'.format(str(file_path), str(error)))
 
-    counts.update({
+    return {
         'files': removed_files,
         'warnings': warnings,
-    })
+    }
+
+
+def flush_camera_library(
+        db,
+        models,
+        camera_id,
+        selection=None,
+        expected_signature=None,
+):
+    """Delete one camera's selected dark/BPM rows and their unique files."""
+    resolved = select_camera_library_entries(models, camera_id, selection=selection)
+    if expected_signature is not None and resolved['signature'] != str(expected_signature):
+        raise DarkAutomationReviewRequired(
+            'The selected library records changed after preview. Preview the deletion again.'
+        )
+    entries = resolved.pop('entries')
+    resolved.pop('selection')
+    resolved.pop('size_bytes')
+    resolved.pop('size')
+    resolved.pop('signature')
+    counts = resolved
+    counts.update(_delete_library_entries(db, entries))
     return counts
+
+
+def flush_library_batches(db, models, batches):
+    """Delete previewed selections from one or more camera libraries atomically."""
+    resolved_batches = []
+    for batch in batches:
+        camera_id = int(batch['camera_id'])
+        resolved = select_camera_library_entries(
+            models,
+            camera_id,
+            selection=batch.get('selection'),
+        )
+        expected_signature = batch.get('selection_signature')
+        if (
+                expected_signature is not None
+                and resolved['signature'] != str(expected_signature)
+        ):
+            raise DarkAutomationReviewRequired(
+                'The selected library records changed after preview. '
+                'Preview the deletion again.'
+            )
+        resolved_batches.append(resolved)
+
+    entries = []
+    for resolved in resolved_batches:
+        entries.extend(resolved['entries'])
+    cleanup = _delete_library_entries(db, entries)
+
+    return {
+        'dark_frames': sum(batch['dark_frames'] for batch in resolved_batches),
+        'bad_pixel_maps': sum(
+            batch['bad_pixel_maps'] for batch in resolved_batches
+        ),
+        'files': cleanup['files'],
+        'warnings': cleanup['warnings'],
+    }
 
 
 def build_dark_command(
@@ -2155,22 +2509,36 @@ def build_dark_command(
     ]
 
 
-def _overall_progress(child_progress, offset, total, group_index, group_count):
+def _overall_progress(
+        child_progress,
+        offset,
+        total,
+        group_index,
+        group_count,
+        completed_master_details=(),
+):
     completed = offset + int(child_progress.get('completed_master_sets') or 0)
     message = child_progress.get('message') or 'Capturing group {0:d} of {1:d}.'.format(
         group_index,
         group_count,
     )
+    combined_master_details = _completed_master_details(
+        list(completed_master_details)
+        + list(child_progress.get('completed_master_details') or ())
+    )
     return {
         'phase': child_progress.get('phase', 'capturing'),
         'message': message,
         'completed_master_sets': min(completed, total),
+        'completed_master_details': combined_master_details,
         'total_master_sets': total,
         'current_gain': child_progress.get('current_gain'),
         'current_exposure': child_progress.get('current_exposure'),
         'current_frame': child_progress.get('current_frame'),
         'current_frame_count': child_progress.get('current_frame_count'),
         'current_binning': child_progress.get('current_binning'),
+        'resolved_width': child_progress.get('resolved_width'),
+        'resolved_height': child_progress.get('resolved_height'),
         'current_temperature': child_progress.get('current_temperature'),
         'temperature_source': child_progress.get('temperature_source'),
         'next_temperature': child_progress.get('next_temperature'),
@@ -2762,7 +3130,7 @@ def _validate_frame_count(value):
         raise DarkAutomationError('Enter a valid source-frame count')
     if frame_count < MIN_FRAME_COUNT or frame_count > MAX_FRAME_COUNT:
         raise DarkAutomationError(
-            'Choose between {0:d} and {1:d} source frames per master.'.format(
+            'Choose {0:d} to {1:d} images per master set.'.format(
                 MIN_FRAME_COUNT,
                 MAX_FRAME_COUNT,
             )

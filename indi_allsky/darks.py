@@ -35,11 +35,17 @@ from . import constants
 from .utils import IndiAllSkyExposureUtils
 from .capture_state import CameraCapabilities
 from .capture_state import build_effective_capture_state
+from .capture_state import camera_geometry_from_ccd_info
+from .capture_state import record_binning_dimensions
+from .capture_state import validate_captured_geometry
+from .dark_validation import dark_adu_maximum
 from .dark_validation import validate_dark_master_data
+from .dark_fits import set_master_fits_metadata
 from .temperature import TEMPERATURE_SOURCE_AUTO
 from .temperature import TEMPERATURE_SOURCE_CAMERA
 from .temperature import TEMPERATURE_SOURCE_SCRIPT
 from .temperature import configured_temperature_sources
+from .temperature import master_capture_temperature
 from .temperature import resolve_temperature
 from .temperature import usable_temperature
 
@@ -66,6 +72,8 @@ except ImportError:
 app = create_app()
 
 logger = logging.getLogger('indi_allsky')
+
+TEMPERATURE_WAIT_REFRESH_SECONDS = 5.0
 
 
 class DarkCapturePlanChanged(RuntimeError):
@@ -137,6 +145,7 @@ class IndiAllSkyDarks(object):
         self._automation_manifest = {}
         self._progress_total_master_sets = 0
         self._progress_completed_master_sets = 0
+        self._progress_completed_master_details = []
         self._progress_current_gain = None
         self._progress_current_exposure = None
         self._progress_current_binning = None
@@ -149,6 +158,8 @@ class IndiAllSkyDarks(object):
         self._progress_planned_temperature_sets = None
         self._progress_temperature_set_started_utc = None
         self._progress_activated_master_files = 0
+        self._progress_resolved_width = None
+        self._progress_resolved_height = None
 
         # this is used to set a max value of data returned by the camera
         self._bitmax = 0
@@ -162,6 +173,7 @@ class IndiAllSkyDarks(object):
         self.camera_name = None
         self.camera_server = None
         self.ccd_info = None
+        self._camera_geometry = None
 
 
         self.sensor_q = Queue()
@@ -563,6 +575,7 @@ class IndiAllSkyDarks(object):
         # get CCD information
         ccd_info = self.indiclient.getCcdInfo()
         self.ccd_info = ccd_info
+        self._camera_geometry = camera_geometry_from_ccd_info(ccd_info)
         live_capabilities = CameraCapabilities.from_ccd_info(ccd_info)
 
 
@@ -587,6 +600,7 @@ class IndiAllSkyDarks(object):
             'type'        : constants.CAMERA,
             'name'        : self.camera_name,
             'driver'      : self.camera_server,
+            'serialNumber': ccd_info.get('SERIALNUMBER_INFO', {}).get('current'),
 
             'hidden'      : False,  # unhide camera
 
@@ -1064,6 +1078,8 @@ class IndiAllSkyDarks(object):
 
 
     def _cleanup_capture(self):
+        active_exception = sys.exc_info()[0] is not None
+        restore_error = None
         try:
             self._stopSensorWorker()
         except Exception as e:
@@ -1071,6 +1087,12 @@ class IndiAllSkyDarks(object):
 
         if self.indiclient is None:
             return
+
+        try:
+            self._restore_camera_geometry()
+        except Exception as e:
+            restore_error = e
+            logger.exception('Unable to restore the camera frame and binning: %s', str(e))
 
         try:
             self.indiclient.disableCcdCooler()
@@ -1081,6 +1103,9 @@ class IndiAllSkyDarks(object):
             self.indiclient.disconnectServer()
         except Exception as e:
             logger.error('Unable to disconnect the camera server: %s', str(e))
+
+        if restore_error is not None and not active_exception:
+            raise restore_error
 
 
     def tempsigmaclip(self):
@@ -1171,7 +1196,7 @@ class IndiAllSkyDarks(object):
             self._progress_next_temperature = next_temp_thold
             self._publish_progress(
                 'temperature_wait',
-                'Temperature set {0:d} complete. Waiting for the camera to cool to {1:0.1f}°C.'.format(
+                'Temperature set {0:d} complete. Waiting for {1:0.1f}°C.'.format(
                     temperature_set,
                     next_temp_thold,
                 ),
@@ -1198,7 +1223,7 @@ class IndiAllSkyDarks(object):
                         current_temperature,
                     ),
                 )
-                self._sleep_interruptibly(30.0)
+                self._sleep_interruptibly(TEMPERATURE_WAIT_REFRESH_SECONDS)
 
             logger.warning(
                 'Achieved next temperature threshold: %0.1f | %0.1f',
@@ -1309,6 +1334,8 @@ class IndiAllSkyDarks(object):
                 progress_total=total_master_sets,
                 publish_complete=False,
             )
+            group['width'] = self.automation_manifest.get('width')
+            group['height'] = self.automation_manifest.get('height')
             completed_offset += int(group['target_count'])
             self._publish_progress(
                 'capturing',
@@ -1334,7 +1361,7 @@ class IndiAllSkyDarks(object):
         self._progress_completed_master_sets = total_master_sets
         self._publish_progress(
             'temperature_set_complete',
-            'Temperature set {0:d} was captured and activated safely.'.format(
+                'Temperature set {0:d} captured and activated.'.format(
                 temperature_set,
             ),
         )
@@ -1465,6 +1492,7 @@ class IndiAllSkyDarks(object):
             'phase': phase,
             'message': str(message),
             'completed_master_sets': self._progress_completed_master_sets,
+            'completed_master_details': list(self._progress_completed_master_details),
             'total_master_sets': self._progress_total_master_sets,
             'current_gain': self._progress_current_gain,
             'current_exposure': self._progress_current_exposure,
@@ -1478,6 +1506,8 @@ class IndiAllSkyDarks(object):
             'temperature_set_started_utc': self._progress_temperature_set_started_utc,
             'completed_temperature_sets': self._progress_completed_temperature_sets,
             'activated_master_files': self._progress_activated_master_files,
+            'resolved_width': self._progress_resolved_width,
+            'resolved_height': self._progress_resolved_height,
             'capture_profile': self.capture_profile,
             'current_frame': current_frame,
             'current_frame_count': self.count,
@@ -1503,6 +1533,81 @@ class IndiAllSkyDarks(object):
                     Path(temporary_name).unlink()
                 except FileNotFoundError:
                     pass
+
+
+    def _restore_camera_geometry(self):
+        geometry = self._camera_geometry
+        if geometry is None:
+            return
+
+        set_frame = getattr(self.indiclient, 'setCcdFrame', None)
+        if not callable(set_frame):
+            return
+
+        # Restore the unbinned frame first. Some INDI drivers crop the active
+        # ROI while changing binning and keep that cropped ROI afterwards.
+        self.indiclient.setCcdBinning((1, 1))
+        set_frame(
+            geometry['x'],
+            geometry['y'],
+            geometry['width'],
+            geometry['height'],
+        )
+        self.indiclient.setCcdBinning(geometry['binning'])
+
+        get_frame = getattr(self.indiclient, 'getCcdFrame', None)
+        if not callable(get_frame):
+            return
+        frame_info = get_frame()
+        binning_info = self.indiclient.getCcdBinning()
+        restored_info = {
+            'CCD_FRAME': frame_info,
+            'BINNING_INFO': binning_info,
+        }
+        restored = camera_geometry_from_ccd_info(restored_info)
+        if restored != geometry:
+            raise RuntimeError(
+                'Camera geometry restoration failed: expected {0!r}, received {1!r}'.format(
+                    geometry,
+                    restored,
+                )
+            )
+
+
+    def _resolve_automation_geometry(self, image_width, image_height, requested_binning):
+        frame_info = {}
+        get_frame = getattr(self.indiclient, 'getCcdFrame', None)
+        if self._camera_geometry is not None and callable(get_frame):
+            frame_info = get_frame()
+        binning_info = self.indiclient.getCcdBinning()
+        width, height = validate_captured_geometry(
+            image_width,
+            image_height,
+            requested_binning,
+            frame_info,
+            binning_info,
+        )
+        self.automation_manifest['width'] = width
+        self.automation_manifest['height'] = height
+        self._progress_resolved_width = width
+        self._progress_resolved_height = height
+        self._record_binning_dimensions(requested_binning, width, height)
+
+
+    def _record_binning_dimensions(self, binning, width, height):
+        if self._camera_geometry is None or self.camera_id is None:
+            return
+        camera = IndiAllSkyDbCameraTable.query.filter_by(id=int(self.camera_id)).one()
+        camera_data = dict(camera.data or {})
+        camera_data['camera_capabilities'] = record_binning_dimensions(
+            camera_data.get('camera_capabilities'),
+            self._camera_geometry,
+            binning,
+            width,
+            height,
+        )
+        camera.data = camera_data
+        db.session.commit()
 
 
     def _configure_target_profile(self):
@@ -1541,6 +1646,7 @@ class IndiAllSkyDarks(object):
             self.indiclient.libcamera_bit_depth = 16 if image_type == 'dng' else 8
 
         self.indiclient.configureCcdDevice(self.indi_config)
+        self._restore_camera_geometry()
         if cooling_enabled:
             self.indiclient.enableCcdCooler()
             logger.warning('****** WAITING UP TO 20 MINUTES FOR TARGET TEMPERATURE ******')
@@ -1573,7 +1679,7 @@ class IndiAllSkyDarks(object):
         )
         self._progress_completed_master_sets = int(progress_offset)
         self._progress_current_binning = self.binning
-        self._publish_progress('capturing', 'Starting targeted dark capture.')
+        self._publish_progress('capturing', 'Starting dark capture.')
 
         for gain in self.gain_list:
             for exposure in self.exposure_list:
@@ -1582,9 +1688,10 @@ class IndiAllSkyDarks(object):
                 self._progress_current_exposure = exposure
                 self._publish_progress(
                     'capturing',
-                    'Capturing gain {0:g}, exposure {1:g}s.'.format(gain, exposure),
+                    'Starting gain {0:g}, exposure {1:g}s.'.format(gain, exposure),
                     current_frame=0,
                 )
+                master_started = time.monotonic()
                 activation = self._take_exposures(
                     exposure,
                     gain,
@@ -1593,6 +1700,13 @@ class IndiAllSkyDarks(object):
                     bpm_filename_t,
                     stacking_class,
                 )
+                master_detail = activation.get('master_detail')
+                if master_detail:
+                    master_detail['duration_seconds'] = round(
+                        max(0.0, time.monotonic() - master_started),
+                        3,
+                    )
+                    self._progress_completed_master_details.append(dict(master_detail))
                 self._progress_activated_master_files += int(activation['activated'])
                 self._progress_completed_master_sets += 1
                 self._publish_progress(
@@ -1605,7 +1719,7 @@ class IndiAllSkyDarks(object):
         self._progress_current_binning = None
         self._progress_current_temperature = None
         if publish_complete:
-            self._publish_progress('complete', 'Targeted dark capture complete.')
+            self._publish_progress('complete', 'Dark capture complete.')
 
 
     def _run(self, stacking_class):
@@ -1844,13 +1958,15 @@ class IndiAllSkyDarks(object):
         logger.info('Temp folder: %s', tmp_fit_dir_p)
 
         image_bitpix = None
+        capture_dimensions = None
+        master_temperature = None
 
         i = 1
         while i <= self.count:
             self._check_shutdown()
             self._publish_progress(
                 'capturing',
-                'Capturing source frame {0:d} of {1:d} at gain {2:g}, exposure {3:g}s.'.format(
+                'Capturing image {0:d} of {1:d} at gain {2:g}, exposure {3:g}s.'.format(
                     i,
                     self.count,
                     gain,
@@ -1893,6 +2009,24 @@ class IndiAllSkyDarks(object):
                 # Mono data
                 image_height, image_width = hdulist[0].data.shape[:2]
 
+            current_dimensions = (int(image_width), int(image_height))
+            if capture_dimensions is None:
+                # INDI step metadata predicts most ROI sizes, but the received
+                # FITS array is the only reliable answer for driver-specific
+                # rounding. Persist that observation for future plans.
+                capture_dimensions = current_dimensions
+                if automation_capture:
+                    self._resolve_automation_geometry(
+                        image_width,
+                        image_height,
+                        binning,
+                    )
+            elif current_dimensions != capture_dimensions:
+                raise RuntimeError(
+                    'Camera frame dimensions changed during one dark master: '
+                    '{0!r} then {1!r}'.format(capture_dimensions, current_dimensions)
+                )
+
             image_bitpix = hdulist[0].header['BITPIX']
 
 
@@ -1906,11 +2040,17 @@ class IndiAllSkyDarks(object):
             logger.info('Image average adu: %0.2f', m_avg)
 
             measured_temperature = self.getCcdTemperature()
-            self._progress_current_temperature = usable_temperature(measured_temperature)
+            # The final source image temperature becomes the single value used
+            # by the filename, database rows, manifests, and both FITS headers.
+            master_temperature = master_capture_temperature(
+                measured_temperature,
+                preserve_legacy_value=not automation_capture,
+            )
+            self._progress_current_temperature = master_temperature
             logger.info('Camera temperature: %0.1f', measured_temperature)
             self._publish_progress(
                 'capturing',
-                'Captured source frame {0:d} of {1:d} at gain {2:g}, exposure {3:g}s.'.format(
+                'Captured image {0:d} of {1:d} at gain {2:g}, exposure {3:g}s.'.format(
                     i,
                     self.count,
                     gain,
@@ -1925,7 +2065,7 @@ class IndiAllSkyDarks(object):
         self._check_shutdown()
         self._publish_progress(
             'stacking',
-            'Building the master dark and bad pixel map for gain {0:g}, exposure {1:g}s.'.format(
+            'Building the dark and bad-pixel map for gain {0:g}, exposure {1:g}s.'.format(
                 gain,
                 exposure,
             ),
@@ -1933,6 +2073,10 @@ class IndiAllSkyDarks(object):
         )
 
         # libcamera does not know the temperature until the first exposure is taken
+        if master_temperature is None:
+            raise RuntimeError(
+                'A usable temperature is required after the final source image'
+            )
         exp_date = datetime.now()
         date_str = exp_date.strftime('%Y%m%d_%H%M%S')
         dark_filename = dark_filename_t.format(
@@ -1941,7 +2085,7 @@ class IndiAllSkyDarks(object):
             int(exposure),
             int(self._expUtils.GAIN_CURRENT),  # filename gain as int
             int(self._expUtils.BINNING_CURRENT),
-            int(self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP]),
+            int(master_temperature),
             date_str,
         )
         bpm_filename = bpm_filename_t.format(
@@ -1950,7 +2094,7 @@ class IndiAllSkyDarks(object):
             int(exposure),
             int(self._expUtils.GAIN_CURRENT),  # filename gain as int
             int(self._expUtils.BINNING_CURRENT),
-            int(self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP]),
+            int(master_temperature),
             date_str,
         )
         if automation_capture:
@@ -1969,8 +2113,20 @@ class IndiAllSkyDarks(object):
 
 
         # build dark before BPM
-        dark_adu_avg, dark_hot_pixel_count = s.stack(tmp_fit_dir_p, full_dark_filename_p, exposure, image_bitpix)
-        bpm_adu_avg, bpm_hot_pixel_count = s.buildBadPixelMap(tmp_fit_dir_p, full_bpm_filename_p, exposure, image_bitpix)
+        dark_adu_avg, dark_hot_pixel_count = s.stack(
+            tmp_fit_dir_p,
+            full_dark_filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=master_temperature,
+        )
+        bpm_adu_avg, bpm_hot_pixel_count = s.buildBadPixelMap(
+            tmp_fit_dir_p,
+            full_bpm_filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=master_temperature,
+        )
 
 
         bpm_metadata = {
@@ -1980,9 +2136,7 @@ class IndiAllSkyDarks(object):
             'exposure'   : exposure,
             'gain'       : self._expUtils.GAIN_CURRENT,
             'binmode'    : self._expUtils.BINNING_CURRENT,
-            'temp'       : usable_temperature(
-                self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP],
-            ),
+            'temp'       : master_temperature,
             'adu'        : bpm_adu_avg,
             'fileSize'   : full_bpm_filename_p.stat().st_size,
             'height'     : image_height,
@@ -2003,9 +2157,7 @@ class IndiAllSkyDarks(object):
             'exposure'   : exposure,
             'gain'       : self._expUtils.GAIN_CURRENT,
             'binmode'    : self._expUtils.BINNING_CURRENT,
-            'temp'       : usable_temperature(
-                self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP],
-            ),
+            'temp'       : master_temperature,
             'adu'        : dark_adu_avg,
             'fileSize'   : full_dark_filename_p.stat().st_size,
             'height'     : image_height,
@@ -2026,6 +2178,7 @@ class IndiAllSkyDarks(object):
             image_bitpix,
             image_width,
             image_height,
+            master_temperature,
         )
         if automation_data:
             bpm_metadata['data']['dark_automation'] = automation_data
@@ -2078,6 +2231,18 @@ class IndiAllSkyDarks(object):
                 self.automation_manifest,
             )
             db.session.commit()
+            activation['master_detail'] = {
+                'capture_profile': str(self.capture_profile),
+                'gain': float(dark_metadata['gain']),
+                'exposure': float(dark_metadata['exposure']),
+                'binning': int(dark_metadata['binmode']),
+                'temperature': dark_metadata['temp'],
+                'frame_count': int(self.count),
+                'width': int(dark_metadata['width']),
+                'height': int(dark_metadata['height']),
+                'temperature_set': self.automation_manifest.get('temperature_set'),
+                'completed_utc': datetime.now().astimezone().isoformat(),
+            }
         except BaseException:
             db.session.rollback()
             for output_path in (full_dark_filename_p, full_bpm_filename_p):
@@ -2102,6 +2267,7 @@ class IndiAllSkyDarks(object):
             bit_depth,
             width,
             height,
+            master_temperature,
     ):
         manifest = self.automation_manifest
         if not manifest.get('automation'):
@@ -2125,6 +2291,7 @@ class IndiAllSkyDarks(object):
             'temperature_set': manifest.get('temperature_set'),
             'temperature_source': manifest.get('temperature_source', TEMPERATURE_SOURCE_AUTO),
             'temperature_source_label': self._progress_temperature_source,
+            'captured_temperature': float(master_temperature),
             'eligibility': {
                 'state': 'staged' if staged else 'active',
                 'reason': 'capture_staging' if staged else 'capture_completed',
@@ -2472,7 +2639,14 @@ class IndiAllSkyDarksProcessor(object):
 
 
 
-    def buildBadPixelMap(self, tmp_fit_dir_p, filename_p, exposure, image_bitpix):
+    def buildBadPixelMap(
+            self,
+            tmp_fit_dir_p,
+            filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=None,
+    ):
         from astropy.io import fits
 
         logger.info('Building bad pixel map for exposure %0.1fs, gain %0.3f, bin %d', exposure, self._expUtils.GAIN_CURRENT, self._expUtils.BINNING_CURRENT)
@@ -2511,14 +2685,7 @@ class IndiAllSkyDarksProcessor(object):
         logger.info('Image max value: %0.1f', float(max_val))
 
 
-        if self.bitmax:
-            max_value = (2 ** self.bitmax) - 1
-        else:
-            if numpy_type in (numpy.float32, numpy.uint32):
-                # assume 16bit max
-                max_value = (2 ** 16) - 1
-            else:
-                max_value = (2 ** image_bitpix) - 1
+        max_value = dark_adu_maximum(self.bitmax, image_bitpix)
 
 
         hot_pixel_thold = int(max_value * (self.hotpixel_adu_percent / 100.0))
@@ -2547,6 +2714,11 @@ class IndiAllSkyDarksProcessor(object):
 
 
         hdulist[0].data = bpm
+        set_master_fits_metadata(
+            hdulist[0].header,
+            'Bad Pixel Map',
+            master_temperature,
+        )
 
         # reuse the last fits file for the stacked data
         hdulist.writeto(filename_p)
@@ -2554,7 +2726,14 @@ class IndiAllSkyDarksProcessor(object):
         return bpm_adu_avg, hot_pixel_count
 
 
-    def stack(self, tmp_fit_dir_p, filename_p, exposure, image_bitpix):
+    def stack(
+            self,
+            tmp_fit_dir_p,
+            filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=None,
+    ):
         raise Exception('Must be redefined in sub-class')
 
 
@@ -2566,7 +2745,14 @@ class IndiAllSkyDarksAverage(IndiAllSkyDarksProcessor):
         return 'Average Stacking'
 
 
-    def stack(self, tmp_fit_dir_p, filename_p, exposure, image_bitpix):
+    def stack(
+            self,
+            tmp_fit_dir_p,
+            filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=None,
+    ):
         from astropy.io import fits
 
         logger.info('Stacking dark frames for exposure %0.1fs, gain %0.3f, bin %d', exposure, self._expUtils.GAIN_CURRENT, self._expUtils.BINNING_CURRENT)
@@ -2611,14 +2797,7 @@ class IndiAllSkyDarksAverage(IndiAllSkyDarksProcessor):
         logger.info('Master Dark average adu: %0.2f', dark_adu_avg)
 
 
-        if self.bitmax:
-            max_value = (2 ** self.bitmax) - 1
-        else:
-            if numpy_type in (numpy.float32, numpy.uint32):
-                # assume 16bit max
-                max_value = (2 ** self.bitmax) - 1
-            else:
-                max_value = (2 ** image_bitpix) - 1
+        max_value = dark_adu_maximum(self.bitmax, image_bitpix)
 
 
         hot_pixel_thold = int(max_value * (30 / 100))
@@ -2640,6 +2819,11 @@ class IndiAllSkyDarksAverage(IndiAllSkyDarksProcessor):
             logger.info('Detected %d hot pixels (>%d/%d%% ADU)', hot_pixel_count, hot_pixel_thold, 30)
 
         hdulist[0].data = avg_data
+        set_master_fits_metadata(
+            hdulist[0].header,
+            'Dark Frame',
+            master_temperature,
+        )
 
         # reuse the last fits file for the stacked data
         hdulist.writeto(filename_p)
@@ -2655,7 +2839,14 @@ class IndiAllSkyDarksSigmaClip(IndiAllSkyDarksProcessor):
         return 'Sigma Clipping'
 
 
-    def stack(self, tmp_fit_dir_p, filename_p, exposure, image_bitpix):
+    def stack(
+            self,
+            tmp_fit_dir_p,
+            filename_p,
+            exposure,
+            image_bitpix,
+            master_temperature=None,
+    ):
         from astropy.io import fits
         from astropy.stats import mad_std
         import ccdproc
@@ -2707,6 +2898,11 @@ class IndiAllSkyDarksSigmaClip(IndiAllSkyDarksProcessor):
 
 
         combined_dark.meta['combined'] = True
+        set_master_fits_metadata(
+            combined_dark.meta,
+            'Dark Frame',
+            master_temperature,
+        )
 
         validate_dark_master_data(combined_dark[0].data)
 
@@ -2723,14 +2919,7 @@ class IndiAllSkyDarksSigmaClip(IndiAllSkyDarksProcessor):
         dark_from_file = fits.open(filename_p)
 
 
-        if self.bitmax:
-            max_value = (2 ** self.bitmax) - 1
-        else:
-            if numpy_type in (numpy.float32, numpy.uint32):
-                # assume 16bit max
-                max_value = (2 ** 16) - 1
-            else:
-                max_value = (2 ** image_bitpix) - 1
+        max_value = dark_adu_maximum(self.bitmax, image_bitpix)
 
 
         hot_pixel_thold = int(max_value * (30 / 100))
@@ -2748,4 +2937,3 @@ class IndiAllSkyDarksSigmaClip(IndiAllSkyDarksProcessor):
 
 
         return dark_adu_avg, hot_pixel_count
-

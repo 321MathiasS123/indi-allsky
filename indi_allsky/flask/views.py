@@ -29,6 +29,10 @@ from .. import constants
 from .. import asi676mc
 from .. import asi676mc_calibration
 from .. import dark_automation
+from ..capture_health import capture_health_status
+from ..capture_health import capture_stale_seconds
+from ..capture_health import parse_capture_error
+from ..capture_health import CAPTURE_PIPELINE_ERROR_STATE
 from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
@@ -51,10 +55,6 @@ from ..capture_state import build_effective_capture_state
 from ..temperature import resolve_temperature
 from ..temperature import temperature_source_choices
 from ..temperature import temperature_source_signature
-from ..capture_health import capture_health_status
-from ..capture_health import capture_stale_seconds
-from ..capture_health import parse_capture_error
-from ..capture_health import CAPTURE_PIPELINE_ERROR_STATE
 
 from cryptography.fernet import InvalidToken
 
@@ -1343,8 +1343,8 @@ def _dark_library_removal_coverage(camera, config, selection):
     if after_structural_missing > before_structural_missing:
         level = 'danger'
         message = (
-            'This would add {0:d} master set{1:s} to the structural completion plan. '
-            'After deletion, {2:d} of {3:d} recommended camera settings remain ready.'
+            'This would leave {0:d} more recommended master set{1:s} missing. '
+            'After deletion, {2:d} of {3:d} remain covered.'
         ).format(
             after_structural_missing - before_structural_missing,
             '' if after_structural_missing - before_structural_missing == 1 else 's',
@@ -1354,8 +1354,8 @@ def _dark_library_removal_coverage(camera, config, selection):
     elif temperature_checked and after_temperature_additions > before_temperature_additions:
         level = 'warning'
         message = (
-            'Gain/exposure completeness remains unchanged, but {0:d} additional master '
-            'set{1:s} would be recommended for the configured or current temperature.'
+            'Gain and exposure coverage stays complete, but the current temperature would need '
+            '{0:d} more master set{1:s}.'
         ).format(
             after_temperature_additions - before_temperature_additions,
             '' if after_temperature_additions - before_temperature_additions == 1 else 's',
@@ -1363,11 +1363,11 @@ def _dark_library_removal_coverage(camera, config, selection):
     else:
         level = 'safe'
         message = (
-            'This selection does not reduce recommended gain/exposure coverage'
+            'This selection does not reduce recommended gain and exposure coverage'
             + (
-                ' or configured/current-temperature readiness.'
+                ' or temperature coverage.'
                 if temperature_checked
-                else '. Temperature readiness is not currently available to evaluate.'
+                else '. Temperature coverage cannot be checked now.'
             )
         )
 
@@ -1410,36 +1410,35 @@ def _dark_library_eligibility_coverage(camera, config, selection, active):
         if structural_change < 0:
             level = 'safe'
             message = (
-                'This restores {0:d} recommended camera setting{1:s} to structural coverage.'
+                'This restores coverage for {0:d} recommended master set{1:s}.'
             ).format(-structural_change, '' if structural_change == -1 else 's')
         elif temperature_checked and temperature_change < 0:
             level = 'safe'
             message = (
-                'Gain/exposure completeness is unchanged, and {0:d} fewer master set{1:s} '
-                'would be recommended for the configured or current temperature.'
+                'Gain and exposure coverage is unchanged, and the current temperature would need '
+                '{0:d} fewer master set{1:s}.'
             ).format(-temperature_change, '' if temperature_change == -1 else 's')
         else:
             level = 'safe'
             message = (
-                'Activating these master sets makes them eligible again, but does not change the current '
-                'camera recommendation. They may still match another temperature or future configuration.'
+                'These sets can be used again, but do not change the current recommendation. '
+                'They may match another temperature or future setup.'
             )
     elif structural_change > 0:
         level = 'danger'
         message = (
-            'This would add {0:d} master set{1:s} to the structural completion plan.'
+            'This would leave {0:d} more recommended master set{1:s} missing.'
         ).format(structural_change, '' if structural_change == 1 else 's')
     elif temperature_checked and temperature_change > 0:
         level = 'warning'
         message = (
-            'Gain/exposure completeness remains unchanged, but {0:d} additional master set{1:s} '
-            'would be recommended for the configured or current temperature.'
+            'Gain and exposure coverage stays complete, but the current temperature would need '
+            '{0:d} more master set{1:s}.'
         ).format(temperature_change, '' if temperature_change == 1 else 's')
     else:
         level = 'safe'
         message = (
-            'Deactivating these master sets does not reduce the current recommended coverage. '
-            'The files remain stored and can be activated again later.'
+            'This does not reduce current coverage. The files stay stored and can be activated again.'
         )
 
     return {
@@ -1460,6 +1459,9 @@ def _find_active_dark_task(owner=None, camera_id=None):
         TaskQueueState.MANUAL,
         TaskQueueState.QUEUED,
         TaskQueueState.RUNNING,
+        TaskQueueState.SUCCESS,
+        TaskQueueState.FAILED,
+        TaskQueueState.EXPIRED,
     )
     tasks = IndiAllSkyDbTaskQueueTable.query\
         .filter(IndiAllSkyDbTaskQueueTable.state.in_(state_list))\
@@ -1469,7 +1471,7 @@ def _find_active_dark_task(owner=None, camera_id=None):
         task_data = task.data or {}
         if task_data.get('action') != 'dark_automation':
             continue
-        if task_data.get('status') not in dark_automation.ACTIVE_STATUSES:
+        if not dark_automation.task_requires_progress(task_data):
             continue
         if owner is not None and task_data.get('owner') != owner:
             continue
@@ -1534,13 +1536,12 @@ def _prepare_dark_capture_service(view, operation='capture'):
 
     if operation == 'flush':
         return (
-            'Library deletion is queued, but the capture controller is not responding and '
-            'could not be started automatically. Start it within 30 minutes.'
+            'Library deletion is queued, but the capture service is not responding. '
+            'Start it within 30 minutes.'
         )
     return (
-        'The plan is queued, but the capture controller is not responding and could not '
-        'be started automatically. Start it within 30 minutes; otherwise the '
-        'camera-cover confirmation will expire.'
+        'The plan is queued, but the capture service is not responding. Start it within '
+        '30 minutes or the camera-cover confirmation will expire.'
     )
 
 
@@ -1555,9 +1556,8 @@ class DarkFramesView(TemplateView):
             .join(IndiAllSkyDbCameraTable)\
             .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
             .order_by(
-                IndiAllSkyDbCameraTable.id.desc(),
-                IndiAllSkyDbDarkFrameTable.gain.asc(),
-                IndiAllSkyDbDarkFrameTable.exposure.asc(),
+                IndiAllSkyDbDarkFrameTable.createDate.desc(),
+                IndiAllSkyDbDarkFrameTable.id.desc(),
             )\
             .all()
 
@@ -1565,9 +1565,8 @@ class DarkFramesView(TemplateView):
             .join(IndiAllSkyDbCameraTable)\
             .filter(IndiAllSkyDbCameraTable.id == self.camera.id)\
             .order_by(
-                IndiAllSkyDbCameraTable.id.desc(),
-                IndiAllSkyDbBadPixelMapTable.gain.asc(),
-                IndiAllSkyDbBadPixelMapTable.exposure.asc(),
+                IndiAllSkyDbBadPixelMapTable.createDate.desc(),
+                IndiAllSkyDbBadPixelMapTable.id.desc(),
             )\
             .all()
 
@@ -1877,6 +1876,7 @@ class DarkFramesView(TemplateView):
         context['dark_config_requires_reload'] = bool(
             dark_automation_authorized and _dark_config_requires_reload(self)
         )
+        context['dark_automation_can_review'] = dark_automation_authorized
         context['dark_automation_can_run'] = bool(
             dark_automation_authorized and not context['dark_config_requires_reload']
         )
@@ -1999,7 +1999,7 @@ class AjaxDarkAutomationStartView(BaseView):
 
     def dispatch_request(self):
         if not _can_save_standard_configuration():
-            return jsonify({'error': 'Administrator access is required to start dark calibration.'}), 403
+            return jsonify({'error': 'Administrator access is required to start dark capture.'}), 403
 
         request_data = request.get_json(silent=True) or {}
         if request_data.get('camera_covered') is not True:
@@ -2059,7 +2059,7 @@ class AjaxDarkAutomationStartView(BaseView):
         active_task = _find_active_dark_task()
         if active_task is not None:
             return jsonify({
-                'error': 'Another dark calibration is already queued or running.',
+                'error': 'Another dark capture is already queued or running.',
                 'task_id': active_task.id,
             }), 409
 
@@ -2141,14 +2141,88 @@ class AjaxDarkAutomationStartView(BaseView):
             db.session.commit()
         except SQLAlchemyError:
             db.session.rollback()
-            app.logger.exception('Unable to queue dark-library calibration')
+            app.logger.exception('Unable to queue dark-library acquisition')
             return jsonify({
-                'error': 'Dark calibration could not be queued. Wait a moment and try again.',
+                'error': 'Dark capture could not be queued. Wait a moment and try again.',
             }), 500
 
         response = dark_automation.task_public_status(task)
         response['service_start_warning'] = service_start_warning
         return jsonify(response)
+
+
+def _dark_resolve_request_batches(request_data, selector):
+    """Resolve legacy or multi-camera library selections from one request."""
+    requested_batches = request_data.get('selections')
+    if requested_batches is None:
+        requested_batches = [{
+            'camera_id': request_data.get('camera_id'),
+            'selection': request_data.get('selection'),
+        }]
+    if not isinstance(requested_batches, list) or not requested_batches:
+        raise dark_automation.DarkAutomationError('Select at least one library item.')
+    if len(requested_batches) > 128:
+        raise dark_automation.DarkAutomationError('Too many camera libraries were selected.')
+
+    batches = []
+    seen_camera_ids = set()
+    for requested in requested_batches:
+        if not isinstance(requested, dict):
+            raise dark_automation.DarkAutomationError('The library selection is invalid.')
+        try:
+            camera_id = int(requested.get('camera_id'))
+        except (TypeError, ValueError):
+            raise dark_automation.DarkAutomationError('Select a valid camera.')
+        if camera_id in seen_camera_ids:
+            raise dark_automation.DarkAutomationError(
+                'Each camera may appear only once in a combined selection.'
+            )
+        seen_camera_ids.add(camera_id)
+        camera = IndiAllSkyDbCameraTable.query.filter(
+            IndiAllSkyDbCameraTable.id == camera_id,
+        ).first()
+        if camera is None:
+            raise dark_automation.DarkAutomationError(
+                'A selected camera is no longer available.'
+            )
+        resolved = selector(
+            (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
+            camera_id,
+            requested.get('selection'),
+        )
+        if resolved['dark_frames'] + resolved['bad_pixel_maps'] < 1:
+            raise dark_automation.DarkAutomationError(
+                'The selected dark frames or bad-pixel maps are no longer available.'
+            )
+        batches.append({
+            'camera': camera,
+            'camera_id': camera_id,
+            'selection': resolved['selection'],
+            'signature': resolved['signature'],
+            'resolved': resolved,
+        })
+    return batches
+
+
+def _dark_public_selection_batches(batches):
+    return [
+        {
+            'camera_id': batch['camera_id'],
+            'selection': batch['selection'],
+            'selection_signature': batch['signature'],
+        }
+        for batch in batches
+    ]
+
+
+def _dark_combined_selection_signature(batches):
+    return dark_automation.library_selection_batches_signature([
+        {
+            'camera_id': batch['camera_id'],
+            'signature': batch['signature'],
+        }
+        for batch in batches
+    ])
 
 
 class AjaxDarkLibraryFlushView(BaseView):
@@ -2161,29 +2235,28 @@ class AjaxDarkLibraryFlushView(BaseView):
 
         request_data = request.get_json(silent=True) or {}
         try:
-            camera_id = int(request_data.get('camera_id'))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Select a valid camera.'}), 400
-        self.cameraSetup(camera_id=camera_id)
-        if getattr(self.camera, 'id', None) != camera_id:
-            return jsonify({'error': 'The selected camera is no longer available.'}), 404
-
-        selection = request_data.get('selection')
-        if request_data.get('scope') == 'all':
-            selection = None
-        try:
-            resolved = dark_automation.select_camera_library_entries(
-                (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
-                self.camera.id,
-                selection=selection,
+            batches = _dark_resolve_request_batches(
+                request_data,
+                lambda models, camera_id, selection: (
+                    dark_automation.select_camera_library_entries(
+                        models,
+                        camera_id,
+                        selection=None if request_data.get('scope') == 'all' else selection,
+                    )
+                ),
             )
         except dark_automation.DarkAutomationError as error:
             return jsonify({'error': str(error)}), 400
-        entry_count = resolved['dark_frames'] + resolved['bad_pixel_maps']
-        if entry_count < 1:
-            return jsonify({
-                'error': 'The selected dark frames or bad-pixel maps are no longer available.',
-            }), 400
+        primary = batches[0]
+        self.cameraSetup(camera_id=primary['camera_id'])
+        dark_frames = sum(batch['resolved']['dark_frames'] for batch in batches)
+        bad_pixel_maps = sum(
+            batch['resolved']['bad_pixel_maps'] for batch in batches
+        )
+        entry_count = dark_frames + bad_pixel_maps
+        size_bytes = sum(batch['resolved']['size_bytes'] for batch in batches)
+        public_batches = _dark_public_selection_batches(batches)
+        combined_signature = _dark_combined_selection_signature(batches)
 
         removal_label = str(request_data.get('label') or 'selected library records').strip()
         removal_label = removal_label[:160] or 'selected library records'
@@ -2192,12 +2265,19 @@ class AjaxDarkLibraryFlushView(BaseView):
                 page_camera_id = int(request_data.get('page_camera_id'))
             except (TypeError, ValueError):
                 page_camera_id = -1
-            if page_camera_id == self.camera.id:
+            current_batch = next(
+                (
+                    batch for batch in batches
+                    if batch['camera_id'] == page_camera_id
+                ),
+                None,
+            )
+            if current_batch is not None:
                 try:
                     coverage_impact = _dark_library_removal_coverage(
-                        self.camera,
+                        current_batch['camera'],
                         self.indi_allsky_config,
-                        resolved['selection'],
+                        current_batch['selection'],
                     )
                 except (KeyError, TypeError, ValueError) as error:
                     app.logger.warning('Unable to preview dark-library coverage impact: %s', error)
@@ -2209,31 +2289,44 @@ class AjaxDarkLibraryFlushView(BaseView):
                             'camera and records carefully.'
                         ),
                     }
+                other_camera_count = len(batches) - 1
+                if other_camera_count:
+                    coverage_impact['message'] = (
+                        coverage_impact['message']
+                        + ' ' + str(other_camera_count) + ' other camera librar'
+                        + ('y is' if other_camera_count == 1 else 'ies are')
+                        + ' also included.'
+                    )
             else:
                 coverage_impact = {
                     'evaluated': False,
                     'level': 'other_camera',
                     'message': (
-                        'This is another camera’s library. Its files are isolated from the '
-                        'current camera, so current-camera coverage is unaffected.'
+                        'Only other camera libraries are selected. Their files are isolated '
+                        'from the current camera, so current-camera coverage is unaffected.'
                     ),
                 }
             return jsonify({
-                'camera_id': self.camera.id,
-                'camera_name': str(self.camera.name),
+                'camera_id': primary['camera_id'],
+                'camera_name': str(primary['camera'].name),
+                'camera_count': len(batches),
                 'label': removal_label,
-                'dark_frames': resolved['dark_frames'],
-                'bad_pixel_maps': resolved['bad_pixel_maps'],
+                'dark_frames': dark_frames,
+                'bad_pixel_maps': bad_pixel_maps,
                 'entry_count': entry_count,
-                'size_bytes': resolved['size_bytes'],
-                'size': resolved['size'],
-                'selection': resolved['selection'],
-                'selection_signature': resolved['signature'],
+                'size_bytes': size_bytes,
+                'size': dark_automation.format_bytes(size_bytes),
+                'selection': primary['selection'],
+                'selections': public_batches,
+                'selection_signature': combined_signature,
                 'coverage_impact': coverage_impact,
             })
 
         preview_signature = str(request_data.get('selection_signature') or '')
-        if selection is not None and preview_signature != resolved['signature']:
+        accepted_signatures = {combined_signature}
+        if len(batches) == 1:
+            accepted_signatures.add(primary['signature'])
+        if preview_signature not in accepted_signatures:
             return jsonify({
                 'error': (
                     'The selected library records changed after review. Preview the '
@@ -2241,9 +2334,9 @@ class AjaxDarkLibraryFlushView(BaseView):
                 ),
             }), 409
         confirmation = str(request_data.get('confirmation') or '')
-        if confirmation != str(self.camera.name):
+        if confirmation != 'DELETE':
             return jsonify({
-                'error': 'Enter the camera name exactly to confirm permanent library deletion.',
+                'error': 'Type DELETE exactly to confirm.',
             }), 400
 
         active_task = _find_active_dark_task()
@@ -2259,10 +2352,11 @@ class AjaxDarkLibraryFlushView(BaseView):
             'action': 'dark_automation',
             'operation': 'flush',
             'owner': _dark_automation_owner(),
-            'camera_id': self.camera.id,
-            'camera_uuid': str(getattr(self.camera, 'uuid', '') or ''),
-            'removal_selection': resolved['selection'],
-            'removal_selection_signature': resolved['signature'],
+            'camera_id': primary['camera_id'],
+            'camera_uuid': str(getattr(primary['camera'], 'uuid', '') or ''),
+            'removal_selection': primary['selection'],
+            'removal_selection_signature': primary['signature'],
+            'removal_batches': public_batches,
             'removal_label': removal_label,
             'removal_entry_count': entry_count,
             'removal_size_bytes': resolved['size_bytes'],
@@ -2319,36 +2413,35 @@ class AjaxDarkLibraryEligibilityView(BaseView):
             }), 403
 
         request_data = request.get_json(silent=True) or {}
-        try:
-            camera_id = int(request_data.get('camera_id'))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Select a valid camera.'}), 400
         active = request_data.get('active')
         if not isinstance(active, bool):
             return jsonify({'error': 'Choose whether to activate or deactivate the selected master sets.'}), 400
 
-        self.cameraSetup(camera_id=camera_id)
-        if getattr(self.camera, 'id', None) != camera_id:
-            return jsonify({'error': 'The selected camera is no longer available.'}), 404
         if _find_active_dark_task() is not None:
             return jsonify({
                 'error': 'Wait for the current dark-library task to finish before changing eligibility.',
             }), 409
 
         try:
-            resolved = dark_automation.select_camera_master_sets(
-                (IndiAllSkyDbDarkFrameTable, IndiAllSkyDbBadPixelMapTable),
-                self.camera.id,
-                request_data.get('selection'),
+            batches = _dark_resolve_request_batches(
+                request_data,
+                dark_automation.select_camera_master_sets,
             )
         except dark_automation.DarkAutomationError as error:
             return jsonify({'error': str(error)}), 400
-        entry_count = resolved['dark_frames'] + resolved['bad_pixel_maps']
-        if entry_count < 1:
-            return jsonify({'error': 'The selected master sets are no longer available.'}), 400
+        primary = batches[0]
+        self.cameraSetup(camera_id=primary['camera_id'])
+        resolved_entries = [
+            frame
+            for batch in batches
+            for frame in batch['resolved']['entries']
+        ]
+        entry_count = len(resolved_entries)
+        public_batches = _dark_public_selection_batches(batches)
+        combined_signature = _dark_combined_selection_signature(batches)
 
         changing_entries = [
-            frame for frame in resolved['entries']
+            frame for frame in resolved_entries
             if bool(getattr(frame, 'active', False)) != active
         ]
         if not changing_entries:
@@ -2360,12 +2453,12 @@ class AjaxDarkLibraryEligibilityView(BaseView):
             }), 409
         if active and any(
                 dark_automation.library_entry_eligibility(frame)['staged']
-                for frame in resolved['entries']
+                for frame in resolved_entries
         ):
             return jsonify({
                 'error': (
-                    'Capture staging files cannot be activated manually. '
-                    'Finish the run or delete the staged files first.'
+                    'Files being captured cannot be activated manually. '
+                    'Finish the run or delete them first.'
                 ),
             }), 409
 
@@ -2377,12 +2470,19 @@ class AjaxDarkLibraryEligibilityView(BaseView):
                 page_camera_id = int(request_data.get('page_camera_id'))
             except (TypeError, ValueError):
                 page_camera_id = -1
-            if page_camera_id == self.camera.id:
+            current_batch = next(
+                (
+                    batch for batch in batches
+                    if batch['camera_id'] == page_camera_id
+                ),
+                None,
+            )
+            if current_batch is not None:
                 try:
                     coverage_impact = _dark_library_eligibility_coverage(
-                        self.camera,
+                        current_batch['camera'],
                         self.indi_allsky_config,
-                        resolved['selection'],
+                        current_batch['selection'],
                         active,
                     )
                 except (KeyError, TypeError, ValueError) as error:
@@ -2390,19 +2490,29 @@ class AjaxDarkLibraryEligibilityView(BaseView):
                     coverage_impact = {
                         'evaluated': False,
                         'level': 'unknown',
-                        'message': 'Coverage impact could not be evaluated. Check the selection carefully.',
+                        'message': 'The effect on coverage could not be checked. Review the selection.',
                     }
+                other_camera_count = len(batches) - 1
+                if other_camera_count:
+                    coverage_impact['message'] = (
+                        coverage_impact['message']
+                        + ' ' + str(other_camera_count) + ' other camera librar'
+                        + ('y is' if other_camera_count == 1 else 'ies are')
+                        + ' also included.'
+                    )
             else:
                 coverage_impact = {
                     'evaluated': False,
                     'level': 'other_camera',
                     'message': (
-                        'This is another camera’s library. Current-camera coverage is unaffected.'
+                        'Only other camera libraries are selected. Current-camera coverage '
+                        'is unaffected.'
                     ),
                 }
             return jsonify({
-                'camera_id': self.camera.id,
-                'camera_name': str(self.camera.name),
+                'camera_id': primary['camera_id'],
+                'camera_name': str(primary['camera'].name),
+                'camera_count': len(batches),
                 'label': label,
                 'active': active,
                 'dark_frames': sum(
@@ -2414,14 +2524,18 @@ class AjaxDarkLibraryEligibilityView(BaseView):
                 'entry_count': len(changing_entries),
                 'selected_entry_count': entry_count,
                 'unchanged_entry_count': entry_count - len(changing_entries),
-                'selection': resolved['selection'],
-                'selection_signature': resolved['signature'],
+                'selection': primary['selection'],
+                'selections': public_batches,
+                'selection_signature': combined_signature,
                 'coverage_impact': coverage_impact,
             })
 
         if mode != 'apply':
             return jsonify({'error': 'The requested activation action is invalid.'}), 400
-        if str(request_data.get('selection_signature') or '') != resolved['signature']:
+        accepted_signatures = {combined_signature}
+        if len(batches) == 1:
+            accepted_signatures.add(primary['signature'])
+        if str(request_data.get('selection_signature') or '') not in accepted_signatures:
             return jsonify({
                 'error': (
                     'The selected master sets changed after preview. Preview the action again.'
@@ -2430,7 +2544,7 @@ class AjaxDarkLibraryEligibilityView(BaseView):
 
         try:
             changed = dark_automation.update_library_entries_eligibility(
-                resolved['entries'],
+                resolved_entries,
                 active,
             )
             db.session.commit()
@@ -2448,8 +2562,8 @@ class AjaxDarkLibraryEligibilityView(BaseView):
             'active': active,
             'changed_entry_count': len(changed),
             'message': (
-                'The selected master sets are active and eligible for calibration again.' if active
-                else 'The selected master sets are inactive and excluded from calibration but remain stored.'
+                'The selected master sets are active and can be used again.' if active
+                else 'The selected master sets are inactive but remain stored.'
             ),
         })
 
@@ -2461,10 +2575,10 @@ class AjaxDarkAutomationStatusView(BaseView):
     def dispatch_request(self, task_id):
         task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=int(task_id)).first()
         if task is None or (task.data or {}).get('action') != 'dark_automation':
-            return jsonify({'error': 'This dark-calibration run is no longer available.'}), 404
+            return jsonify({'error': 'This dark-capture run is no longer available.'}), 404
         task_data = dict(task.data or {})
         if task_data.get('owner') != _dark_automation_owner():
-            return jsonify({'error': 'This dark-calibration run is not available to this user.'}), 403
+            return jsonify({'error': 'This dark-capture run is not available to this user.'}), 403
 
         if (
                 task_data.get('status') == 'queued'
@@ -2493,7 +2607,7 @@ class AjaxDarkAutomationStatusView(BaseView):
             task_data['progress'] = progress
             task.data = task_data
             task.state = TaskQueueState.FAILED
-            task.result = 'Dark calibration queue timeout'
+            task.result = 'Dark acquisition queue timeout'
             db.session.commit()
 
         return jsonify(dark_automation.task_public_status(task))
@@ -2505,14 +2619,14 @@ class AjaxDarkAutomationCancelView(BaseView):
 
     def dispatch_request(self, task_id):
         if not _can_save_standard_configuration():
-            return jsonify({'error': 'Administrator access is required to cancel dark calibration.'}), 403
+            return jsonify({'error': 'Administrator access is required to cancel dark capture.'}), 403
 
         task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=int(task_id)).first()
         if task is None or (task.data or {}).get('action') != 'dark_automation':
-            return jsonify({'error': 'This dark-calibration run is no longer available.'}), 404
+            return jsonify({'error': 'This dark-capture run is no longer available.'}), 404
         task_data = dict(task.data or {})
         if task_data.get('owner') != _dark_automation_owner():
-            return jsonify({'error': 'This dark-calibration run is not available to this user.'}), 403
+            return jsonify({'error': 'This dark-capture run is not available to this user.'}), 403
         if task_data.get('status') in dark_automation.TERMINAL_STATUSES:
             return jsonify(dark_automation.task_public_status(task))
 
@@ -2523,13 +2637,13 @@ class AjaxDarkAutomationCancelView(BaseView):
             task_data['completed_utc'] = datetime.now(timezone.utc).isoformat()
             task_data['capture_restored'] = True
             progress['phase'] = 'cancelled'
-            progress['message'] = 'Dark calibration was cancelled before capture paused.'
+            progress['message'] = 'Dark capture was cancelled before normal capture paused.'
             task.state = TaskQueueState.EXPIRED
-            task.result = 'Dark calibration cancelled'
+            task.result = 'Dark acquisition cancelled'
         else:
             task_data['status'] = 'cancel_requested'
             progress['phase'] = 'cancel_requested'
-            progress['message'] = 'Cancellation requested; finishing the current camera operation.'
+            progress['message'] = dark_automation.CANCEL_REQUESTED_MESSAGE
         task_data['progress'] = progress
         task.data = task_data
         db.session.commit()
@@ -16437,4 +16551,3 @@ def manifest():
     response = jsonify(manifest_data)
     response.headers['Content-Type'] = 'application/manifest+json'
     return response
-

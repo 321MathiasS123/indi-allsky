@@ -551,6 +551,44 @@ class IndiClient(PyIndi.BaseClient):
         self.configureDevice(self.ccd_device, reset_config)
 
 
+    def getCcdFrame(self):
+        """Return the live ROI values and constraints needed for safe restoration."""
+        frame_ctl = self.get_control(self.ccd_device, 'CCD_FRAME', 'number')
+        return {
+            item.getName(): {
+                'current': item.getValue(),
+                'min': item.min,
+                'max': item.max,
+                'step': item.step,
+                'format': item.format,
+            }
+            for item in frame_ctl
+        }
+
+
+    def setCcdFrame(self, x, y, width, height):
+        """Apply an explicit unbinned ROI through the normal INDI config path."""
+        frame_values = [int(value) for value in (x, y, width, height)]
+        if frame_values[2] <= 0 or frame_values[3] <= 0:
+            raise ValueError('CCD frame width and height must be positive')
+
+        logger.warning(
+            'Setting CCD frame to X=%d Y=%d WIDTH=%d HEIGHT=%d',
+            *frame_values,
+        )
+        frame_config = {
+            'PROPERTIES': {
+                'CCD_FRAME': {
+                    'X': frame_values[0],
+                    'Y': frame_values[1],
+                    'WIDTH': frame_values[2],
+                    'HEIGHT': frame_values[3],
+                },
+            },
+        }
+        self.configureDevice(self.ccd_device, frame_config)
+
+
     def setCcdFrameType(self, frame_type):
         frame_config = {
             "SWITCHES" : {
@@ -681,6 +719,9 @@ class IndiClient(PyIndi.BaseClient):
 
         binning_info = self.getCcdBinning()
         ccdinfo['BINNING_INFO'] = binning_info
+
+        serialnumber_info = self.getCcdSerialNumber()
+        ccdinfo['SERIALNUMBER_INFO'] = serialnumber_info
 
         #logger.info('CCD Info: %s', pformat(ccdinfo))
         return ccdinfo
@@ -1394,6 +1435,8 @@ class IndiClient(PyIndi.BaseClient):
         # for cameras that do not support gain
         fake_binning_info = {
             'current' : 1,
+            'horizontal' : 1,
+            'vertical' : 1,
             'min'     : 1,
             'max'     : 1,
             'step'    : 1,
@@ -1416,16 +1459,19 @@ class IndiClient(PyIndi.BaseClient):
 
 
         binning_ctl = self.get_control(self.ccd_device, 'CCD_BINNING', 'number')
-        binning_index_dict = self.__map_indexes(binning_ctl, ['HOR_BIN'])  # base binning on horizontal, ignore vertical
-        index = binning_index_dict['HOR_BIN']
+        binning_by_name = {item.getName(): item for item in binning_ctl}
+        horizontal = binning_by_name['HOR_BIN']
+        vertical = binning_by_name.get('VER_BIN', horizontal)
 
 
         binning_info = {
-            'current' : binning_ctl[index].getValue(),
-            'min'     : binning_ctl[index].min,
-            'max'     : binning_ctl[index].max,
-            'step'    : binning_ctl[index].step,
-            'format'  : binning_ctl[index].format,
+            'current' : horizontal.getValue(),
+            'horizontal' : horizontal.getValue(),
+            'vertical' : vertical.getValue(),
+            'min'     : horizontal.min,
+            'max'     : horizontal.max,
+            'step'    : horizontal.step,
+            'format'  : horizontal.format,
         }
 
         #logger.info('Binning Info: %s', pformat(binning_info))
@@ -1433,11 +1479,16 @@ class IndiClient(PyIndi.BaseClient):
 
 
     def setCcdBinning(self, bin_value):
-        if type(bin_value) is int:
+        if isinstance(bin_value, int):
             new_bin_value = [bin_value, bin_value]
-        elif type(bin_value) is str:
+        elif isinstance(bin_value, str):
             new_bin_value = [int(bin_value), int(bin_value)]
-        elif not bin_value:
+        elif isinstance(bin_value, (list, tuple)) and len(bin_value) == 2:
+            new_bin_value = [int(bin_value[0]), int(bin_value[1])]
+        else:
+            raise Exception('Invalid binning mode')
+
+        if new_bin_value[0] < 1 or new_bin_value[1] < 1:
             raise Exception('Invalid binning mode')
 
         logger.warning('Setting CCD binning to (%d, %d)', new_bin_value[0], new_bin_value[1])
@@ -1494,6 +1545,80 @@ class IndiClient(PyIndi.BaseClient):
         except TimeOutException:
             logger.error('Failed to find CCD binning control, bypassing binning config')
 
+
+    def getCcdSerialNumber(self):
+        indi_exec = self.ccd_device.getDriverExec()
+
+        # for cameras that do not support a serial number
+        fake_sn_info = {
+            'current' : None,
+        }
+
+
+        if indi_exec in [
+            'indi_asi_ccd',
+            'indi_asi_single_ccd',
+        ]:
+
+            try:
+                sn_ctl = self.get_control(self.ccd_device, 'Serial Number', 'text')
+                sn_index_dict = self.__map_indexes(sn_ctl, ['SN'])
+                index = sn_index_dict['SN']
+            except TimeOutException:
+                logger.warning('Timeout: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+            except KeyError:
+                logger.warning('KeyError: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+
+        elif indi_exec in [
+            'indi_playerone_ccd',
+            'indi_playerone_single_ccd',
+        ]:
+
+            try:
+                sn_ctl = self.get_control(self.ccd_device, 'Serial Number', 'text')
+                sn_index_dict = self.__map_indexes(sn_ctl, ['SN#'])
+                index = sn_index_dict['SN#']
+            except TimeOutException:
+                logger.warning('Timeout: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+            except KeyError:
+                logger.warning('KeyError: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+
+        elif indi_exec in [
+            'indi_toupcam_ccd',
+            'indi_altair_ccd',
+            'indi_altaircam_ccd',
+            'indi_nncam_ccd',
+            'indi_tscam_ccd',
+            'indi_ogmacam_ccd',
+            'indi_omegonprocam_ccd',
+        ]:
+
+            try:
+                sn_ctl = self.get_control(self.ccd_device, 'CAMERA', 'text')
+                sn_index_dict = self.__map_indexes(sn_ctl, ['SN'])
+                index = sn_index_dict['SN']
+            except TimeOutException:
+                logger.warning('Timeout: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+            except KeyError:
+                logger.warning('KeyError: %s does not support serial numbers', indi_exec)
+                return fake_sn_info
+
+        else:
+            logger.warning('%s does not support serial numbers', indi_exec)
+            return fake_sn_info
+
+
+        sn_info = {
+            'current' : sn_ctl[index].getText() or None  # blank strings should be None
+        }
+
+
+        return sn_info
 
 
     ### Most of below was borrowed from https://github.com/GuLinux/indi-lite-tools/blob/master/pyindi_sequence/device.py
@@ -1668,5 +1793,4 @@ class IndiClient(PyIndi.BaseClient):
         control = control if control else self.get_control(device, control_name, control_type)
 
         return [get_dict(c) for c in control]
-
 

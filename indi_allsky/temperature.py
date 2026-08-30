@@ -246,3 +246,24 @@ def usable_temperature(value):
     if not math.isfinite(temperature) or temperature < -100.0 or temperature > 100.0:
         return None
     return temperature
+
+
+def master_capture_temperature(value, preserve_legacy_value=False):
+    """Return a master-file temperature without breaking the original CLI.
+
+    Supervised captures require a physically usable temperature.  The legacy
+    CLI historically wrote a camera's finite unsupported-temperature sentinel
+    (usually -273.15) into filenames and metadata, so retain that behaviour
+    only when its caller opts in explicitly.
+    """
+    temperature = usable_temperature(value)
+    if temperature is not None:
+        return temperature
+    if not preserve_legacy_value:
+        return None
+
+    try:
+        legacy_temperature = float(value)
+    except (TypeError, ValueError):
+        return None
+    return legacy_temperature if math.isfinite(legacy_temperature) else None
