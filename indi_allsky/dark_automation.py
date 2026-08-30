@@ -3326,6 +3326,11 @@ def _utc_now_text():
     return datetime.now(timezone.utc).isoformat()
 
 
+def utc_now_naive():
+    """Return UTC in the naive format used by database timestamp columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _elapsed_seconds(started_utc):
     if not started_utc:
         return 0

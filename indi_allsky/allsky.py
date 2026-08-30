@@ -1444,7 +1444,9 @@ class IndiAllSky(object):
             if task_data.get('action') == 'dark_automation':
                 if (
                         task.state == TaskQueueState.MANUAL
-                        and task.createDate > (datetime.now() - timedelta(minutes=30))
+                        and task.createDate > (
+                            dark_automation.utc_now_naive() - timedelta(minutes=30)
+                        )
                 ):
                     # A dark job may have been submitted while a native
                     # service was stopped.  Preserve it so startup can accept

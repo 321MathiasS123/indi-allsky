@@ -2479,7 +2479,9 @@ class AjaxDarkAutomationStatusView(BaseView):
 
         if (
                 task_data.get('status') == 'queued'
-                and task.createDate < (datetime.now() - timedelta(minutes=30))
+                and task.createDate < (
+                    dark_automation.utc_now_naive() - timedelta(minutes=30)
+                )
         ):
             task_data['status'] = 'failed'
             task_data['completed_utc'] = datetime.now(timezone.utc).isoformat()
