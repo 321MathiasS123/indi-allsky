@@ -296,6 +296,7 @@ def test_dark_interface_visual_system_follows_semantic_theme_tokens():
     assert '.dark-library-quick-filter--warning' in template
     assert '.dark-library-quick-filter:nth-child' not in template
     assert '--dark-filter-tone: var(--color-success);' in template
+    assert '#dark-page-content .dark-library-quick-filter[aria-pressed="true"]' in template
     assert 'border-left: 0.25rem solid var(--dark-filter-tone) !important;' in template
     assert 'border-top: 0.25rem solid var(--dark-filter-tone) !important;' not in template
     coverage_accent_css = template.split('.dark-coverage-card::before {', 1)[1].split('}', 1)[0]
