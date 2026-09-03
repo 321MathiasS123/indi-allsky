@@ -34,6 +34,8 @@ from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
 from ..lens_solver import applySolvedValuesToConfig
+from ..panorama import panoramaSourceCircleClipped
+from ..panorama import validatePanoramaMiniTimelapseRequest
 from ..dark_library import DarkInventoryFrame
 from ..dark_library import COVERAGE_ACCEPTABLE
 from ..dark_library import COVERAGE_EXACT
@@ -2737,6 +2739,7 @@ class ImageLoopCanvasView(TemplateView):
 
 class JsonImageLoopView(JsonView):
     model = IndiAllSkyDbImageTable
+    include_id = False
 
     def __init__(self, **kwargs):
         super(JsonImageLoopView, self).__init__(**kwargs)
@@ -2748,7 +2751,8 @@ class JsonImageLoopView(JsonView):
 
 
     def get_objects(self):
-        history_seconds = int(request.args.get('limit_s', self.history_seconds))
+        requested_history_seconds = int(request.args.get('limit_s', self.history_seconds))
+        history_seconds = requested_history_seconds
         self.limit = int(request.args.get('limit', self._limit))
         timestamp = int(request.args.get('timestamp', 0))
         camera_id = int(request.args['camera_id'])
@@ -2781,7 +2785,60 @@ class JsonImageLoopView(JsonView):
         if len(data['image_list']) == 0:
             data['message'] = 'No Timelapse Data'
 
+        if request.args.get('mini_preflight') == '1':
+            data['standard_preflight'] = self.getMiniTimelapsePreflight(
+                camera_id,
+                timestamp,
+                requested_history_seconds,
+            )
+
         return data
+
+
+    def getMiniTimelapsePreflight(self, camera_id, timestamp, history_seconds):
+        history_seconds = max(1, min(history_seconds, 86400))
+        end_dt = datetime.fromtimestamp(timestamp)
+        start_dt = end_dt - timedelta(seconds=history_seconds)
+
+        image_entries = self.model.query\
+            .join(self.model.camera)\
+            .filter(
+                and_(
+                    IndiAllSkyDbCameraTable.id == camera_id,
+                    self.model.exclude == sa_false(),
+                    self.model.createDate >= start_dt,
+                    self.model.createDate <= end_dt,
+                )
+            )\
+            .order_by(self.model.createDate.asc(), self.model.id.asc())\
+            .yield_per(100)
+
+        frame_count = 0
+        start_reference = None
+        end_reference = None
+        for image_entry in image_entries:
+            try:
+                image_path = Path(image_entry.getFilesystemPath())
+                if not image_path.stat().st_size:
+                    continue
+            except (OSError, ValueError):
+                continue
+
+            frame_count += 1
+            frame_reference = {
+                'timestamp' : int(image_entry.createDate.timestamp()),
+                'datetime'  : image_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            if start_reference is None:
+                start_reference = frame_reference
+            end_reference = frame_reference
+
+        return {
+            'frame_count'             : frame_count,
+            'has_enough_local_frames' : frame_count >= 2,
+            'start_reference'         : start_reference,
+            'end_reference'           : end_reference,
+        }
 
 
     def getLoopImages(self, camera_id, loop_dt, history_seconds):
@@ -2836,6 +2893,8 @@ class JsonImageLoopView(JsonView):
                 'height'    : i.height,
                 'timestamp' : int(i.createDate.timestamp()),
             }
+            if self.include_id:
+                data['id'] = i.id
 
 
             try:
@@ -3021,6 +3080,109 @@ class PanoramaLoopImgView(ImageLoopImgView):
 
 class JsonPanoramaLoopView(JsonImageLoopView):
     model = IndiAllSkyDbPanoramaImageTable
+    include_id = True
+
+
+    def get_objects(self):
+        data = super(JsonPanoramaLoopView, self).get_objects()
+
+        expected_width = int(request.args.get('source_width', 0))
+        expected_height = int(request.args.get('source_height', 0))
+        if not expected_width or not expected_height:
+            return data
+
+        requested_history_seconds = int(request.args.get('limit_s', self.history_seconds))
+        requested_history_seconds = max(1, min(requested_history_seconds, 86400))
+        timestamp = int(request.args.get('timestamp', 0))
+        camera_id = int(request.args['camera_id'])
+
+        if not timestamp:
+            timestamp = int(datetime.timestamp(self.camera_now))
+
+        # Preflight must match the exact range used by the video worker.
+        loop_dt = datetime.fromtimestamp(timestamp)
+        start_dt = loop_dt - timedelta(seconds=requested_history_seconds)
+
+        panorama_entries = self.model.query\
+            .join(self.model.camera)\
+            .filter(
+                and_(
+                    IndiAllSkyDbCameraTable.id == camera_id,
+                    self.model.exclude == sa_false(),
+                    self.model.createDate >= start_dt,
+                    self.model.createDate <= loop_dt,
+                )
+            )\
+            .order_by(self.model.createDate.asc(), self.model.id.asc())\
+            .yield_per(100)
+
+        local = not self.web_nonlocal_images or (
+            self.web_local_images_admin and self.verify_admin_network()
+        )
+
+        local_frame_count = 0
+        dimensions_match = True
+        start_reference_entry = None
+        end_reference_entry = None
+        preview_entry_ids = {entry['id'] for entry in data['image_list']}
+        available_preview_entry_ids = set()
+        for panorama_entry in panorama_entries:
+
+            dimension_mismatch = (
+                panorama_entry.width != expected_width
+                or panorama_entry.height != expected_height
+            )
+
+            try:
+                panorama_path = Path(panorama_entry.getFilesystemPath())
+                if not panorama_path.stat().st_size:
+                    continue
+
+                local_frame_count += 1
+                if dimension_mismatch:
+                    dimensions_match = False
+                    continue
+            except (OSError, ValueError):
+                continue
+
+            if panorama_entry.id in preview_entry_ids:
+                available_preview_entry_ids.add(panorama_entry.id)
+            if start_reference_entry is None:
+                start_reference_entry = panorama_entry
+            end_reference_entry = panorama_entry
+
+        data['image_list'] = [
+            entry for entry in data['image_list']
+            if entry['id'] in available_preview_entry_ids
+        ]
+
+        def get_reference(panorama_entry):
+            if panorama_entry is None:
+                return None
+            try:
+                panorama_url = panorama_entry.getUrl(
+                    s3_prefix=self.s3_prefix,
+                    local=local,
+                )
+            except (OSError, ValueError):
+                return None
+
+            return {
+                'id'        : panorama_entry.id,
+                'url'       : str(panorama_url),
+                'timestamp' : int(panorama_entry.createDate.timestamp()),
+                'datetime'  : panorama_entry.createDate.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+
+        data['panorama_preflight'] = {
+            'frame_count'             : local_frame_count,
+            'has_enough_local_frames' : local_frame_count >= 2,
+            'dimensions_match'        : dimensions_match,
+            'start_reference'         : get_reference(start_reference_entry),
+            'end_reference'           : get_reference(end_reference_entry),
+        }
+
+        return data
 
 
     def getSqmData(self, *args):
@@ -6849,6 +7011,7 @@ class MiniVideoViewerView(FormView):
         context = super(MiniVideoViewerView, self).get_context()
 
         context['youtube__enable'] = int(self.indi_allsky_config.get('YOUTUBE', {}).get('ENABLE', 0))
+        context['mini_video_delete_allowed'] = _can_save_standard_configuration()
 
         form_data = {
             'CAMERA_ID'    : self.camera.id,
@@ -6933,6 +7096,124 @@ class AjaxMiniVideoViewerView(BaseView):
             json_data['MONTH_SELECT'] = (('', 'None'),)
             json_data['video_list'] = tuple()
 
+        return jsonify(json_data)
+
+
+class AjaxMiniVideoDeleteView(BaseView):
+    methods = ['POST']
+    decorators = [login_required]
+
+
+    def dispatch_request(self):
+        if not _can_save_standard_configuration():
+            json_data = {
+                'failure-message' : 'You do not have permission to delete mini timelapses.',
+            }
+            return jsonify(json_data), 403
+
+        request_data = request.get_json(silent=True) or {}
+        try:
+            camera_id = int(request_data['CAMERA_ID'])
+            video_id = int(request_data['VIDEO_ID'])
+        except (KeyError, TypeError, ValueError):
+            json_data = {
+                'failure-message' : 'Invalid mini timelapse deletion request.',
+            }
+            return jsonify(json_data), 400
+
+        try:
+            mini_video_entry = IndiAllSkyDbMiniVideoTable.query\
+                .join(IndiAllSkyDbMiniVideoTable.camera)\
+                .filter(
+                    and_(
+                        IndiAllSkyDbMiniVideoTable.id == video_id,
+                        IndiAllSkyDbCameraTable.id == camera_id,
+                    )
+                )\
+                .one()
+        except NoResultFound:
+            json_data = {
+                'failure-message' : 'Mini timelapse not found.',
+            }
+            return jsonify(json_data), 404
+
+        mini_video_data = mini_video_entry.data if isinstance(mini_video_entry.data, dict) else {}
+        try:
+            generation_task_id = int(mini_video_data.get('generation_task_id') or 0)
+        except (TypeError, ValueError):
+            generation_task_id = 0
+        generation_task_created = str(mini_video_data.get('generation_task_created') or '')
+
+        if generation_task_id and generation_task_created:
+            active_task = IndiAllSkyDbTaskQueueTable.query\
+                .filter(IndiAllSkyDbTaskQueueTable.id == generation_task_id)\
+                .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO)\
+                .filter(
+                    IndiAllSkyDbTaskQueueTable.state.in_((
+                        TaskQueueState.QUEUED,
+                        TaskQueueState.RUNNING,
+                    ))
+                )\
+                .first()
+
+            if active_task and active_task.createDate.isoformat() == generation_task_created:
+                json_data = {
+                    'failure-message' : (
+                        'This mini timelapse is still being created. '
+                        'Try again when it is finished.'
+                    ),
+                }
+                return jsonify(json_data), 409
+
+        related_assets = {(mini_video_entry.__class__.__name__, mini_video_entry.id)}
+        if mini_video_entry.thumbnail_uuid:
+            thumbnail_id = db.session.query(IndiAllSkyDbThumbnailTable.id)\
+                .filter(IndiAllSkyDbThumbnailTable.uuid == mini_video_entry.thumbnail_uuid)\
+                .scalar()
+            if thumbnail_id:
+                related_assets.add((IndiAllSkyDbThumbnailTable.__name__, thumbnail_id))
+
+        active_upload_tasks = IndiAllSkyDbTaskQueueTable.query\
+            .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.UPLOAD)\
+            .filter(
+                IndiAllSkyDbTaskQueueTable.state.in_((
+                    TaskQueueState.MANUAL,
+                    TaskQueueState.QUEUED,
+                    TaskQueueState.RUNNING,
+                ))
+            )
+        for upload_task in active_upload_tasks:
+            upload_data = upload_task.data if isinstance(upload_task.data, dict) else {}
+            try:
+                upload_asset = (str(upload_data.get('model')), int(upload_data.get('id')))
+            except (TypeError, ValueError):
+                continue
+            if upload_asset in related_assets:
+                json_data = {
+                    'failure-message' : (
+                        'This mini timelapse is still being uploaded. '
+                        'Try again when it is finished.'
+                    ),
+                }
+                return jsonify(json_data), 409
+
+        app.logger.info('Removing mini timelapse entry: %s', mini_video_entry.filename)
+
+        try:
+            mini_video_entry.deleteAsset()
+        except OSError as e:
+            app.logger.error('Cannot remove mini timelapse: %s', str(e))
+            json_data = {
+                'failure-message' : 'Unable to remove the mini timelapse file.',
+            }
+            return jsonify(json_data), 400
+
+        db.session.delete(mini_video_entry)
+        db.session.commit()
+
+        json_data = {
+            'success-message' : 'Mini timelapse deleted.',
+        }
         return jsonify(json_data)
 
 
@@ -12709,6 +12990,26 @@ class MiniTimelapseVideoView(TimelapseVideoView):
     file_view = 'indi_allsky.mini_timelapse_video_view'
 
 
+    def get_context(self):
+        context = super(MiniTimelapseVideoView, self).get_context()
+        context['video_delete_allowed'] = False
+
+        if not context.get('video_url'):
+            return context
+
+        mini_video = self.model.query\
+            .filter(self.model.id == context['video_id'])\
+            .first()
+        if not mini_video:
+            return context
+
+        context['video_delete_allowed'] = _can_save_standard_configuration()
+        context['video_camera_id'] = mini_video.camera_id
+        context['video_source'] = (mini_video.data or {}).get('source', 'standard')
+
+        return context
+
+
 class StartrailVideoView(TimelapseVideoView):
     model = IndiAllSkyDbStarTrailsVideoTable
     page_title = 'Startrail Video'
@@ -12726,6 +13027,7 @@ class MiniTimelapseGeneratorView(TemplateView):
 
     page_title = 'Mini Timelapse'
     image_loop_view = 'indi_allsky.js_image_loop_view'
+
 
     @staticmethod
     def _getStandardVideoDimensions(image_entry, vf_scale):
@@ -12883,6 +13185,7 @@ class MiniTimelapseGeneratorView(TemplateView):
             })
 
         return panorama_enabled, panorama_data, panorama_suggestions
+
 
     def get_context(self):
         context = super(MiniTimelapseGeneratorView, self).get_context()
@@ -15953,6 +16256,7 @@ bp_allsky.add_url_rule('/ajax/videoviewer', view_func=AjaxVideoViewerView.as_vie
 
 bp_allsky.add_url_rule('/minivideoviewer', view_func=MiniVideoViewerView.as_view('mini_videoviewer_view', template_name='minivideoviewer.html'))
 bp_allsky.add_url_rule('/ajax/minivideoviewer', view_func=AjaxMiniVideoViewerView.as_view('ajax_mini_videoviewer_view'))
+bp_allsky.add_url_rule('/ajax/minivideoviewer/delete', view_func=AjaxMiniVideoDeleteView.as_view('ajax_mini_videodelete_view'))
 
 bp_allsky.add_url_rule('/view_image', view_func=TimelapseImageView.as_view('timelapse_image_view', template_name='view_image.html'))
 bp_allsky.add_url_rule('/view_panorama', view_func=PanoramaImageView.as_view('panorama_image_view', template_name='view_image.html'))
