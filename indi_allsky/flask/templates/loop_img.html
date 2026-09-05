@@ -41,25 +41,23 @@ async function loop() {
     }
 
     // prevent concurrent updates to list
-    var image_list_copy = JSON.parse(JSON.stringify(json_data['image_list']));
-
-    var playback_list = image_list_copy.slice().reverse();
+    var image_list_copy = json_data['image_list'].slice().reverse();
     if (rock) {
-        playback_list = image_list_copy.concat(playback_list);
+        image_list_copy = json_data['image_list'].concat(image_list_copy);
     }
 
     // Keep at most four frames loading or decoded ahead of playback.
     var buffer = [];
     var next_frame = 0;
-    while (next_frame < Math.min(4, playback_list.length)) {
-        buffer.push(loadFrame(playback_list[next_frame++], signal));
+    while (next_frame < Math.min(4, image_list_copy.length)) {
+        buffer.push(loadFrame(image_list_copy[next_frame++], signal));
     }
 
     while (buffer.length && !signal.aborted) {
         var img = await buffer.shift();
         if (signal.aborted) return;
-        if (next_frame < playback_list.length) {
-            buffer.push(loadFrame(playback_list[next_frame++], signal));
+        if (next_frame < image_list_copy.length) {
+            buffer.push(loadFrame(image_list_copy[next_frame++], signal));
         }
         if (!img) {
             continue;
@@ -84,7 +82,7 @@ function loadFrame(entry, signal) {
     return new Promise(function(resolve) {
         var img = new Image();
         var settled = false;
-        var timeout = setTimeout(function() { finish(null); }, 15000);
+        var timeout = setTimeout(cancel, 15000);
 
         function finish(frame) {
             if (settled) {
@@ -110,12 +108,12 @@ function loadFrame(entry, signal) {
 
         img.onload = function() {
             if (img.decode) {
-                img.decode().then(function() { finish(img); }, function() { finish(null); });
+                img.decode().then(function() { finish(img); }, cancel);
             } else {
                 finish(img);
             }
         };
-        img.onerror = function() { finish(null); };
+        img.onerror = cancel;
         img.src = entry["url"];
     });
 }
