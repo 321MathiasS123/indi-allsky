@@ -12,7 +12,7 @@ from indi_allsky.temperature import database_temperature
 from indi_allsky.temperature import master_capture_temperature
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _legacy_dark_module(capture_class):

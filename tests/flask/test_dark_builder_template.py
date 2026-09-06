@@ -6,7 +6,7 @@ from jinja2 import DictLoader
 from jinja2 import Environment
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPOSITORY_ROOT.joinpath(
     'indi_allsky',
     'flask',
