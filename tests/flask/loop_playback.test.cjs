@@ -1,4 +1,5 @@
-// Run with: node --test tests/loop_playback.test.cjs
+// Also run by test_loop_playback.py as part of the pytest suite.
+// Run directly with: node --test tests/flask/loop_playback.test.cjs
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -101,7 +102,7 @@ function player(template, frames, options = {}) {
         $, localStorage: { setItem() {} },
     });
     const source = fs.readFileSync(path.join(__dirname,
-        '../indi_allsky/flask/templates', template), 'utf8');
+        '../../indi_allsky/flask/templates', template), 'utf8');
     const script = source.match(/<script type="text\/javascript">([\s\S]*?)<\/script>/)[1]
         .replace(/\{\{[\s\S]*?\}\}/g, '0');
     vm.runInContext(script, context, { filename: template });

@@ -2839,6 +2839,7 @@ class ImageLoopCanvasView(TemplateView):
         context = super(ImageLoopCanvasView, self).get_context()
 
         context['image_loop_view'] = self.image_loop_view
+        context['panorama__enable'] = bool(self.indi_allsky_config.get('FISH2PANO', {}).get('ENABLE', False))
 
         context['timestamp'] = int(request.args.get('timestamp', 0))
 
@@ -3170,6 +3171,7 @@ class ImageLoopImgView(TemplateView):
         context = super(ImageLoopImgView, self).get_context()
 
         context['image_loop_view'] = self.image_loop_view
+        context['panorama__enable'] = bool(self.indi_allsky_config.get('FISH2PANO', {}).get('ENABLE', False))
 
         context['timestamp'] = int(request.args.get('timestamp', 0))
 
