@@ -13,6 +13,7 @@ from .fitting import FitEngine
 from .fitting import SolveContext
 from .orientation import recoverOrientation
 from .projection import projectToPixels
+from .calibration import calibrate, pipelineSignature
 
 logger = logging.getLogger('indi_allsky')
 
@@ -117,13 +118,19 @@ class IndiAllSkyLensSolver(object):
             self._fit_s = engine.fit_s
 
     def solve(self, image_file, latitude, longitude, obstime_unix, initial_values,
-              lens_altitude=90.0, pointing_azimuth=0.0):
+              lens_altitude=90.0, pointing_azimuth=0.0, sensor_shape=None, binning=1):
         """Fit overlay geometry, recovering camera pointing when needed.
         initial_values/values use the VirtualSky form-field keys; every
         return is a full success or a structured failure, always with a
         timing dict.
         """
         t_start = time.monotonic()
+        learn = initial_values.get('CALIBRATION_ENABLED', False)
+        if learn and lens_altitude is None:
+            lens_altitude = 90.0
+        self._detector.use_sky_hints = learn
+        self._detector.sensor_shape = sensor_shape
+        self._detector.binning = binning
         timing = {
             'decode_s': 0.0, 'detect_s': 0.0, 'catalog_s': 0.0, 'coarse_s': 0.0,
             'fit_s': 0.0, 'total_s': 0.0, 'residual_evals': 0, 'predict_calls': 0,
@@ -224,9 +231,19 @@ class IndiAllSkyLensSolver(object):
         catalog = self.loadCatalog()
         timing['catalog_s'] = round(time.monotonic() - t0, 3)
 
+        preferred = self._detector.preferredDetections(detections, work_img.shape) if learn else detections[:0]
+        seed = initial_params
+        if len(preferred) >= 60:
+            roi_fit = self.fitParameters(preferred, catalog, latitude, longitude, obstime_unix,
+                initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
+            if roi_fit['success'] and not roi_fit.get('partial'):
+                seed = roi_fit['params']
         fit = self.fitParameters(
             detections, catalog, latitude, longitude, obstime_unix,
-            initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
+            seed, work_width, work_height, lens_altitude, pointing_azimuth)
+        if seed is not initial_params and (not fit['success'] or fit.get('partial')):
+            fit = self.fitParameters(detections, catalog, latitude, longitude, obstime_unix,
+                initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
 
         # Preserve the existing zenith/small-tilt calibration whenever it works.
         # A failed or partial fit may instead need a different camera pointing.
@@ -234,8 +251,17 @@ class IndiAllSkyLensSolver(object):
         if ((not fit['success'] or fit.get('partial'))
                 and fit.get('reason') != 'catalog_not_validated'):
             t0 = time.monotonic()
-            recovered = recoverOrientation(detections, catalog, latitude, longitude,
-                obstime_unix, initial_params, work_width, work_height)
+            if len(preferred) >= 60:
+                # Prefer likely sky in triangle seeding; retain every detection
+                # for the final fit and fall back to the original order if needed.
+                preferred_xy = {tuple(row[:2]) for row in preferred}
+                other = numpy.array([row for row in detections if tuple(row[:2]) not in preferred_xy])
+                hinted = numpy.vstack([preferred, other]) if len(other) else preferred
+                recovered = recoverOrientation(hinted, catalog, latitude, longitude,
+                    obstime_unix, initial_params, work_width, work_height)
+            if recovered is None:
+                recovered = recoverOrientation(detections, catalog, latitude, longitude,
+                    obstime_unix, initial_params, work_width, work_height)
             self._fit_s += time.monotonic() - t0
             if recovered is not None:
                 fit = recovered
@@ -312,6 +338,35 @@ class IndiAllSkyLensSolver(object):
         elif recovered is not None:
             message += ' (camera pointing recovered; latitude/longitude offsets reset to zero)'
 
+        calibration = None
+        if learn:
+            # Learn against the rounded geometry actually shown and saved by the
+            # form. Otherwise rounding alone invalidates the displacement field.
+            geometry_values = [values[k] for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
+                'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y')]
+            geometry_values += [values.get('LENS_ALTITUDE', lens_altitude),
+                                values.get('POINTING_AZIMUTH', pointing_azimuth)]
+            work_params = numpy.array(geometry_values[:6], dtype=float)
+            work_params[3:] /= scale
+            t0 = time.monotonic()
+            correction, why = calibrate(detections, catalog, latitude, longitude, obstime_unix,
+                work_params, work_width, work_height, *geometry_values[6:],
+                self.buildExclusionMask(work_img.shape)) if not fit['partial'] else (None,
+                    'A complete alignment is required before learning distortion.')
+            if correction is not None:
+                calibration, stats = correction
+                radius_native = geometry_values[3]/2
+                summary = ('Validation: {0} unused stars, RMS {1:.2f} → {2:.2f} px; '
+                           '{3:.0%} of unmasked sky covered.').format(stats['validation'],
+                    stats['before']*radius_native, stats['after']*radius_native, stats['coverage'])
+                calibration.update(geometry=geometry_values, image_size=[native_width, native_height],
+                    pipeline=pipelineSignature(self.config), summary=summary,
+                    context=[latitude, longitude, 0], camera_uuid='')
+                message += '. ' + summary
+            else:
+                message += '. Original mapping retained: ' + why
+            timing['calibration_s'] = round(time.monotonic()-t0, 3)
+
         return finish({
             'success': True,
             'values': values,
@@ -319,4 +374,5 @@ class IndiAllSkyLensSolver(object):
             'quality': quality,
             'partial': bool(fit['partial']),
             'message': message,
+            **({'calibration': calibration} if learn else {}),
         })

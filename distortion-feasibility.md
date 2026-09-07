@@ -4,9 +4,54 @@
 sensors and cropped image circles. Adding one or two radial terms to the
 current equisolid projection is useful, but is not a universal solution.**
 
-This local experiment is isolated on `experiment/virtualsky-distortion-feasibility`,
+This work is isolated on `experiment/virtualsky-distortion-feasibility`,
 based on tilt commit `63084b5f249dbb014a8ab73763a2cdf4d1a62591`.
-It changes no application code, configuration, production branch, or open PR.
+The original feasibility study below is retained. An optional implementation
+has since been added on this branch; the production branch and open PR remain unchanged.
+
+## Optional implementation
+
+In VirtualSky's expanded settings, enable **Use learned lens correction**, then
+Solve a clear image. Review the validation result and toggle the correction to
+compare the overlay before saving. It is disabled by default and changes only
+the overlay's coordinates; camera images are never resampled. Save stores both
+the model and the enabled/disabled preference. The expandable calibration
+details show all stored model values.
+
+After a reliable base solve, the implementation fits a quadratic or cubic 2-D
+displacement field to catalogue/image correspondences. This allows asymmetric
+correction as well as radial effects, without choosing a camera or lens brand.
+The detection mask remains an exclusion. An explicitly configured SQM/star ROI
+is preferred for seeding when it contains enough detections; the subsequent
+fit uses stars throughout the permitted image. Mask and ROI transforms account
+for binning, rotation, flips, crop, scaling and image borders. With correction
+enabled, excluded lights do not set the detection threshold for usable sky.
+
+The correction requires at least 60 reliable pairs, including at least 15
+stars withheld from correction fitting. Training stars must cover at least
+75% of sampled unmasked sky. Reacquisition reserves both the identities and
+observations of validation stars. Acceptance requires an RMS improvement of
+at least 20%, an absolute improvement, and no worsening of the 90th-percentile
+error. A simpler correction is retained unless added complexity improves
+validation further. The base alignment itself uses the existing solver.
+
+Correction fades smoothly outside its supported rectangle and front-hemisphere
+circle. Displacement and gradient checks reject excessive or unstable mappings;
+the JavaScript inverse uses the same model, including at export resolution.
+Models are bound to camera UUID, image dimensions, base alignment, location,
+effective time offset and processing geometry. Changed geometry requires a new
+solve. Unreliable calibration retains the original mapping with an explanation.
+
+The saved midnight photograph was tested locally: 58 stars withheld from the
+correction fit improved from 7.11 px to 3.53 px RMS, with 81% sampled sky coverage.
+This is one installation's result, not a guarantee for other lenses. Automated
+tests cover independent synthetic distortions, cropped/portrait sensors, a
+central patch, noise, degenerate matches, malformed settings, ROI transforms,
+Python/JavaScript agreement, inverse projection and persistence. A local browser
+preview verified Solve, the comparison toggle, Save/reload, and a phone viewport.
+
+The initial solve still needs to succeed. This does not add a narrow-field star
+catalogue or extend the existing front-hemisphere projection beyond 180 degrees.
 
 The reproducible study is `tests/lens_solver/test_distortion_feasibility.py`;
 raw measurements are in `distortion-feasibility-results.json`. Its tests are

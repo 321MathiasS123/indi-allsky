@@ -6,6 +6,7 @@
 <meta charset="UTF-8">
 <script src="{{ url_for('indi_allsky.static', filename='virtualsky/stuquery.min.js') }}"></script>
 <script src="{{ url_for('indi_allsky.static', filename='virtualsky/virtualsky.min.js') }}" type="text/javascript"></script>
+<script src="{{ url_for('indi_allsky.static', filename='js/virtualsky-calibration.js') }}"></script>
 
 <style>
 /* Size groups by available space, including when the navigation sidebar is open. */
@@ -77,6 +78,8 @@ var time_offset = {{ time_offset }};
 var planetarium;
 var redraw_planetarium = false;
 var last_image_timestamp = 0;
+var lensCalibration = {{ lens_calibration | default(none) | tojson }};
+var calibrationCameraUuid = {{ calibration_camera_uuid | default('') | tojson }};
 
 
 function init() {
@@ -267,6 +270,17 @@ async function loop() {
                 width: image_circle_diameter * image_scale,
                 height: image_circle_diameter * image_scale,
             });
+            if ($('#CALIBRATION_ENABLED').prop('checked') && lensCalibration) {
+                if (VirtualSkyCalibration.compatible(lensCalibration, calibrationGeometry(),
+                        [image_width, image_height], [camera_latitude, camera_longitude, time_offset],
+                        calibrationCameraUuid)) {
+                    VirtualSkyCalibration.install(planetarium, lensCalibration);
+                    planetarium.draw();
+                    updateCalibrationStatus();
+                } else {
+                    $('#calibration_summary').text('Calibration does not match this camera, image size or alignment. Solve again.');
+                }
+            }
 
 
             redraw_planetarium = false;
@@ -347,7 +361,7 @@ function loadJS(url, data, onDone, onError) {
                     <div id="virtualsky-hint" class="tw:alert tw:alert-info tw:text-xs tw:rounded-[var(--radius-box)]">
                         <i class="tw:icon-[lucide--info] tw:w-4 tw:h-4" aria-hidden="true"></i>
                         <span><strong>Camera location and image time must be correct</strong> for accurate sky alignment.
-                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all eight values. You can also edit them under Config → Location.{% endif %}
+                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all eight geometry values and the optional lens calibration shown below. You can also edit geometry under Config → Location.{% endif %}
                         </span>
                     </div>
 
@@ -385,6 +399,20 @@ function loadJS(url, data, onDone, onError) {
                         </fieldset>
                     </div>
 
+                    <fieldset class="virtualsky-group">
+                        <legend>Lens calibration (experimental)</legend>
+                        <label class="virtualsky-layer" for="CALIBRATION_ENABLED">
+                            <input id="CALIBRATION_ENABLED" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm"
+                                   {{ 'checked' if lens_calibration_enabled | default(false) else '' }}>
+                            Use learned lens correction
+                        </label>
+                        <p>Enable before Solve to learn from matched stars. Uses the detection mask and prefers your star-detection region.
+                            Toggle to compare; only the overlay changes. Save remembers your choice.</p>
+                        <p id="calibration_summary" role="status" aria-live="polite"></p>
+                        <details><summary>Calibration values included in Save</summary>
+                            <pre id="calibration_details" style="max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+                        </details>
+                    </fieldset>
                     <fieldset class="virtualsky-group">
                         <legend>Display only</legend>
                         <div class="virtualsky-display">
@@ -608,6 +636,7 @@ $( document ).ready(function() {
         goFullscreen(this);
     });
 
+    updateCalibrationStatus();
     init();
 });
 
@@ -786,6 +815,29 @@ $('#download_map').on('click', function(e) {
 const SOLVE_FIELDS = ['AZIMUTH_ANGLE', 'LATITUDE_OFFSET', 'LONGITUDE_OFFSET',
                       'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y'];
 
+function calibrationGeometry() {
+    return [...SOLVE_FIELDS.map(f => Number($('#' + f).val())),
+            camera_altitude, Number($('#POINTING_AZIMUTH').val())];
+}
+
+function updateCalibrationStatus() {
+    $('#calibration_summary').text(lensCalibration
+        ? ( ($('#CALIBRATION_ENABLED').prop('checked') ? 'Correction enabled. ' : 'Correction off. ') + lensCalibration.summary )
+        : 'No learned correction. Enable it and Solve a clear image to try calibration.');
+    $('#calibration_details').text(lensCalibration ? JSON.stringify(lensCalibration, null, 2) : 'None');
+}
+
+$('#CALIBRATION_ENABLED').on('change', function() {
+    updateCalibrationStatus();
+    forceRedrawPlanetarium();
+});
+$(SOLVE_FIELDS.map(f => '#' + f).concat('#POINTING_AZIMUTH').join(', ')).on('change', function() {
+    // A residual field belongs to one base alignment, not arbitrary new settings.
+    lensCalibration = null;
+    $('#CALIBRATION_ENABLED').prop('checked', false);
+    updateCalibrationStatus();
+});
+
 function solverPayload(action) {
     var payload = {'action': action, 'camera_id': camera_id};
     payload['POINTING_AZIMUTH'] = $('#POINTING_AZIMUTH').val();
@@ -793,6 +845,8 @@ function solverPayload(action) {
     SOLVE_FIELDS.forEach(function(f) {
         payload[f] = $('#' + f).val();
     });
+    payload.CALIBRATION_ENABLED = Boolean($('#CALIBRATION_ENABLED').prop('checked'));
+    if (action === 'save') payload.CALIBRATION = lensCalibration;
     return payload;
 }
 
@@ -865,6 +919,9 @@ $('#lens_solve').on('click', function() {
                     camera_altitude = rdata['values']['LENS_ALTITUDE'];
                     $('#lens_altitude').val(camera_altitude);
                 }
+                lensCalibration = rdata.calibration || null;
+                if (!lensCalibration) $('#CALIBRATION_ENABLED').prop('checked', false);
+                updateCalibrationStatus();
                 forceRedrawPlanetarium();
                 setSolverMessage(rdata['message'], 'success');
                 setSaveButtonFailed(false);

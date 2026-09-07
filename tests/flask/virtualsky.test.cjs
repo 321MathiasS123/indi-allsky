@@ -90,7 +90,8 @@ function calibrationPage() {
     $('#lens_save').prop('disabled', /\sdisabled(?:\s|=|>)/.test(html.match(/<button id="lens_save"[^>]*>/)[0]));
     $('#LATITUDE_OFFSET').val('43.49');
     $('#POINTING_AZIMUTH').val('123');
-    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, last_image_timestamp: 1770000000,
+    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, lensCalibration: null,
+        last_image_timestamp: 1770000000,
         forceRedrawPlanetarium() {}});
     vm.runInContext(html.slice(html.indexOf('const SOLVE_FIELDS')).split('</script>')[0], context);
     return {$, requests, context};
