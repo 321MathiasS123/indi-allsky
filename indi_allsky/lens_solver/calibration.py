@@ -45,7 +45,7 @@ def displacement(xy, model):
     return (_basis(xy) @ np.asarray(model['coefficients'])) * weight[:, None]
 
 
-def _safeMapping(model):
+def _mappingBounds(model):
     # Bound the displacement gradient, including the taper. A contraction
     # makes the inverse iteration reliable and excludes folding of the map.
     bounds = np.asarray(model['bounds'])
@@ -55,8 +55,12 @@ def _safeMapping(model):
     delta = displacement(xy, model)
     jac = np.stack([(displacement(xy+step, model)-displacement(xy-step, model))/2e-5
                     for step in ([1e-5, 0], [0, 1e-5])], axis=-1)
-    return (np.max(np.linalg.norm(delta, axis=1)) <= 0.06
-            and np.max(np.linalg.norm(jac, axis=(1, 2))) < 0.45)
+    return np.max(np.linalg.norm(delta, axis=1)), np.max(np.linalg.norm(jac, axis=(1, 2)))
+
+
+def _safeMapping(model):
+    distance, gradient = _mappingBounds(model)
+    return distance <= 0.06 and gradient < 0.45
 
 
 def validateCalibration(model):
@@ -146,6 +150,13 @@ def fitCorrection(predicted, detected, expected, radius):
             coeff = np.zeros((10, 2))
             coeff[:count] = fit.x.reshape(count, 2)
             model = dict(version=1, coefficients=coeff.tolist(), bounds=[*lo, *hi])
+            if fit.success:
+                # A useful fit can just exceed the limit where the boundary
+                # taper fades it out. Reduce its strength, then validate that
+                # actual correction; never relax the displacement/folding limits.
+                distance, gradient = _mappingBounds(model)
+                strength = min(1., 0.99*0.06/max(distance, 1e-12), 0.99*0.45/max(gradient, 1e-12))
+                model['coefficients'] = (coeff*strength).tolist()
             if not fit.success or not _safeMapping(model):
                 reason = 'The proposed correction is too large or unstable.'
                 break

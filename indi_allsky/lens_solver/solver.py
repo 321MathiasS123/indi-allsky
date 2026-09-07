@@ -384,5 +384,6 @@ class IndiAllSkyLensSolver(object):
             'quality': quality,
             'partial': bool(fit['partial']),
             'message': message,
-            **({'calibration': calibration} if learn else {}),
+            **({'calibration': calibration,
+                'calibration_message': calibration['summary'] if calibration else why} if learn else {}),
         })

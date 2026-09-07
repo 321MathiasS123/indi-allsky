@@ -79,6 +79,7 @@ var planetarium;
 var redraw_planetarium = false;
 var last_image_timestamp = 0;
 var lensCalibration = {{ lens_calibration | default(none) | tojson }};
+var calibrationMessage = '';
 var calibrationCameraUuid = {{ calibration_camera_uuid | default('') | tojson }};
 
 
@@ -430,7 +431,8 @@ function loadJS(url, data, onDone, onError) {
                             Use learned lens correction
                         </label>
                         <p>Enable before Solve to learn from matched stars. Uses the detection mask and prefers your star-detection region.
-                            Toggle to compare; only the overlay changes. Save remembers your choice.</p>
+                            Toggle to compare; only the overlay changes. Save remembers your choice.
+                            If no correction passes validation, the reason is shown below.</p>
                         <p id="calibration_summary" role="status" aria-live="polite"></p>
                         <details><summary>Calibration values included in Save</summary>
                             <pre id="calibration_details" style="max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
@@ -857,7 +859,7 @@ function calibrationGeometry() {
 function updateCalibrationStatus() {
     $('#calibration_summary').text(lensCalibration
         ? ( ($('#CALIBRATION_ENABLED').prop('checked') ? 'Correction enabled. ' : 'Correction off. ') + lensCalibration.summary )
-        : 'No learned correction. Enable it and Solve a clear image to try calibration.');
+        : 'No correction applied. ' + (calibrationMessage || 'Enable it and Solve a clear image to try calibration.'));
     $('#calibration_details').text(lensCalibration ? JSON.stringify(lensCalibration, null, 2) : 'None');
 }
 
@@ -868,7 +870,7 @@ $('#CALIBRATION_ENABLED').on('change', function() {
 $(SOLVE_FIELDS.map(f => '#' + f).concat('#POINTING_AZIMUTH').join(', ')).on('change', function() {
     // A residual field belongs to one base alignment, not arbitrary new settings.
     lensCalibration = null;
-    $('#CALIBRATION_ENABLED').prop('checked', false);
+    calibrationMessage = 'Alignment changed. Solve again to learn a correction.';
     updateCalibrationStatus();
 });
 
@@ -954,7 +956,7 @@ $('#lens_solve').on('click', function() {
                     $('#lens_altitude').val(camera_altitude);
                 }
                 lensCalibration = rdata.calibration || null;
-                if (!lensCalibration) $('#CALIBRATION_ENABLED').prop('checked', false);
+                calibrationMessage = rdata.calibration_message || '';
                 updateCalibrationStatus();
                 forceRedrawPlanetarium();
                 setSolverMessage(rdata['message'], 'success');
