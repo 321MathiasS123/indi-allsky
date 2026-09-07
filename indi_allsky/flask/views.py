@@ -8127,9 +8127,9 @@ class AjaxLensSolverView(BaseView):
             hints = {}
             if values.get('CALIBRATION_ENABLED'):
                 binning = image_entry.binmode or 1
+                hints['binning'] = binning
                 if self.camera.width and self.camera.height:
-                    hints = {'sensor_shape': (self.camera.height // binning, self.camera.width // binning),
-                             'binning': binning}
+                    hints['sensor_shape'] = (self.camera.height // binning, self.camera.width // binning)
             result = solver.solve(
                 image_file, latitude, longitude, obstime_unix, values,
                 lens_altitude=values.get('LENS_ALTITUDE', self.camera.alt),
@@ -14942,4 +14942,3 @@ def manifest():
     response = jsonify(manifest_data)
     response.headers['Content-Type'] = 'application/manifest+json'
     return response
-

@@ -15,9 +15,8 @@ SOLVER_REQUEST_FIELDS = (
 
 
 def parseSolverRequestValues(data, for_save=False):
-    """Validate and coerce the six solver form values from request JSON.
-    Returns (values, None) or (None, error); only the six known keys are
-    ever passed through, plus optional camera pointing angles.
+    """Validate geometry and optional lens calibration from request JSON.
+    Returns (values, None) or (None, error); unknown keys are discarded.
     """
     values = {}
     for key, cast, vmin, vmax in SOLVER_REQUEST_FIELDS + (

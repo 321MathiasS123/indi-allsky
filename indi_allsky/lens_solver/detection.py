@@ -69,10 +69,12 @@ class StarDetector(object):
         processor.flip_h()
         if self.config.get('IMAGE_CROP_IMAGE_CIRCLE') or self.config.get('IMAGE_CROP_ROI'):
             processor.crop_image()
-        if self.config.get('IMAGE_SCALE') and self.config['IMAGE_SCALE'] != 100:
-            processor.scale_image()
-        if self.use_sky_hints:
-            processor.add_border()
+        # Focus frames skip scale and borders in the image pipeline too.
+        if not (self.use_sky_hints and self.config.get('FOCUS_MODE')):
+            if self.config.get('IMAGE_SCALE') and self.config['IMAGE_SCALE'] != 100:
+                processor.scale_image()
+            if self.use_sky_hints:
+                processor.add_border()
         height, width = image_shape[:2]
         if processor.image.shape != (height, width):
             return cv2.resize(processor.image, (width, height))
@@ -90,11 +92,13 @@ class StarDetector(object):
             if user_mask is not None:
                 # masks are authored in sensor orientation; apply the same
                 # transforms the image pipeline applies to captured frames
-                # (mirrors BaseView._load_detection_mask, binning 1)
                 binning = 1
-                if self.use_sky_hints and self.sensor_shape:
+                if self.use_sky_hints:
                     binning = self.binning
-                    user_mask = cv2.resize(user_mask, self.sensor_shape[::-1])
+                    # Older camera records may lack dimensions. Detection masks
+                    # are authored at full sensor resolution, before binning.
+                    shape = self.sensor_shape or tuple(max(1, n // binning) for n in user_mask.shape)
+                    user_mask = cv2.resize(user_mask, shape[::-1])
                 user_mask = self._transformMask(user_mask, image_shape, binning)
 
                 # binarize AFTER resize

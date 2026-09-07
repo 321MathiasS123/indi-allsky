@@ -60,6 +60,41 @@ def test_correct_mapping_is_retained_when_no_improvement_is_needed():
     assert result is None
 
 
+@pytest.mark.parametrize('family,fov', [
+    (family, fov) for family in ('equisolid', 'equidistant', 'stereographic', 'orthographic')
+    for fov in (60, 120, 180)
+] + [('rectilinear', fov) for fov in (30, 60, 90, 120)])
+def test_lens_families_improve_unseen_stars_or_retain_original_mapping(family, fov):
+    from tests.lens_solver.test_distortion_feasibility import cap, angles, curve
+
+    theta, direction = angles(cap(fov, 5000, 91))
+    radius = np.sin(theta/2)/np.sin(np.pi/4)
+    actual_radius = curve(theta, family)
+    # Absorb the best common scale into the initial equisolid alignment. The
+    # optional correction must handle the residual, not assume a physical lens.
+    actual_radius *= np.dot(radius, radius)/np.dot(radius, actual_radius)
+    predicted = direction*radius[:, None]
+    actual = direction*actual_radius[:, None]
+    extent = np.sin(np.radians(fov/4))/np.sin(np.pi/4)
+    keep = (np.abs(actual[:, 1]) < extent*.65) & (actual[:, 0] > -extent*.8)
+    predicted, actual = predicted[keep], actual[keep]  # oblong, off-centre sensor
+    result, reason = fitCorrection(predicted[:350], actual[:350], predicted[350:], .025)
+    if (family == 'equidistant' or (family in ('stereographic', 'orthographic') and fov <= 120)
+            or (family == 'rectilinear' and fov == 60)):
+        assert result is not None, reason
+    if result is None:
+        assert reason  # strong mismatch or too little support must remain usable
+        return
+    model, _ = result
+    before = np.linalg.norm(actual[350:]-predicted[350:], axis=1)
+    after = np.linalg.norm(actual[350:]-predicted[350:]-displacement(predicted[350:], model), axis=1)
+    assert np.sqrt(np.mean(after**2)) < np.sqrt(np.mean(before**2))*.8
+    assert np.percentile(after, 90) <= np.percentile(before, 90)
+    saved = saved_model()
+    saved.update(model)
+    assert validateCalibration(saved)
+
+
 def test_useful_correction_is_attenuated_to_keep_boundary_taper_safe():
     source = np.array(np.meshgrid(np.linspace(-.9, .9, 13), np.linspace(-.9, .9, 13))).reshape(2, -1).T
     source = source[np.linalg.norm(source, axis=1) < .92]
