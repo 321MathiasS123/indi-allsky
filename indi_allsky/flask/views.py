@@ -676,6 +676,18 @@ class VirtualSkyView(TemplateView):
         context['lens_calibration'] = self.camera.data.get('vs_calibration')
         context['lens_calibration_enabled'] = self.camera.data.get('vs_calibration_enabled', False)
         context['calibration_camera_uuid'] = getattr(self.camera, 'uuid', '')
+        mask = self.indi_allsky_config.get('IMAGE_CIRCLE_MASK', {})
+        context['overlay_image_mask'] = None
+        if self.camera.local and mask.get('ENABLE') and mask.get('OPACITY', 100) == 100 and not mask.get('OUTLINE'):
+            # The image mask is applied after rotation/flipping/cropping, before
+            # scaling and borders. Detection masks/ROIs are not display masks.
+            focus_mode = self.indi_allsky_config.get('FOCUS_MODE', False)
+            context['overlay_image_mask'] = [mask.get('DIAMETER', 3000),
+                self.indi_allsky_config.get('LENS_OFFSET_X', 0),
+                self.indi_allsky_config.get('LENS_OFFSET_Y', 0),
+                100 if focus_mode else self.indi_allsky_config.get('IMAGE_SCALE', 100),
+                *[0 if focus_mode else self.indi_allsky_config.get('IMAGE_BORDER', {}).get(k, 0)
+                  for k in ('TOP', 'RIGHT', 'BOTTOM', 'LEFT')]]
 
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000
@@ -3014,6 +3026,8 @@ class JsonImageLoopView(JsonView):
             }
             if self.include_id:
                 data['id'] = i.id
+            if request.args.get('virtualsky') == '1':
+                data['binmode'] = getattr(i, 'binmode', None)
 
 
             try:

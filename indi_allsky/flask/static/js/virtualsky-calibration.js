@@ -89,7 +89,44 @@
             return undefined;
         };
     }
-    const api = {delta, compatible, install};
+    function maskImage(sky, mask, size, binning, geometry) {
+        if (sky.unmaskedDraw) sky.drawImmediate = sky.unmaskedDraw;
+        if (!Array.isArray(mask) || mask.length !== 8 || !mask.every(Number.isFinite)
+            || !size.every(n => Number.isFinite(n) && n > 0)
+            || !geometry.every(Number.isFinite) || geometry[0] <= 0
+            || !Number.isInteger(binning) || binning <= 0 || mask[0] <= 0 || mask[3] <= 0) return;
+        const [diameter, ox, oy, percent, top, right, bottom, left] = mask;
+        const scale = percent/100, width = size[0]-left-right, height = size[1]-top-bottom;
+        if (width <= 0 || height <= 0 || [top, right, bottom, left].some(n => n < 0)) return;
+        // Circle masking happens in the cropped image, before scale and borders.
+        // Work in photo coordinates, independently of the solved optical axis.
+        const cx = left+width/2+Math.trunc(ox/binning)*scale;
+        const cy = top+height/2-Math.trunc(oy/binning)*scale;
+        const radius = Math.trunc(diameter/(2*binning))*scale;
+        if (radius <= 0 || ![cx, cy, radius].every(Number.isFinite)) return;
+        const reference = geometry[0]/2;
+        const x = (cx-size[0]/2-geometry[1])/reference;
+        const y = (cy-size[1]/2+geometry[2])/reference;
+        const r = radius/reference;
+        const draw = sky.drawImmediate;
+        sky.unmaskedDraw = draw;
+        // Clip every draw, including refreshes and full-resolution downloads.
+        // Neither the projection nor the learned correction is changed.
+        sky.drawImmediate = function(...args) {
+            const c = this.ctx;
+            if (!c || this.tall <= 0 || this.wide <= 0) return draw.apply(this, args);
+            // Clear outside the new clip too, e.g. after an alignment edit.
+            c.clearRect(0, 0, this.wide, this.tall);
+            c.save();
+            c.beginPath();
+            c.arc(this.wide/2+x*this.tall/2, this.tall/2+y*this.tall/2,
+                r*this.tall/2, 0, 2*Math.PI);
+            c.clip();
+            try { return draw.apply(this, args); }
+            finally { c.restore(); }
+        };
+    }
+    const api = {delta, compatible, install, maskImage};
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.VirtualSkyCalibration = api;
 })(typeof window !== 'undefined' ? window : globalThis);
