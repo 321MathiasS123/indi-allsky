@@ -54,7 +54,7 @@ for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
         assert.equal(sky.xy2radec(-100, -100), undefined);
     });
 
-    test(`${asset}: cardinal labels follow the visible geographic horizon`, () => {
+    test(`${asset}: cardinal labels follow the horizon or stay at the lens rim`, () => {
         const sky = makeSky({fisheye_altitude: 54, fisheye_azimuth: 0}, asset);
         const labels = [];
         sky.ctx = {beginPath() {}, fill() {}, fillText: (...args) => labels.push(args),
@@ -63,10 +63,30 @@ for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
         sky.getPhrase = value => value;
         sky.drawCardinalPoints();
         assert.ok(labels.some(([label]) => label === 'N'));
-        assert.ok(!labels.some(([label]) => label === 'S'));
+        assert.equal(labels.length, 4);
         const north = labels.find(([label]) => label === 'N');
         const p = sky.azel2xy(0, 0, 1000, 1000);
         close(north[2], p.y);
+    });
+
+    test(`${asset}: all direction labels survive slight tilt, arbitrary roll and small screens`, () => {
+        for (const size of [240, 1000, 2211]) for (const heading of [0, 177.04, 270]) {
+            for (const rotation of [-3, 0, 37, 359.6]) {
+                const sky = makeSky({width: size, height: size, fisheye_altitude: 87.42,
+                    fisheye_azimuth: heading, az: 180+rotation}, asset);
+                const labels = [];
+                sky.ctx = {beginPath() {}, fill() {}, fillText: (...args) => labels.push(args),
+                    measureText: () => ({width: 10})};
+                sky.fontsize = () => 10;
+                sky.getPhrase = value => value;
+                sky.drawCardinalPoints();
+                assert.equal(labels.length, 4);
+                for (const [, x, y] of labels) {
+                    assert.ok(x >= 0 && x+10 <= size && y >= 10 && y <= size);
+                    assert.ok(Math.hypot(x+5-size/2, y-size/2) <= size/2-9.99);
+                }
+            }
+        }
     });
 }
 
@@ -90,7 +110,8 @@ function calibrationPage() {
     $('#lens_save').prop('disabled', /\sdisabled(?:\s|=|>)/.test(html.match(/<button id="lens_save"[^>]*>/)[0]));
     $('#LATITUDE_OFFSET').val('43.49');
     $('#POINTING_AZIMUTH').val('123');
-    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, last_image_timestamp: 1770000000,
+    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, lensCalibration: null,
+        last_image_timestamp: 1770000000,
         forceRedrawPlanetarium() {}});
     vm.runInContext(html.slice(html.indexOf('const SOLVE_FIELDS')).split('</script>')[0], context);
     return {$, requests, context};

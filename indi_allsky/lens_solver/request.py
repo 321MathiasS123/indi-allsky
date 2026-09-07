@@ -1,5 +1,7 @@
 import math
 
+from .calibration import validateCalibration
+
 
 # (key, cast, min, max) -- solver input limits, not manual save limits.
 SOLVER_REQUEST_FIELDS = (
@@ -37,6 +39,23 @@ def parseSolverRequestValues(data, for_save=False):
             return None, '{0:s} out of range'.format(key)
         values[key] = v
 
+    if 'CALIBRATION_ENABLED' in data:
+        if not isinstance(data['CALIBRATION_ENABLED'], bool):
+            return None, 'CALIBRATION_ENABLED must be a boolean'
+        values['CALIBRATION_ENABLED'] = data['CALIBRATION_ENABLED']
+        if for_save:
+            model = data.get('CALIBRATION')
+            if model is not None:
+                if not validateCalibration(model):
+                    return None, 'Invalid lens calibration; solve again'
+                geometry = [values.get(k) for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
+                    'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y',
+                    'LENS_ALTITUDE', 'POINTING_AZIMUTH')]
+                if model['geometry'] != geometry:
+                    return None, 'Alignment changed since calibration; solve again'
+            elif values['CALIBRATION_ENABLED']:
+                return None, 'Solve before enabling lens calibration'
+            values['CALIBRATION'] = model
     return values, None
 
 
@@ -59,5 +78,8 @@ def applySolvedValuesToConfig(config, values):
     virtualsky['OFFSET_Y'] = values['OFFSET_Y']
     if 'POINTING_AZIMUTH' in values:
         virtualsky['POINTING_AZIMUTH'] = values['POINTING_AZIMUTH']
+    if 'CALIBRATION_ENABLED' in values:
+        virtualsky['CALIBRATION_ENABLED'] = values['CALIBRATION_ENABLED']
+        virtualsky['CALIBRATION'] = values['CALIBRATION']
 
     return config

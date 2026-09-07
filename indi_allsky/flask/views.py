@@ -673,6 +673,9 @@ class VirtualSkyView(TemplateView):
 
         context['form_virtualsky'] = IndiAllskyVirtualSkyHelperForm(data=data)
         context['camera_altitude'] = self.camera.alt if self.camera.alt is not None else 90.0
+        context['lens_calibration'] = self.camera.data.get('vs_calibration')
+        context['lens_calibration_enabled'] = self.camera.data.get('vs_calibration_enabled', False)
+        context['calibration_camera_uuid'] = getattr(self.camera, 'uuid', '')
 
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000
@@ -9786,10 +9789,20 @@ class AjaxLensSolverView(BaseView):
             }), 429, {'Retry-After': str(self.LOCK_RETRY_AFTER_S)}
 
         try:
+            hints = {}
+            if values.get('CALIBRATION_ENABLED'):
+                binning = image_entry.binning or 1
+                if self.camera.width and self.camera.height:
+                    hints = {'sensor_shape': (self.camera.height // binning, self.camera.width // binning),
+                             'binning': binning}
             result = solver.solve(
                 image_file, latitude, longitude, obstime_unix, values,
                 lens_altitude=values.get('LENS_ALTITUDE', self.camera.alt),
-                pointing_azimuth=values.get('POINTING_AZIMUTH', self.camera.data.get('vs_pointing_azimuth', 0.0)))
+                pointing_azimuth=values.get('POINTING_AZIMUTH', self.camera.data.get('vs_pointing_azimuth', 0.0)),
+                **hints)
+            if result.get('calibration'):
+                result['calibration']['camera_uuid'] = self.camera.uuid
+                result['calibration']['context'][2] = self.camera_time_offset
         except Exception:  # noqa: BLE001
             # never return a raw exception string to the client
             app.logger.exception('Lens solver failed')
