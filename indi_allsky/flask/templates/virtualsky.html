@@ -81,6 +81,7 @@ var last_image_timestamp = 0;
 var lensCalibration = {{ lens_calibration | default(none) | tojson }};
 var calibrationMessage = '';
 var calibrationCameraUuid = {{ calibration_camera_uuid | default('') | tojson }};
+var overlayImageMask = {{ overlay_image_mask | default(none) | tojson }};
 
 
 function init() {
@@ -304,6 +305,8 @@ async function loop() {
                     $('#calibration_summary').text('Calibration does not match this camera, image size or alignment. Solve again.');
                 }
             }
+            VirtualSkyCalibration.maskImage(planetarium, overlayImageMask, [image_width, image_height],
+                this.entry.binmode, [image_circle_diameter, offset_x, offset_y]);
             planetarium.draw();
 
 
@@ -346,7 +349,7 @@ function loadJS(url, data, onDone, onError) {
         type: "GET",
         url: url,
         contentType: "application/json",
-        data: data,
+        data: {...data, virtualsky: 1},
         success: function(rdata){
             json_data = rdata
             $('#message').html(json_data['message']);

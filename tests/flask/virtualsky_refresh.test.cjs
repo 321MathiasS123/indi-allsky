@@ -24,7 +24,7 @@ function page() {
     $.ajax = options => requests.push(options);
     const document = {hidden: false};
     const context = vm.createContext({$, document, Date, console: {log() {}}, setTimeout() {},
-        VirtualSkyCalibration: {install() {}},
+        VirtualSkyCalibration: {install() {}, maskImage() {}},
         Image: class {
             constructor() { this.naturalWidth = 2408; this.naturalHeight = 2348; images.push(this); }
         },
