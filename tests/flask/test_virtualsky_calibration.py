@@ -72,9 +72,11 @@ def test_solve_endpoint_uses_real_image_binning(endpoint, camera_models, tmp_pat
     assert result['success']
     assert calls[0][0][3] == 1770000000-30
     hints = {'lens_altitude': 54, 'pointing_azimuth': 123}
-    if enabled and dimensions[0]:
+    if enabled:
         binning = binmode or 1
-        hints.update(binning=binning, sensor_shape=(dimensions[1]//binning, dimensions[0]//binning))
+        hints['binning'] = binning
+        if dimensions[0]:
+            hints['sensor_shape'] = (dimensions[1]//binning, dimensions[0]//binning)
     assert calls[0][1] == hints
     if enabled:
         assert result['calibration']['camera_uuid'] == 'test-camera'

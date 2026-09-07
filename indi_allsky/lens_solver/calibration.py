@@ -188,30 +188,27 @@ def fitCorrection(predicted, detected, expected, radius):
 
 def calibrate(detections, catalog, latitude, longitude, timestamp, params,
               width, height, altitude, heading, mask):
-    alt, az = predictAltAz(catalog, latitude+params[1], longitude+params[2], timestamp)
-    x, y = projectToPixels(alt, az, params, width, height,
-                          lens_altitude=altitude, pointing_azimuth=heading)
-    visible = (alt > np.radians(10)) & (cameraAltAz(alt, az, altitude, heading)[0] > 0)
-    visible &= (x >= 0) & (x < width) & (y >= 0) & (y < height)
-    x, y = x[visible], y[visible]
-    if mask is not None:
-        keep = mask[y.astype(int), x.astype(int)] > 0
-        x, y = x[keep], y[keep]
     center = np.array([width/2+params[4], height/2-params[5]])
     reference = params[3]/2
-    predicted = (np.column_stack([x, y])-center)/reference
+
+    def visiblePoints(alt, az):
+        # Catalogue matches and coverage must use the same sensor/mask bounds.
+        x, y = projectToPixels(alt, az, params, width, height,
+                              lens_altitude=altitude, pointing_azimuth=heading)
+        keep = (cameraAltAz(alt, az, altitude, heading)[0] > 0)
+        keep &= (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        x, y = x[keep], y[keep]
+        if mask is not None:
+            keep = mask[y.astype(int), x.astype(int)] > 0
+            x, y = x[keep], y[keep]
+        return (np.column_stack([x, y])-center)/reference
+
+    alt, az = predictAltAz(catalog, latitude+params[1], longitude+params[2], timestamp)
+    keep = alt > np.radians(10)
+    predicted = visiblePoints(alt[keep], az[keep])
     detected = (detections[:, :2]-center)/reference
     # Uniform directions provide a coverage target clipped to actual sensor/mask.
     alt, az = np.meshgrid(np.arcsin(np.linspace(np.sin(np.radians(10)), 1, 24)),
                           np.linspace(0, 2*np.pi, 72, endpoint=False))
-    alt, az = alt.ravel(), az.ravel()
-    gx, gy = projectToPixels(alt, az, params, width, height,
-                            lens_altitude=altitude, pointing_azimuth=heading)
-    keep = (cameraAltAz(alt, az, altitude, heading)[0] > 0)
-    keep &= (gx >= 0) & (gx < width) & (gy >= 0) & (gy < height)
-    gx, gy = gx[keep], gy[keep]
-    if mask is not None:
-        keep = mask[gy.astype(int), gx.astype(int)] > 0
-        gx, gy = gx[keep], gy[keep]
-    expected = (np.column_stack([gx, gy])-center)/reference
+    expected = visiblePoints(alt.ravel(), az.ravel())
     return fitCorrection(predicted, detected, expected, max(8/reference, 0.025))

@@ -2,10 +2,7 @@
 
 Correspondences are supplied and synthetic centroids have no outliers. These
 tests measure model capacity and coverage; they do not validate blind matching.
-Run this module from the repository root to print the measurements as JSON.
 """
-import json
-
 import numpy as np
 import pytest
 from scipy.optimize import least_squares
@@ -122,23 +119,6 @@ def asymmetric_study():
                 max_error_px=float(np.max(np.linalg.norm(error, axis=1))))
 
 
-def catalog_study():
-    from indi_allsky.lens_solver.catalog import loadCatalog
-    from indi_allsky.lens_solver.projection import predictAltAz
-
-    catalog = loadCatalog()
-    counts = {fov: [] for fov in (30, 60, 90, 120, 180)}
-    # Northern and southern examples at 24 sidereal phases. These are available
-    # catalogue stars, not guaranteed detections, and daylight is not filtered.
-    for latitude in (-34, 0, 53):
-        for hour in range(24):
-            alt, _ = predictAltAz(catalog, latitude, 11, 1788731972+hour*3600)
-            for fov in counts:
-                counts[fov].append(int(np.sum(alt > np.radians(max(10, 90-fov/2)))))
-    return {str(fov): dict(min=min(values), median=float(np.median(values)), max=max(values))
-            for fov, values in counts.items()}
-
-
 @pytest.mark.parametrize('family,fov', [('equisolid', 180), ('equidistant', 180),
     ('stereographic', 180), ('orthographic', 180), ('rectilinear', 90)])
 def test_projection_comparison(family, fov):
@@ -173,16 +153,3 @@ def test_two_terms_are_not_a_universal_projection_model():
 
 def test_radial_fit_leaves_asymmetric_residuals():
     assert asymmetric_study()['holdout_rms_px'] > 4
-
-
-if __name__ == '__main__':
-    print(json.dumps(dict(
-        projection={f'{family}_{fov}': {str(n): projection_study(family, fov, n)
-                                       for n in (0, 1, 2)}
-                    for family, fovs in [('equisolid', [60, 180, 200]),
-                        ('equidistant', [60, 180, 200]), ('stereographic', [60, 180, 200]),
-                        ('orthographic', [60, 180]), ('rectilinear', [60, 90, 120, 160])]
-                    for fov in fovs},
-        coverage={layout: coverage_study(layout) for layout in ['circle', '4:3', '16:9',
-            'portrait', 'no_circle_edge', 'offset_crop', 'central_patch', 'thin_strip']},
-        asymmetric=asymmetric_study(), catalog=catalog_study()), indent=2))
