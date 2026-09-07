@@ -21,6 +21,7 @@ var fullscreen = false;  // initial state
 
 var camera_latitude = {{ camera_latitude }};
 var camera_longitude = {{ camera_longitude }};
+var camera_altitude = {{ camera_altitude }};
 var time_offset = {{ time_offset }};
 
 var planetarium;
@@ -31,62 +32,6 @@ var last_image_timestamp = 0;
 function init() {
     console.log("Camera Latitude: " + camera_latitude);
     console.log("Camera Longitude: " + camera_longitude);
-    //console.log("Camera Image Circle: " + camera_lensimagecircle);
-    //console.log("Lens Offset X: " + camera_lens_offset_x);
-    //console.log("Lens Offset Y: " + camera_lens_offset_y);
-
-
-    // Azimuth manipulations
-    //console.log("Camera Azimuth: " + camera_az);
-    //console.log("Camera Altitude: " + camera_alt);
-
-
-    // Calculate latitude and longitude offset
-    /*
-    if (camera_az < 90) {
-        az_90 = camera_az % 90
-    } else if (camera_az >= 90 && camera_az < 180) {
-        az_90 = 90 - (camera_az % 90)
-    } else if (camera_az >= 180 && camera_az < 270) {
-        az_90 = camera_az % 90
-    } else {
-        az_90 = 90 - (camera_az % 90)
-    }
-
-
-    var a_adj = 100;  // fake adjacent leg of triangle, can be any value
-
-    var a_opp = Math.tan(((90 - camera_alt) * Math.PI) / 180) * a_adj;
-
-    var b_hyp_2 = a_opp;
-    var lat_adj = Math.cos((az_90 * Math.PI) / 180) * b_hyp_2;
-
-    var z_opp = lat_adj;
-    var lat_deg_offset = Math.atan(z_opp / a_adj) * (180 / Math.PI);
-    if (camera_az < 90 || camera_az > 270) {
-        // relatively sure this is correct
-        lat_deg_offset *= -1;
-    }
-
-
-    var long_adj = Math.cos(((90 - az_90) * Math.PI) / 180) * b_hyp_2;
-    var z2_opp = long_adj;
-    long_deg_offset = Math.atan(z2_opp / a_adj) * (180 / Math.PI);
-    if (camera_az < 180) {
-        // unsure which direction should add/subract
-        // this may be backwards
-        long_deg_offset *= -1;
-    }
-
-
-    console.log("Latitude Offset: " + lat_deg_offset);
-    console.log("Longitude Offset: " + long_deg_offset);
-
-
-    // Set form values
-    $("#LATITUDE_OFFSET").val(lat_deg_offset.toFixed(2));
-    $("#LONGITUDE_OFFSET").val(long_deg_offset.toFixed(2));
-    */
 
 
     loadNextImage();
@@ -187,6 +132,8 @@ async function loop() {
                 latitude: vs_latitude,
                 longitude: vs_longitude,
                 az: vs_az,
+                fisheye_altitude: camera_altitude,
+                fisheye_azimuth: Number($('#POINTING_AZIMUTH').val()),
                 magnitude: magnitude,
                 constellations: constellations,
                 constellationlabels: constellationlabels,
@@ -285,8 +232,8 @@ function loadJS(url, data, onDone, onError) {
             <form id="form_virtualsky" onSubmit="return false;">
                 <div class="tw:space-y-6 tw:pt-2">
                     
-                    <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-3 tw:gap-4">
-                        {% for field in [form_virtualsky.AZIMUTH_ANGLE, form_virtualsky.LATITUDE_OFFSET, form_virtualsky.LONGITUDE_OFFSET] %}
+                    <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-4">
+                        {% for field in [form_virtualsky.AZIMUTH_ANGLE, form_virtualsky.POINTING_AZIMUTH, form_virtualsky.LATITUDE_OFFSET, form_virtualsky.LONGITUDE_OFFSET] %}
                         <div class="tw:form-control">
                             <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ field.label.text }}</span></label>
                             {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full') }}
@@ -294,12 +241,14 @@ function loadJS(url, data, onDone, onError) {
                         {% endfor %}
                     </div>
 
+                    <p class="tw:text-xs tw:text-base-content/70">Lens altitude: {{ camera_altitude }}°. Set it under Config → Location for a tilted camera. Pointing Azimuth is the lens direction (0° north, 90° east), ignored at 90° altitude. Azimuth Angle controls image rotation. When replacing a latitude/longitude offset workaround with camera tilt, reset those offsets to zero before recalibrating.</p>
+
                     <div class="tw:grid tw:grid-cols-2 md:tw:grid-cols-4 tw:gap-4">
                         {% for field in [form_virtualsky.IMAGE_CIRCLE_DIAMETER, form_virtualsky.OFFSET_X, form_virtualsky.OFFSET_Y, form_virtualsky.MAGNITUDE] %}
                         <div class="tw:form-control">
                             <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ field.label.text }}</span></label>
                             {% if field == form_virtualsky.IMAGE_CIRCLE_DIAMETER %}
-                            {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full', title="The solved value is the 180° horizon circle under VirtualSky's equisolid fisheye projection. It can differ by a few percent from the visible illuminated circle in the image -- larger for lenses with less than a 180° field of view, smaller for lenses with more than 180°.") }}
+                            {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full', title="The solved value is the 180° reference circle under VirtualSky's equisolid fisheye projection. It can differ by a few percent from the visible illuminated circle in the image -- larger for lenses with less than a 180° field of view, smaller for lenses with more than 180°.") }}
                             {% else %}
                             {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full') }}
                             {% endif %}
@@ -332,8 +281,8 @@ function loadJS(url, data, onDone, onError) {
                         {# Gate mirrors the server-side save() check exactly -- admin, or
                            LOGIN_DISABLED mode where all users act as admin. #}
                         {% if login_disabled or (current_user.is_authenticated and current_user.is_admin) %}
-                        <button id="lens_save" type="button" disabled
-                                title="Write the six values above to the configuration. See the note below for details."
+                        <button id="lens_save" type="button"
+                                title="Save manual or solved geometry values and the pointing azimuth to the configuration."
                                 aria-describedby="lens_save_help"
                                 class="tw:btn tw:btn-sm tw:btn-primary tw:gap-1.5 tw:rounded-[var(--radius-box)]">
                             Save
@@ -356,7 +305,7 @@ function loadJS(url, data, onDone, onError) {
                     <div id="lens_help" style="display: none;"
                          class="tw:text-xs tw:text-base-content/70 tw:space-y-1.5 tw:pt-2 tw:max-w-2xl">
                         <p><strong>Solve</strong> detects stars in the image shown below and fits the six geometry
-                           fields above (all but Magnitude) to match the sky at that image's timestamp. Results
+                           fields above, keeping lens altitude and pointing azimuth fixed, to match the sky at that image's timestamp. Results
                            fill the form for review &mdash; nothing is saved. The entered values seed the search:
                            any Azimuth Angle works, the Diameter can be off by roughly 40%, but the X/Y Offsets
                            must be within about 100 px of correct. Cloudy, moonlit, or twilight frames are
@@ -364,7 +313,7 @@ function loadJS(url, data, onDone, onError) {
                         <p id="lens_save_help"><strong>Save</strong> writes
                            <code class="tw:bg-neutral-content/10 tw:font-mono tw:px-1.5 tw:py-0.5 tw:rounded">LENS_AZIMUTH</code> and the
                            <code class="tw:bg-neutral-content/10 tw:font-mono tw:px-1.5 tw:py-0.5 tw:rounded">VIRTUALSKY</code>
-                           offset/diameter settings above to the camera configuration. Azimuth also repositions
+                           offset/diameter and pointing azimuth settings above to the camera configuration, including manually entered values. Azimuth also repositions
                            the cardinal-direction labels burned into future captured images.</p>
                     </div>
                 </div>
@@ -380,7 +329,7 @@ function loadJS(url, data, onDone, onError) {
         
         <div class="tw:w-full tw:alert tw:alert-info tw:py-3.5 tw:text-xs tw:rounded-[var(--radius-box)] tw:shadow-sm tw:max-w-xl tw:mx-auto">
             <i class="tw:icon-[lucide--info] tw:w-4 tw:h-4"></i>
-            <span>Calibration settings must be configured under <code class="tw:bg-neutral-content/10 tw:font-mono tw:px-1.5 tw:py-0.5 tw:rounded">Config -> Location</code></span>
+            <span>Calibration settings can be saved above or under <code class="tw:bg-neutral-content/10 tw:font-mono tw:px-1.5 tw:py-0.5 tw:rounded">Config -> Location</code></span>
         </div>
 
         <div id="wrapper" class="tw:relative tw:bg-neutral-950 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300/40 tw:overflow-hidden tw:shadow-2xl tw:w-fit tw:max-w-full tw:mx-auto">
@@ -412,6 +361,10 @@ function forceRedrawPlanetarium() {
 
 
 $("#AZIMUTH_ANGLE").on("change", function() {
+    forceRedrawPlanetarium();
+});
+
+$("#POINTING_AZIMUTH").on("change", function() {
     forceRedrawPlanetarium();
 });
 
@@ -702,6 +655,7 @@ const SOLVE_FIELDS = ['AZIMUTH_ANGLE', 'LATITUDE_OFFSET', 'LONGITUDE_OFFSET',
 
 function solverPayload(action) {
     var payload = {'action': action, 'camera_id': camera_id};
+    payload['POINTING_AZIMUTH'] = $('#POINTING_AZIMUTH').val();
     SOLVE_FIELDS.forEach(function(f) {
         payload[f] = $('#' + f).val();
     });
@@ -753,8 +707,7 @@ $('#lens_solve').on('click', function() {
     payload['timestamp'] = last_image_timestamp;
 
     $('#lens_solve').prop('disabled', true);
-    // disabled for the duration of the solve; re-enabled only on a
-    // successful solve below (never in the failure/error/complete paths)
+    // Prevent concurrent save/solve requests; manual saving needs no solve.
     $('#lens_save').prop('disabled', true);
     $('#lens_solve_spinner').show();
     setSolverMessage('Solving...', 'info');
@@ -770,10 +723,12 @@ $('#lens_solve').on('click', function() {
                 SOLVE_FIELDS.forEach(function(f) {
                     $('#' + f).val(rdata['values'][f]);
                 });
+                // Pair fitted values with the heading used by this request,
+                // even if the user edited it while the solve was running.
+                $('#POINTING_AZIMUTH').val(payload['POINTING_AZIMUTH']);
                 forceRedrawPlanetarium();
                 setSolverMessage(rdata['message'], 'success');
                 setSaveButtonFailed(false);
-                $('#lens_save').prop('disabled', false);
             } else {
                 setSolverMessage(rdata['message'], 'error');
             }
@@ -787,6 +742,7 @@ $('#lens_solve').on('click', function() {
         },
         complete: function() {
             $('#lens_solve').prop('disabled', false);
+            $('#lens_save').prop('disabled', false);
             $('#lens_solve_spinner').hide();
         },
     });
@@ -801,6 +757,7 @@ $('#lens_save').on('click', function() {
     $('#lens_reload_on_save').prop('checked', false);
 
     $('#lens_save').prop('disabled', true);
+    $('#lens_solve').prop('disabled', true);
     setSaveButtonFailed(false);
     setSolverMessage('Saving...', 'info');
 
@@ -812,7 +769,6 @@ $('#lens_save').on('click', function() {
         timeout: 15000,
         success: function(rdata) {
             setSolverMessage(rdata['message'], 'success');
-            $('#lens_save').prop('disabled', false);
         },
         error: function(xhr) {
             // ConfigSaveException returns 400 {'form_global': ['...']} with
@@ -821,6 +777,9 @@ $('#lens_save').on('click', function() {
             var msg = (xhr.responseJSON && (xhr.responseJSON['message'] || (xhr.responseJSON['form_global'] && xhr.responseJSON['form_global'][0]))) || 'Save failed.';
             setSolverMessage(msg, 'error');
             setSaveButtonFailed(true);
+        },
+        complete: function() {
+            $('#lens_solve').prop('disabled', false);
             $('#lens_save').prop('disabled', false);
         },
     });

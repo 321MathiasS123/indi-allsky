@@ -11,6 +11,7 @@ from . import fitting
 from .detection import StarDetector
 from .fitting import FitEngine
 from .fitting import SolveContext
+from .projection import projectToPixels
 
 logger = logging.getLogger('indi_allsky')
 
@@ -62,7 +63,8 @@ class IndiAllSkyLensSolver(object):
         return self._detector.detectStars(image_gray)
 
     def fitParameters(self, detections, catalog, latitude, longitude, obstime_unix,
-                       initial_params, image_width, image_height):
+                       initial_params, image_width, image_height,
+                       lens_altitude=90.0, pointing_azimuth=0.0):
         self._residual_evals = 0
         self._predict_calls = 0
         self._coarse_s = 0.0
@@ -102,6 +104,8 @@ class IndiAllSkyLensSolver(object):
             image_height=image_height,
             min_alt_rad=numpy.radians(fitting.MIN_STAR_ALT_DEG),
             initial_params=p0,
+            lens_altitude=lens_altitude,
+            pointing_azimuth=pointing_azimuth,
         ))
         try:
             return engine.fitWithFallbacks(p0, diameter0)
@@ -111,7 +115,8 @@ class IndiAllSkyLensSolver(object):
             self._coarse_s = engine.coarse_s
             self._fit_s = engine.fit_s
 
-    def solve(self, image_file, latitude, longitude, obstime_unix, initial_values):
+    def solve(self, image_file, latitude, longitude, obstime_unix, initial_values,
+              lens_altitude=90.0, pointing_azimuth=0.0):
         """Detect stars and fit the 6 geometric overlay parameters.
         initial_values/values use the VirtualSky form-field keys; every
         return is a full success or a structured failure, always with a
@@ -220,7 +225,7 @@ class IndiAllSkyLensSolver(object):
 
         fit = self.fitParameters(
             detections, catalog, latitude, longitude, obstime_unix,
-            initial_params, work_width, work_height)
+            initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
 
         timing['coarse_s'] = round(self._coarse_s, 3)
         timing['fit_s'] = round(self._fit_s, 3)
@@ -268,6 +273,19 @@ class IndiAllSkyLensSolver(object):
             'tilt_ns_deg': round(float(p[1]), 2),
             'tilt_ew_deg': round(float(p[2]), 2),
         }
+        if lens_altitude is not None and lens_altitude != 90.0:
+            # The axis and zenith no longer coincide. The legacy diameter
+            # key remains the 180-degree reference circle used for scale.
+            geometry.update(axis_x=geometry['zenith_x'], axis_y=geometry['zenith_y'],
+                            lens_altitude_deg=float(lens_altitude),
+                            pointing_azimuth_deg=float(pointing_azimuth))
+            native_params = p.copy()
+            native_params[3:] *= scale
+            zx, zy = projectToPixels(numpy.pi / 2, 0.0,
+                                     native_params, native_width, native_height,
+                                     lens_altitude=lens_altitude, pointing_azimuth=pointing_azimuth)
+            geometry['zenith_x'] = round(float(zx), 1)
+            geometry['zenith_y'] = round(float(zy), 1)
 
         message = 'Matched {0:d} stars, RMS {1:0.1f} px'.format(
             quality['stars_matched'], quality['rms_px'])
