@@ -341,7 +341,7 @@ function VirtualSky(input){
 		},
 		'fisheye':{
 			title: 'Fisheye polar projection',
-			azel2xy: function(az,el,w,h){
+			azel2xy: function(az,el,w,h,unclipped){
 				// Visibility uses the real horizon; lens coordinates only govern projection/clipping.
 				var horizonEl = el;
 				if(this.fisheye_altitude !== 90){
@@ -349,7 +349,7 @@ function VirtualSky(input){
 					var camera = this.fisheyeAltAz(az + this.az_off*this.d2r,el);
 					az = camera[0] - this.az_off*this.d2r;
 					el = camera[1];
-					if(el < 0) return {x:NaN,y:NaN,el:horizonEl};
+					if(el < 0 && !unclipped) return {x:NaN,y:NaN,el:horizonEl};
 				}
 				var radius = h/2;
 				var r = radius*Math.sin(((Math.PI/2)-el)/2)/0.70710678;	// the field of view is bigger than 180 degrees
@@ -3199,9 +3199,13 @@ VirtualSky.prototype.drawCardinalPoints = function(){
 		}else r = fontsize/2;
 		ang = (azs[i]-this.az_off)*this.d2r;
 		if(this.projection.id === 'fisheye' && this.fisheye_altitude !== 90){
-			// The geographic horizon is no longer the circumference of the image.
-			pos = this.azel2xy(ang,0,this.wide,this.tall);
+			// Keep off-camera horizon labels as rim direction cues. Stars still
+			// use the clipped projection; their positions must not move.
+			pos = this.azel2xy(ang,0,this.wide,this.tall,true);
 			if(!isFinite(pos.x) || !isFinite(pos.y)) continue;
+			f = Math.min(1,(this.tall/2-r*2)/Math.hypot(pos.x-this.wide/2,pos.y-this.tall/2));
+			pos.x = this.wide/2 + (pos.x-this.wide/2)*f;
+			pos.y = this.tall/2 + (pos.y-this.tall/2)*f;
 			x = Math.max(r,Math.min(this.wide-r*2,pos.x-r));
 			y = Math.max(fontsize,Math.min(this.tall-r,pos.y));
 		}else if(this.polartype){

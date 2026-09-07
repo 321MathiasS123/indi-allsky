@@ -53,11 +53,18 @@
     }
 
     function install(sky, model) {
+        // The page reuses its sky instance. Always restore the base projection
+        // before toggling or replacing a model so corrections cannot accumulate.
+        if (sky.calibrationProjection) {
+            sky.azel2xy = sky.projection.azel2xy = sky.calibrationProjection.forward;
+            sky.projection.xy2azel = sky.calibrationProjection.inverse;
+        }
         if (!model) return;
         const forward = sky.azel2xy;
         const inverse = sky.projection.xy2azel;
-        sky.azel2xy = sky.projection.azel2xy = function(az, el, w, h) {
-            const p = forward.call(this, az, el, w, h);
+        sky.calibrationProjection = {forward, inverse};
+        sky.azel2xy = sky.projection.azel2xy = function(az, el, w, h, unclipped) {
+            const p = forward.call(this, az, el, w, h, unclipped);
             if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return p;
             const r = h/2;
             const d = delta(model, (p.x-w/2)/r, (p.y-h/2)/r);

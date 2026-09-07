@@ -153,15 +153,18 @@ async function loop() {
         await sleep(100);
     }
 
-    var image_width = json_data['image_list'][0]['width'];
-    var image_height = json_data['image_list'][0]['height'];
-    var image_timestamp = json_data['image_list'][0]['timestamp'];
-
     img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = function() {
+        // A slow previous request must not replace the current frame.
+        if (this !== img) return;
+        var image_width = this.naturalWidth;
+        var image_height = this.naturalHeight;
+        var image_timestamp = this.entry.timestamp;
         $('#latest-image').attr({
             'src': this.src,
+            'width': image_width,
+            'height': image_height,
         });
 
 
@@ -191,6 +194,9 @@ async function loop() {
             // Get the rendered size of the image and save w/h
             const render_width = $('#latest-image').width();
             const render_height = $('#latest-image').height();
+            // A hidden page can temporarily have no drawable area. Keep the
+            // current map until the image has a usable size again.
+            if (!(render_width > 0 && render_height > 0 && image_circle_diameter > 0)) return;
 
             const image_scale = render_width / image_width;
 
@@ -233,7 +239,7 @@ async function loop() {
             console.log("Date: " + clock);
 
 
-            planetarium = S.virtualsky({
+            var sky_options = {
                 id: 'starmap',
                 projection: 'fisheye',
                 live: false,
@@ -269,18 +275,35 @@ async function loop() {
                 and resizing based on the ratio of the actual image sized versus rendered size */
                 width: image_circle_diameter * image_scale,
                 height: image_circle_diameter * image_scale,
-            });
+            };
+            if (planetarium) {
+                // Recreating VirtualSky on every poll retains old canvases via
+                // document handlers and repeatedly reloads its sky catalogs.
+                // Let resize update the canvas before changing wide/tall.
+                planetarium.init({...sky_options, projection: undefined, width: undefined, height: undefined});
+                planetarium.setClock(clock);
+                planetarium.checkLoaded();
+                planetarium.changeMagnitude(0);
+            } else {
+                planetarium = S.virtualsky(sky_options);
+                $('#starmap canvas').on('contextrestored', function() {
+                    planetarium.draw();
+                });
+            }
+            // createSky rounds CSS dimensions; use the same scale on later redraws.
+            planetarium.resize(sky_options.width, sky_options.height);
+            VirtualSkyCalibration.install(planetarium, null);
             if ($('#CALIBRATION_ENABLED').prop('checked') && lensCalibration) {
                 if (VirtualSkyCalibration.compatible(lensCalibration, calibrationGeometry(),
                         [image_width, image_height], [camera_latitude, camera_longitude, time_offset],
                         calibrationCameraUuid)) {
                     VirtualSkyCalibration.install(planetarium, lensCalibration);
-                    planetarium.draw();
                     updateCalibrationStatus();
                 } else {
                     $('#calibration_summary').text('Calibration does not match this camera, image size or alignment. Solve again.');
                 }
             }
+            planetarium.draw();
 
 
             redraw_planetarium = false;
@@ -299,6 +322,7 @@ async function loop() {
 
 function showImage(entry) {
     console.log('Showing image ' + entry["url"]);
+    img.entry = entry;
     img.src = entry["url"];
 }
 
@@ -326,7 +350,6 @@ function loadJS(url, data, onDone, onError) {
             json_data = rdata
             $('#message').html(json_data['message']);
 
-            redraw_planetarium = true;
         },
         error: function(rdata){
             onError(rdata.status);
@@ -469,17 +492,23 @@ function loadJS(url, data, onDone, onError) {
                     {% if can_save_config %}
                     <div id="lens_help" style="display: none;"
                          class="tw:text-xs tw:text-base-content/70 tw:space-y-1.5 tw:pt-2 tw:max-w-2xl">
-                        <p><strong>Solve</strong> detects stars in the image shown below and fits the six geometry
-                           fields above to match the sky at that image's timestamp. If that fails or gives only a partial fit,
-                           it searches for camera pointing too, resetting latitude/longitude offsets to zero when recovered. Results
-                           fill the form for review &mdash; nothing is saved. Camera location and image time must be correct.
-                           The entered values seed the search:
-                           any Rotation works, the Diameter can be off by roughly 40%, but the X/Y Offsets
-                           must be within about 100 px of correct. Cloudy, moonlit, or twilight frames are
-                           refused &mdash; open a clear frame from the Gallery and solve that instead.</p>
+                        <p><strong>Solve</strong> matches stars in the displayed image using the camera location and
+                           image time, which must be correct. It starts from the entered alignment and searches for
+                           camera elevation and azimuth if needed. Recovered pointing resets latitude/longitude offsets
+                           to zero. Results update the fields and overlay for review; nothing is saved.</p>
+                        <p>Use a clear, star-rich frame from the Gallery. Clouds, bright sky and obstructions can
+                           prevent a reliable match. A reasonable diameter and image-center estimate help the search.</p>
                         <p id="lens_save_help"><strong>Save</strong> writes all eight calibration values to the camera configuration,
                            including manually entered values. Display controls are not saved. Rotation also repositions
                            the cardinal-direction labels burned into future captured images.</p>
+                        <p><strong>Experimental lens correction</strong> is optional. When enabled, Solve also fits
+                           lens distortion from matched stars, using the detection mask and sky ROI as hints.
+                           The correction is offered only when validation stars support an improvement.
+                           Save also stores this model and whether it is enabled; only the overlay is corrected.</p>
+                        <p><strong>Reload on Save</strong> also reloads the capture service to apply the saved
+                           configuration. If unchecked, the values become page defaults after the next service reload.</p>
+                        <p>With a tilted camera, direction labels stay near their projected horizon positions;
+                           labels beyond the reference circle are placed at its rim as direction cues.</p>
                     </div>
                     {% endif %}
                 </div>
@@ -513,7 +542,7 @@ function loadJS(url, data, onDone, onError) {
 
 <script>
 function forceRedrawPlanetarium() {
-    if (json_data['image_list'].length > 0) {
+    if (img && json_data['image_list'].length > 0) {
         redraw_planetarium = true;
 
         showImage(json_data['image_list'][0]);
@@ -596,6 +625,9 @@ function resize_callback() {
     forceRedrawPlanetarium();
 }
 setResizeHandler(resize_callback, 200);
+$(document).on('visibilitychange', function() {
+    if (!document.hidden) forceRedrawPlanetarium();
+});
 
 
 function goFullscreen(elem) {
@@ -638,6 +670,8 @@ $( document ).ready(function() {
 
     updateCalibrationStatus();
     init();
+    // Sidebar/layout changes can resize the photo without a window resize.
+    new ResizeObserver(forceRedrawPlanetarium).observe(document.getElementById('latest-image'));
 });
 
 

@@ -22,7 +22,7 @@ def run_node(*args, input=None):
 
 
 def test_virtualsky_javascript():
-    run_node('--test', 'tests/flask/virtualsky.test.cjs')
+    run_node('--test', 'tests/flask/virtualsky.test.cjs', 'tests/flask/virtualsky_refresh.test.cjs')
 
 
 @pytest.mark.parametrize('altitude,heading', [(90, 215), (54, 0), (20, 120), (0, 350)])

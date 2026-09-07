@@ -21,6 +21,26 @@ test('disabled calibration leaves the exact legacy functions in place', () => {
     assert.equal(sky.projection.xy2azel, inverse);
 });
 
+test('reusing a sky cannot compound corrections and disabling restores both directions', () => {
+    const sky = makeSky({fisheye_altitude: 87.42, fisheye_azimuth: 177.04});
+    const forward = sky.azel2xy, inverse = sky.projection.xy2azel;
+    calibration.install(sky, model());
+    const expected = sky.azel2xy(1, 0.7, 1000, 1000);
+    for (let i = 0; i < 50; i++) {
+        sky.init({projection: 'fisheye'});
+        calibration.install(sky, model());
+        assert.deepEqual(sky.azel2xy(1, 0.7, 1000, 1000), expected);
+    }
+    // North is behind this slightly south-pointing lens; its label can still
+    // request an unclipped position while normal stars retain their clipping.
+    assert.ok(Number.isNaN(sky.azel2xy(0, 0, 1000, 1000).x));
+    assert.ok(Number.isFinite(sky.azel2xy(0, 0, 1000, 1000, true).x));
+    calibration.install(sky, null);
+    assert.equal(sky.azel2xy, forward);
+    assert.equal(sky.projection.azel2xy, forward);
+    assert.equal(sky.projection.xy2azel, inverse);
+});
+
 test('stale geometry, camera, location, time and size cannot reuse calibration', () => {
     const m = model();
     const args = [m, m.geometry, m.image_size, m.context, m.camera_uuid];

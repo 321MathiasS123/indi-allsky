@@ -12,7 +12,7 @@ function makeSky(options = {}, asset = 'virtualsky.js') {
     };
     const S = () => query;
     const context = vm.createContext({
-        S, stuQuery: function () {}, document: {}, window: {},
+        S, stuQuery: function () {}, document: {}, window: {setTimeout, clearTimeout},
         location: {search: '', host: 'localhost', href: ''},
         navigator: {language: 'en'}, Date, console,
     });
