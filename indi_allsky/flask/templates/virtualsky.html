@@ -32,62 +32,6 @@ var last_image_timestamp = 0;
 function init() {
     console.log("Camera Latitude: " + camera_latitude);
     console.log("Camera Longitude: " + camera_longitude);
-    //console.log("Camera Image Circle: " + camera_lensimagecircle);
-    //console.log("Lens Offset X: " + camera_lens_offset_x);
-    //console.log("Lens Offset Y: " + camera_lens_offset_y);
-
-
-    // Azimuth manipulations
-    //console.log("Camera Azimuth: " + camera_az);
-    //console.log("Camera Altitude: " + camera_alt);
-
-
-    // Calculate latitude and longitude offset
-    /*
-    if (camera_az < 90) {
-        az_90 = camera_az % 90
-    } else if (camera_az >= 90 && camera_az < 180) {
-        az_90 = 90 - (camera_az % 90)
-    } else if (camera_az >= 180 && camera_az < 270) {
-        az_90 = camera_az % 90
-    } else {
-        az_90 = 90 - (camera_az % 90)
-    }
-
-
-    var a_adj = 100;  // fake adjacent leg of triangle, can be any value
-
-    var a_opp = Math.tan(((90 - camera_alt) * Math.PI) / 180) * a_adj;
-
-    var b_hyp_2 = a_opp;
-    var lat_adj = Math.cos((az_90 * Math.PI) / 180) * b_hyp_2;
-
-    var z_opp = lat_adj;
-    var lat_deg_offset = Math.atan(z_opp / a_adj) * (180 / Math.PI);
-    if (camera_az < 90 || camera_az > 270) {
-        // relatively sure this is correct
-        lat_deg_offset *= -1;
-    }
-
-
-    var long_adj = Math.cos(((90 - az_90) * Math.PI) / 180) * b_hyp_2;
-    var z2_opp = long_adj;
-    long_deg_offset = Math.atan(z2_opp / a_adj) * (180 / Math.PI);
-    if (camera_az < 180) {
-        // unsure which direction should add/subract
-        // this may be backwards
-        long_deg_offset *= -1;
-    }
-
-
-    console.log("Latitude Offset: " + lat_deg_offset);
-    console.log("Longitude Offset: " + long_deg_offset);
-
-
-    // Set form values
-    $("#LATITUDE_OFFSET").val(lat_deg_offset.toFixed(2));
-    $("#LONGITUDE_OFFSET").val(long_deg_offset.toFixed(2));
-    */
 
 
     loadNextImage();
@@ -779,11 +723,12 @@ $('#lens_solve').on('click', function() {
                 SOLVE_FIELDS.forEach(function(f) {
                     $('#' + f).val(rdata['values'][f]);
                 });
+                // Pair fitted values with the heading used by this request,
+                // even if the user edited it while the solve was running.
                 $('#POINTING_AZIMUTH').val(payload['POINTING_AZIMUTH']);
                 forceRedrawPlanetarium();
                 setSolverMessage(rdata['message'], 'success');
                 setSaveButtonFailed(false);
-                $('#lens_save').prop('disabled', false);
             } else {
                 setSolverMessage(rdata['message'], 'error');
             }
@@ -824,7 +769,6 @@ $('#lens_save').on('click', function() {
         timeout: 15000,
         success: function(rdata) {
             setSolverMessage(rdata['message'], 'success');
-            $('#lens_save').prop('disabled', false);
         },
         error: function(xhr) {
             // ConfigSaveException returns 400 {'form_global': ['...']} with
@@ -833,10 +777,10 @@ $('#lens_save').on('click', function() {
             var msg = (xhr.responseJSON && (xhr.responseJSON['message'] || (xhr.responseJSON['form_global'] && xhr.responseJSON['form_global'][0]))) || 'Save failed.';
             setSolverMessage(msg, 'error');
             setSaveButtonFailed(true);
-            $('#lens_save').prop('disabled', false);
         },
         complete: function() {
             $('#lens_solve').prop('disabled', false);
+            $('#lens_save').prop('disabled', false);
         },
     });
 });

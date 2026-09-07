@@ -281,11 +281,11 @@ class IndiAllSkyLensSolver(object):
                             pointing_azimuth_deg=float(pointing_azimuth))
             native_params = p.copy()
             native_params[3:] *= scale
-            zx, zy = projectToPixels(numpy.array([numpy.pi / 2]), numpy.array([0.0]),
+            zx, zy = projectToPixels(numpy.pi / 2, 0.0,
                                      native_params, native_width, native_height,
                                      lens_altitude=lens_altitude, pointing_azimuth=pointing_azimuth)
-            geometry['zenith_x'] = round(float(zx[0]), 1)
-            geometry['zenith_y'] = round(float(zy[0]), 1)
+            geometry['zenith_x'] = round(float(zx), 1)
+            geometry['zenith_y'] = round(float(zy), 1)
 
         message = 'Matched {0:d} stars, RMS {1:0.1f} px'.format(
             quality['stars_matched'], quality['rms_px'])

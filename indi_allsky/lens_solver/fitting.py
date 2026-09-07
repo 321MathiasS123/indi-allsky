@@ -115,6 +115,8 @@ EFFECTIVE_MIN_MATCHED_STARS = int(round(MATCH_CONFIDENCE_MULTIPLIER * MIN_MATCHE
 
 # per-solve invariants, built once by the solver and shared by every
 # fit-pipeline method via FitEngine.ctx
+# Pointing stays fixed throughout the six-parameter fit and its fallback searches.
+# Defaults preserve callers that predate support for tilted cameras.
 SolveContext = collections.namedtuple('SolveContext', [
     'detections', 'tree', 'catalog', 'latitude', 'longitude',
     'obstime_unix', 'image_width', 'image_height', 'min_alt_rad',

@@ -111,6 +111,28 @@ test('manual Save is available without solving and sends pointing and large offs
     assert.equal($('#lens_solve').prop('disabled'), false);
 });
 
+test('successful requests restore both buttons and keep the heading used by the solve', () => {
+    const {$, requests} = calibrationPage();
+    const values = {AZIMUTH_ANGLE: 200, LATITUDE_OFFSET: 0, LONGITUDE_OFFSET: 0,
+        IMAGE_CIRCLE_DIAMETER: 2951, OFFSET_X: 7, OFFSET_Y: -135};
+    $('#lens_solve').handlers.click();
+    $('#POINTING_AZIMUTH').val('250');  // edited while the request is pending
+    requests[0].success({success: true, values, message: 'Solved'});
+    requests[0].complete();
+    assert.equal($('#POINTING_AZIMUTH').val(), '123');
+    for (const [field, value] of Object.entries(values)) {
+        assert.equal($('#'+field).val(), value);
+    }
+    assert.equal($('#lens_save').prop('disabled'), false);
+    assert.equal($('#lens_solve').prop('disabled'), false);
+
+    $('#lens_save').handlers.click();
+    requests[1].success({success: true, message: 'Saved'});
+    requests[1].complete();
+    assert.equal($('#lens_save').prop('disabled'), false);
+    assert.equal($('#lens_solve').prop('disabled'), false);
+});
+
 test('unsuccessful solves restore manual Save after application and network failures', () => {
     for (const failure of ['success', 'error']) {
         const {$, requests} = calibrationPage();

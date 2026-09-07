@@ -342,8 +342,10 @@ function VirtualSky(input){
 		'fisheye':{
 			title: 'Fisheye polar projection',
 			azel2xy: function(az,el,w,h){
+				// Visibility uses the real horizon; lens coordinates only govern projection/clipping.
 				var horizonEl = el;
 				if(this.fisheye_altitude !== 90){
+					// Undo image roll before tilting in the geographic frame, then reapply it.
 					var camera = this.fisheyeAltAz(az + this.az_off*this.d2r,el);
 					az = camera[0] - this.az_off*this.d2r;
 					el = camera[1];
@@ -2161,7 +2163,10 @@ VirtualSky.prototype.ecliptic2xy = function(l,b,LST){
 	return 0;
 };
 
-// Rigid lens-axis rotation; az/el remain geographic until the projection.
+// Geographic az/el -> lens az/el (radians); pointing options are in degrees.
+// Rotate the along/up plane about the axis across the pointing heading.
+// Adding heading back retains the existing north reference for image roll.
+// inverse=true reverses the rotation for pixel -> sky coordinates.
 // Keep this in sync with lens_solver.projection.cameraAltAz.
 VirtualSky.prototype.fisheyeAltAz = function(az,el,inverse){
 	if(this.fisheye_altitude === 90) return [az,el];
@@ -3194,6 +3199,7 @@ VirtualSky.prototype.drawCardinalPoints = function(){
 		}else r = fontsize/2;
 		ang = (azs[i]-this.az_off)*this.d2r;
 		if(this.projection.id === 'fisheye' && this.fisheye_altitude !== 90){
+			// The geographic horizon is no longer the circumference of the image.
 			pos = this.azel2xy(ang,0,this.wide,this.tall);
 			if(!isFinite(pos.x) || !isFinite(pos.y)) continue;
 			x = Math.max(r,Math.min(this.wide-r*2,pos.x-r));

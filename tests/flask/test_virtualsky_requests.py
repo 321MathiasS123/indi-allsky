@@ -80,7 +80,7 @@ def test_invalid_pointing_never_saves(endpoint, heading):
     assert saved == []
 
 
-@pytest.mark.parametrize('explicit_heading', [None, 123])
+@pytest.mark.parametrize('explicit_heading', [None, 0, 123])
 def test_solve_uses_selected_camera_orientation(endpoint, tmp_path, explicit_heading):
     app, view, namespace, _ = endpoint
     camera = SimpleNamespace(id=7, alt=20, data={'vs_pointing_azimuth': 250})
@@ -114,9 +114,12 @@ def test_solve_uses_selected_camera_orientation(endpoint, tmp_path, explicit_hea
     values = dict(VALUES, action='solve', camera_id=7, timestamp=1770000000, LATITUDE_OFFSET=0)
     if explicit_heading is None:
         del values['POINTING_AZIMUTH']
+    else:
+        values['POINTING_AZIMUTH'] = explicit_heading
     with app.test_request_context(json=values):
         assert view.dispatch_request().get_json()['success']
-    assert calls[0][1] == {'lens_altitude': 20, 'pointing_azimuth': explicit_heading or 250}
+    expected_heading = 250 if explicit_heading is None else explicit_heading
+    assert calls[0][1] == {'lens_altitude': 20, 'pointing_azimuth': expected_heading}
 
 
 @pytest.mark.parametrize('altitude,expected', [(None, 90), (90, 90), (0, 0), (54, 54)])

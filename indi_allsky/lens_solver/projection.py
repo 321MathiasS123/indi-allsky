@@ -52,11 +52,13 @@ def predictAltAz(catalog, latitude, longitude, obstime_unix):
 
 
 def cameraAltAz(alt_rad, az_rad, lens_altitude=90.0, pointing_azimuth=0.0):
-    """Rotate the lens axis onto zenith, retaining north as the roll reference.
+    """Rotate geographic alt/az (radians) into lens coordinates (radians).
 
-    This is a rigid rotation, independent of time and the overlay's azimuth
-    angle. Keep the original arrays for zenith cameras (including old metadata).
+    Lens altitude is degrees above the horizon; pointing azimuth is degrees
+    east of north. Image roll is applied separately by projectToPixels.
+    Keep this rotation in sync with VirtualSky.fisheyeAltAz in virtualsky.js.
     """
+    # Preserve the exact legacy projection, including cameras without metadata.
     if lens_altitude is None or lens_altitude == 90.0:
         return alt_rad, az_rad
     tilt = numpy.radians(90.0 - lens_altitude)
@@ -64,6 +66,7 @@ def cameraAltAz(alt_rad, az_rad, lens_altitude=90.0, pointing_azimuth=0.0):
     across = numpy.cos(alt_rad) * numpy.sin(az_rad - heading)
     along = numpy.cos(alt_rad) * numpy.cos(az_rad - heading)
     up = numpy.sin(alt_rad)
+    # Tilt in the along/up plane; the component across the heading is unchanged.
     forward = numpy.cos(tilt) * along - numpy.sin(tilt) * up
     axis = numpy.sin(tilt) * along + numpy.cos(tilt) * up
     return (numpy.arctan2(axis, numpy.hypot(across, forward)),
