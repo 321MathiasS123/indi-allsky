@@ -65,15 +65,9 @@ def _orientationValues(matrix):
     axis = matrix[2]
     altitude = numpy.degrees(numpy.arctan2(axis[2], numpy.hypot(*axis[:2])))
     heading = numpy.arctan2(axis[0], axis[1]) if numpy.hypot(*axis[:2]) > 1e-10 else 0.0
-    across = numpy.array([numpy.cos(heading), -numpy.sin(heading), 0.0])
-    tilt = numpy.pi/2-numpy.radians(altitude)
-    # Rebuild the tilt-only transform to extract the remaining image roll.
-    along = numpy.array([numpy.sin(heading), numpy.cos(heading), 0.0])
-    forward = numpy.cos(tilt)*along-numpy.sin(tilt)*numpy.array([0., 0., 1.])
-    tilt_matrix = numpy.stack([numpy.cos(heading)*across+numpy.sin(heading)*forward,
-                               -numpy.sin(heading)*across+numpy.cos(heading)*forward, axis])
-    roll_matrix = matrix @ tilt_matrix.T
-    roll = numpy.degrees(numpy.arctan2(-roll_matrix[0, 1], roll_matrix[0, 0])) % 360
+    # Tilt leaves the across-heading axis unchanged; its camera angle isolates roll.
+    across = matrix @ numpy.array([numpy.cos(heading), -numpy.sin(heading), 0.0])
+    roll = numpy.degrees(numpy.arctan2(across[1], across[0])+heading) % 360
     return altitude, numpy.degrees(heading) % 360, roll
 
 
