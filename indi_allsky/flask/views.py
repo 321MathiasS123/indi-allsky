@@ -8112,7 +8112,7 @@ class AjaxLensSolverView(BaseView):
         try:
             hints = {}
             if values.get('CALIBRATION_ENABLED'):
-                binning = image_entry.binning or 1
+                binning = image_entry.binmode or 1
                 if self.camera.width and self.camera.height:
                     hints = {'sensor_shape': (self.camera.height // binning, self.camera.width // binning),
                              'binning': binning}
