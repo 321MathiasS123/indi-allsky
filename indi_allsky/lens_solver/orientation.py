@@ -125,9 +125,16 @@ def recoverOrientation(detections, catalog, latitude, longitude, timestamp, init
             unique = numpy.sum((index[:, 1:] != index[:, :-1]) & (index[:, 1:] < len(rays)), axis=1)
             unique += index[:, 0] < len(rays)
             scores.extend(unique + numpy.sum(numpy.maximum(0, 1-distance/SEED_RADIUS), axis=1)/len(world))
-        for i in numpy.argsort(scores)[-2:]:
-            if scores[i] >= 10:
-                seeds.append((scores[i], matrices[i], diameter))
+        order = numpy.argsort(scores)[::-1]
+        for _ in range(2):
+            if not len(order) or scores[order[0]] < 10:
+                break
+            i = order[0]
+            seeds.append((scores[i], matrices[i], diameter))
+            # Keep distinct orientations, not two triangles from the same sky
+            # match. Otherwise competing solutions never reach the ambiguity check.
+            trace = numpy.einsum('nij,ij->n', matrices[order], matrices[i])
+            order = order[trace < 1+2*numpy.cos(numpy.radians(5))]
 
     detections = fitting._truncateDetections(detections, *center, fitting.MAX_DETECTED_STARS)
     solutions = []

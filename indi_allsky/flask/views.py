@@ -8034,6 +8034,8 @@ class AjaxLensSolverView(BaseView):
 
 
     def dispatch_request(self):
+        if not isinstance(request.json, dict):
+            return jsonify({'success': False, 'message': 'Expected a JSON object'}), 400
         action = str(request.json.get('action', ''))
 
         if action == 'solve':
@@ -8050,9 +8052,13 @@ class AjaxLensSolverView(BaseView):
             return jsonify({'success': False, 'message': error}), 400
 
         try:
+            if isinstance(request.json['camera_id'], bool) or isinstance(request.json['timestamp'], bool):
+                raise ValueError
             camera_id = int(request.json['camera_id'])
             timestamp = int(request.json['timestamp'])
-        except (KeyError, TypeError, ValueError):
+            if not 0 < camera_id < 2**63:
+                raise ValueError  # prevent integer overflow in the database driver
+        except (KeyError, TypeError, ValueError, OverflowError):
             return jsonify({'success': False, 'message': 'camera_id and timestamp required'}), 400
 
         # explicit check: an unknown camera_id would otherwise fall through to a FakeCamera (lat/long 0.0) and solve silently wrong
@@ -8069,9 +8075,9 @@ class AjaxLensSolverView(BaseView):
         # resolve by exact camera + timestamp (NEVER "latest"); a huge int can raise OverflowError/OSError, not just ValueError
         try:
             ts_dt = datetime.fromtimestamp(timestamp)
+            ts_dt_end = ts_dt + timedelta(seconds=1)
         except (OverflowError, OSError, ValueError):
             return jsonify({'success': False, 'message': 'Invalid timestamp'}), 400
-        ts_dt_end = ts_dt + timedelta(seconds=1)
 
         image_entry = IndiAllSkyDbImageTable.query\
             .filter(IndiAllSkyDbImageTable.camera_id == camera_id)\
@@ -8124,7 +8130,9 @@ class AjaxLensSolverView(BaseView):
         if error:
             return jsonify({'success': False, 'message': error}), 400
 
-        reload_on_save = bool(request.json.get('RELOAD_ON_SAVE', False))
+        reload_on_save = request.json.get('RELOAD_ON_SAVE', False)
+        if not isinstance(reload_on_save, bool):
+            return jsonify({'success': False, 'message': 'RELOAD_ON_SAVE must be a boolean'}), 400
 
         applySolvedValuesToConfig(self.indi_allsky_config, values)
 

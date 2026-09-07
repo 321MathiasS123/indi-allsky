@@ -22,6 +22,8 @@ def parseSolverRequestValues(data, for_save=False):
         if key not in data:
             return None, 'Missing field: {0:s}'.format(key)
         try:
+            if isinstance(data[key], bool):
+                raise ValueError  # JSON booleans are not calibration numbers
             # json accepts literal Infinity/NaN; int(inf) raises OverflowError
             v = cast(float(data[key]))
         except (TypeError, ValueError, OverflowError):
@@ -36,6 +38,8 @@ def parseSolverRequestValues(data, for_save=False):
         if key not in data:
             continue
         try:
+            if isinstance(data[key], bool):
+                raise ValueError
             angle = float(data[key])
         except (TypeError, ValueError, OverflowError):
             return None, 'Invalid value for {0:s}'.format(key)

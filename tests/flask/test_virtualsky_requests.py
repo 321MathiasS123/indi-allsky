@@ -77,6 +77,62 @@ def test_invalid_altitude_never_saves(endpoint, altitude):
     assert saved == []
 
 
+@pytest.mark.parametrize('payload', [None, [], ['solve'], 'solve', 1, True])
+def test_malformed_payload_returns_bad_request(endpoint, payload):
+    app, view, _, saved = endpoint
+    with app.test_request_context(data=app.json.dumps(payload), content_type='application/json'):
+        response = view.dispatch_request()
+    assert response[1] == 400
+    assert saved == []
+
+
+@pytest.mark.parametrize('key', ['camera_id', 'timestamp'])
+@pytest.mark.parametrize('value', [float('inf'), float('-inf'), float('nan'), None, [], {}, True, False])
+def test_invalid_image_identifiers_return_bad_request(endpoint, key, value):
+    app, view, _, saved = endpoint
+    payload = dict(VALUES, action='solve', camera_id=7, timestamp=1770000000, LATITUDE_OFFSET=0)
+    payload[key] = value
+    with app.test_request_context(json=payload):
+        response = view.dispatch_request()
+    assert response[1] == 400
+    assert saved == []
+
+
+@pytest.mark.parametrize('value', ['false', 'true', None, 0, 1, [], {}])
+def test_malformed_reload_flag_never_saves_or_reloads(endpoint, value):
+    app, view, _, saved = endpoint
+    with app.test_request_context(json=dict(VALUES, action='save', RELOAD_ON_SAVE=value)):
+        response = view.dispatch_request()
+    assert response[1] == 400
+    assert saved == []
+
+
+@pytest.mark.parametrize('camera_id', [0, -1, 10**100])
+def test_invalid_camera_id_is_rejected_before_database_lookup(endpoint, camera_id):
+    app, view, _, saved = endpoint
+    with app.test_request_context(json=dict(VALUES, action='solve', LATITUDE_OFFSET=0,
+                                           camera_id=camera_id, timestamp=1770000000)):
+        assert view.dispatch_request()[1] == 400
+    assert saved == []
+
+
+@pytest.mark.parametrize('timestamp', [10**100, 253402293599])
+def test_timestamp_overflow_returns_bad_request(endpoint, timestamp):
+    app, view, namespace, _ = endpoint
+    camera = SimpleNamespace(id=7)
+    query = SimpleNamespace(first=lambda: camera)
+    query.filter = lambda *args: query
+    namespace['IndiAllSkyDbCameraTable'] = SimpleNamespace(id=7, query=query)
+    view.cameraSetup = lambda **kwargs: None
+    # Force the end-of-year-9999 case on every timezone/platform.
+    namespace['datetime'] = SimpleNamespace(fromtimestamp=lambda value: datetime.max.replace(microsecond=0))
+    if timestamp == 10**100:
+        namespace['datetime'] = datetime
+    with app.test_request_context(json=dict(VALUES, action='solve', LATITUDE_OFFSET=0,
+                                           camera_id=7, timestamp=timestamp)):
+        assert view.dispatch_request()[1] == 400
+
+
 @pytest.mark.parametrize('login_disabled', [False, True])
 def test_save_keeps_admin_authorization(endpoint, login_disabled):
     app, view, namespace, saved = endpoint
