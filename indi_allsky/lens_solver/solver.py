@@ -11,7 +11,7 @@ from . import fitting
 from .detection import StarDetector
 from .fitting import FitEngine
 from .fitting import SolveContext
-from .orientation import recoverOrientation
+from .orientation import recoverOrientation, pointingFromFit
 from .projection import projectToPixels
 from .calibration import calibrate, pipelineSignature
 
@@ -291,7 +291,17 @@ class IndiAllSkyLensSolver(object):
                 'quality': quality,
             })
 
-        p = fit['params']
+        p = fit['params'].copy()
+        pointing_solved = recovered is not None
+        # Older six-field clients retain their original offset representation.
+        if not fit['partial'] and not pointing_solved and 'LENS_ALTITUDE' in initial_values:
+            altitude, heading, roll = pointingFromFit(
+                p, latitude, longitude, obstime_unix, lens_altitude, pointing_azimuth)
+            # Retain the mapping if it implies unsupported below-horizon pointing.
+            if altitude >= -1e-8:
+                lens_altitude, pointing_azimuth = max(0.0, altitude), heading
+                p[:3] = [roll, 0., 0.]
+                pointing_solved = True
         diameter_native = p[3] * scale
         offset_x_native = p[4] * scale
         offset_y_native = p[5] * scale
@@ -304,7 +314,7 @@ class IndiAllSkyLensSolver(object):
             'OFFSET_X': int(round(offset_x_native)),
             'OFFSET_Y': int(round(offset_y_native)),
         }
-        if recovered is not None:
+        if pointing_solved:
             values.update(LENS_ALTITUDE=round(float(lens_altitude), 2),
                           POINTING_AZIMUTH=round(float(pointing_azimuth), 2))
 
@@ -335,7 +345,7 @@ class IndiAllSkyLensSolver(object):
             quality['stars_matched'], quality['rms_px'])
         if fit['partial']:
             message += ' (tilt could not be determined -- left unchanged)'
-        elif recovered is not None:
+        elif pointing_solved:
             message += ' (camera pointing recovered; latitude/longitude offsets reset to zero)'
 
         calibration = None

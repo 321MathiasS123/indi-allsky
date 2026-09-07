@@ -137,16 +137,21 @@ class StarDetector(object):
 
         mask = self.buildExclusionMask(image_gray.shape)
         # Excluded lights must not raise the threshold for the permitted sky.
-        _mean, stddev = cv2.meanStdDev(signal, mask=mask if self.use_sky_hints else None)
-        std = float(stddev[0, 0])
-        threshold_value = max(MIN_DETECTION_THRESHOLD, DETECTION_SIGMA * std)
-        _, thresh = cv2.threshold(signal, threshold_value, 255, cv2.THRESH_BINARY)
-
-        if mask is not None:
-            thresh = cv2.bitwise_and(thresh, mask)
-
-        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            thresh, connectivity=8)
+        threshold_masks = (mask, None) if self.use_sky_hints and mask is not None else (None,)
+        threshold_value = MIN_DETECTION_THRESHOLD
+        for threshold_mask in threshold_masks:
+            _mean, stddev = cv2.meanStdDev(signal, mask=threshold_mask)
+            threshold_value = max(threshold_value, DETECTION_SIGMA * float(stddev[0, 0]))
+            _, thresh = cv2.threshold(signal, threshold_value, 255, cv2.THRESH_BINARY)
+            if mask is not None:
+                thresh = cv2.bitwise_and(thresh, mask)
+            n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                thresh, connectivity=8)
+            if n_labels <= MAX_COMPONENTS:
+                break
+            # Masked sky can admit too much noise on stretched images. Retry
+            # once at the normal threshold, keeping exclusions and the limit.
+            del labels, stats, centroids  # release the large label map before retrying
         self.last_n_labels = int(n_labels)
 
         if n_labels > MAX_COMPONENTS:

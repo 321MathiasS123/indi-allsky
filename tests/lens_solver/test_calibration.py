@@ -160,6 +160,39 @@ def test_detection_mask_excludes_lights_from_calibration_threshold(tmp_path):
     assert np.all(hinted[:, 0] < 200)
 
 
+@pytest.mark.parametrize('bright_outside', [True, False])
+def test_masked_noise_retries_normal_threshold_without_removing_limit(monkeypatch, bright_outside):
+    image = np.full((1000, 2000), 15, np.uint8)
+    image[4:996:8, 4:996:8] = 30  # faint isolated noise in otherwise usable sky
+    for y in range(40, 1000, 140):
+        for x in range(40, 1000, 140):
+            cv2.circle(image, (x, y), 1, 220, -1)
+    if bright_outside:
+        image[:, 1000:] = np.random.default_rng(3).integers(0, 255, (1000, 1000), dtype=np.uint8)
+    mask = np.zeros(image.shape, np.uint8)
+    mask[:, :1000] = 255
+    detector = StarDetector({})
+    detector.use_sky_hints = True
+    monkeypatch.setattr(detector, 'buildExclusionMask', lambda shape: mask)
+    counts = []
+    components = cv2.connectedComponentsWithStats
+
+    def count_components(*args, **kwargs):
+        result = components(*args, **kwargs)
+        counts.append(result[0])
+        return result
+
+    monkeypatch.setattr(cv2, 'connectedComponentsWithStats', count_components)
+    detections = detector.detectStars(image)
+    assert len(counts) == 2 and counts[0] > 5000
+    assert detector.last_component_flood is not bright_outside
+    if bright_outside:
+        assert len(detections) == 49  # stars survive, noise and masked lights do not
+        assert np.all(detections[:, 0] < 1000)
+    else:
+        assert counts[-1] > 5000 and len(detections) == 0
+
+
 @pytest.mark.parametrize('altitude,heading', [(90, 0), (54, 123)])
 def test_solver_learns_from_rendered_catalogue(tmp_path, altitude, heading):
     from indi_allsky.lens_solver import IndiAllSkyLensSolver

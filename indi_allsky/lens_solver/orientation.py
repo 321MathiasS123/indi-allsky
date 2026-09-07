@@ -1,7 +1,7 @@
 """Recover pointing from rotation-invariant star triangles, then fit one rotation.
 
-Only used when the normal calibration cannot establish a full solution. The
-existing equisolid lens model and catalogue are reused; no astrometry index or
+Triangle search is used when the normal calibration cannot establish a full
+solution. The equisolid lens model and catalogue are reused; no astrometry index or
 network service is needed. Latitude/longitude offsets are zero in this fit:
 allowing them to vary as well would describe the same rotation twice.
 """
@@ -13,7 +13,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 from . import fitting
-from .projection import SIN45, predictAltAz
+from .projection import SIN45, predictAltAz, cameraAltAz
 
 
 PATTERN_STARS = 120
@@ -69,6 +69,22 @@ def _orientationValues(matrix):
     across = matrix @ numpy.array([numpy.cos(heading), -numpy.sin(heading), 0.0])
     roll = numpy.degrees(numpy.arctan2(across[1], across[0])+heading) % 360
     return altitude, numpy.degrees(heading) % 360, roll
+
+
+def pointingFromFit(params, latitude, longitude, timestamp, lens_altitude, pointing_azimuth):
+    """Express fitted sky offsets as camera pointing without changing the mapping."""
+    # Three orthogonal celestial directions determine the rotation exactly.
+    # This also reports small tilts found by the fast fit, without a blind search.
+    basis = numpy.array([[0., 0.], [90., 0.], [0., 90.]])
+    alt, az = predictAltAz(basis, latitude, longitude, timestamp)
+    world = numpy.column_stack([numpy.cos(alt)*numpy.sin(az),
+                                numpy.cos(alt)*numpy.cos(az), numpy.sin(alt)])
+    alt, az = predictAltAz(basis, latitude+params[1], longitude+params[2], timestamp)
+    alt, az = cameraAltAz(alt, az, lens_altitude, pointing_azimuth)
+    az = az-numpy.radians(params[0])
+    camera = numpy.column_stack([numpy.cos(alt)*numpy.sin(az),
+                                 numpy.cos(alt)*numpy.cos(az), numpy.sin(alt)])
+    return _orientationValues(camera.T @ world)
 
 
 def recoverOrientation(detections, catalog, latitude, longitude, timestamp, initial, width, height):
