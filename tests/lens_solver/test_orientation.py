@@ -5,7 +5,7 @@ import numpy
 import pytest
 
 from indi_allsky.lens_solver import IndiAllSkyLensSolver, predictAltAz, projectToPixels
-from indi_allsky.lens_solver.orientation import recoverOrientation
+from indi_allsky.lens_solver.orientation import recoverOrientation, pointingFromFit
 from indi_allsky.lens_solver import solver as solver_mod
 from tests.lens_solver.test_camera_tilt import reference_pixels, PARAMS, KEYS
 
@@ -90,18 +90,38 @@ def test_recovery_refuses_unreliable_matches(kind):
                               initial, 2028, 1520) is None
 
 
-def test_successful_zenith_fit_keeps_existing_fast_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize('altitude', [90, 88])
+def test_successful_zenith_fit_keeps_existing_fast_path(tmp_path, monkeypatch, altitude):
     def unexpected_recovery(*args):
         pytest.fail('A full zenith fit must not invoke pointing recovery')
 
     monkeypatch.setattr(solver_mod, 'recoverOrientation', unexpected_recovery)
     image_file = tmp_path / 'zenith.png'
-    _, detections, _, _ = star_field(88, 220)
+    _, detections, _, _ = star_field(altitude, 220)
     render_stars(image_file, detections)
-    initial = dict(zip(KEYS, [0, 0, 0, 2900, 20, -100]))
+    initial = dict(zip(KEYS, [0, 0, 0, 2900, 20, -100]), LENS_ALTITUDE=90)
     result = IndiAllSkyLensSolver({}).solve(image_file, 46.51, 8, 1770000000, initial)
     assert result['success'] and not result['partial']
-    assert set(result['values']) == set(KEYS)
+    assert abs(result['values']['LENS_ALTITUDE']-altitude) < 0.1
+    assert result['values']['LATITUDE_OFFSET'] == result['values']['LONGITUDE_OFFSET'] == 0
+
+
+@pytest.mark.parametrize('latitude,offsets', [(53, (-2.61, 0.01)), (-33.9, (7, -15)),
+                                            (90, (0, 20)), (-90, (0, -20))])
+@pytest.mark.parametrize('altitude,heading', [(None, 213), (90, 0), (87.4, 177), (54, 123), (0, 350)])
+def test_pointing_from_offsets_preserves_mapping(latitude, offsets, altitude, heading):
+    catalog = IndiAllSkyLensSolver({}).loadCatalog()
+    params = PARAMS.copy()
+    params[1:3] = offsets
+    alt, az = predictAltAz(catalog, latitude+offsets[0], 11+offsets[1], 1788731972)
+    expected = projectToPixels(alt, az, params, 2028, 1520,
+                               lens_altitude=altitude, pointing_azimuth=heading)
+    elevation, pointing, roll = pointingFromFit(params, latitude, 11, 1788731972, altitude, heading)
+    params[:3] = [roll, 0, 0]
+    alt, az = predictAltAz(catalog, latitude, 11, 1788731972)
+    actual = projectToPixels(alt, az, params, 2028, 1520,
+                             lens_altitude=elevation, pointing_azimuth=pointing)
+    numpy.testing.assert_allclose(actual, expected, atol=1e-7, rtol=0)
 
 
 def test_unsuccessful_recovery_preserves_partial_fit(tmp_path, monkeypatch):
