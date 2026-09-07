@@ -233,18 +233,13 @@ function loadJS(url, data, onDone, onError) {
                 <div class="tw:space-y-6 tw:pt-2">
                     
                     <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-4">
-                        {% for field in [form_virtualsky.AZIMUTH_ANGLE, form_virtualsky.POINTING_AZIMUTH, form_virtualsky.LATITUDE_OFFSET, form_virtualsky.LONGITUDE_OFFSET] %}
                         <div class="tw:form-control">
-                            <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ field.label.text }}</span></label>
-                            {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full') }}
+                            <label for="lens_altitude" class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">Camera elevation (°)</span></label>
+                            <input id="lens_altitude" name="LENS_ALTITUDE" type="number" value="{{ camera_altitude }}" readonly
+                                   title="Degrees above the horizon: 90° is zenith. Updated by Solve and included in Save. To set it manually, use Config → Location."
+                                   class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full">
                         </div>
-                        {% endfor %}
-                    </div>
-
-                    <p class="tw:text-xs tw:text-base-content/70">Lens altitude: <span id="lens_altitude">{{ camera_altitude }}</span>°. Solve can recover camera pointing automatically; altitude can also be set under Config → Location. Pointing Azimuth is the lens direction (0° north, 90° east), ignored at 90° altitude. Azimuth Angle controls image rotation.</p>
-
-                    <div class="tw:grid tw:grid-cols-2 md:tw:grid-cols-4 tw:gap-4">
-                        {% for field in [form_virtualsky.IMAGE_CIRCLE_DIAMETER, form_virtualsky.OFFSET_X, form_virtualsky.OFFSET_Y, form_virtualsky.MAGNITUDE] %}
+                        {% for field in [form_virtualsky.POINTING_AZIMUTH, form_virtualsky.AZIMUTH_ANGLE, form_virtualsky.IMAGE_CIRCLE_DIAMETER] %}
                         <div class="tw:form-control">
                             <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ field.label.text }}</span></label>
                             {% if field == form_virtualsky.IMAGE_CIRCLE_DIAMETER %}
@@ -256,7 +251,22 @@ function loadJS(url, data, onDone, onError) {
                         {% endfor %}
                     </div>
 
+                    <div class="tw:grid tw:grid-cols-2 md:tw:grid-cols-4 tw:gap-4">
+                        {% for field in [form_virtualsky.OFFSET_X, form_virtualsky.OFFSET_Y, form_virtualsky.LATITUDE_OFFSET, form_virtualsky.LONGITUDE_OFFSET] %}
+                        <div class="tw:form-control">
+                            <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ field.label.text }}</span></label>
+                            {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full') }}
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <p class="tw:text-xs tw:text-base-content/70">Save writes all eight calibration values above. Solve updates them for review before saving. Camera elevation is measured above the horizon (90° is zenith). Pointing Azimuth is the lens direction (0° north, 90° east), ignored at 90° elevation. Azimuth Angle controls image rotation.</p>
+
                     <div class="tw:flex tw:flex-wrap tw:gap-6 tw:items-center tw:pt-2">
+                        <div class="tw:form-control">
+                            <label class="tw:label tw:pb-1"><span class="tw:label-text tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/60">{{ form_virtualsky.MAGNITUDE.label.text }} (display only)</span></label>
+                            {{ form_virtualsky.MAGNITUDE(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm tw:w-full') }}
+                        </div>
                         {% for field in [form_virtualsky.CONSTELLATIONS, form_virtualsky.SHOWSTARS, form_virtualsky.SHOWPLANETS, form_virtualsky.CONSTELLATIONLABELS, form_virtualsky.SHOWSTARLABELS, form_virtualsky.SHOWPLANETLABELS] %}
                         <div class="tw:flex tw:items-center tw:gap-2.5">
                             <input type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm" {{ 'checked' if field.data else '' }} id="{{ field.id }}" name="{{ field.name }}">
@@ -732,7 +742,7 @@ $('#lens_solve').on('click', function() {
                     ? rdata['values']['POINTING_AZIMUTH'] : payload['POINTING_AZIMUTH']);
                 if (rdata['values']['LENS_ALTITUDE'] !== undefined) {
                     camera_altitude = rdata['values']['LENS_ALTITUDE'];
-                    $('#lens_altitude').text(camera_altitude);
+                    $('#lens_altitude').val(camera_altitude);
                 }
                 forceRedrawPlanetarium();
                 setSolverMessage(rdata['message'], 'success');
