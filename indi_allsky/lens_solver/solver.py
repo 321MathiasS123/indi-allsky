@@ -11,6 +11,7 @@ from . import fitting
 from .detection import StarDetector
 from .fitting import FitEngine
 from .fitting import SolveContext
+from .orientation import recoverOrientation
 from .projection import projectToPixels
 
 logger = logging.getLogger('indi_allsky')
@@ -117,7 +118,7 @@ class IndiAllSkyLensSolver(object):
 
     def solve(self, image_file, latitude, longitude, obstime_unix, initial_values,
               lens_altitude=90.0, pointing_azimuth=0.0):
-        """Detect stars and fit the 6 geometric overlay parameters.
+        """Fit overlay geometry, recovering camera pointing when needed.
         initial_values/values use the VirtualSky form-field keys; every
         return is a full success or a structured failure, always with a
         timing dict.
@@ -227,6 +228,20 @@ class IndiAllSkyLensSolver(object):
             detections, catalog, latitude, longitude, obstime_unix,
             initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
 
+        # Preserve the existing zenith/small-tilt calibration whenever it works.
+        # A failed or partial fit may instead need a different camera pointing.
+        recovered = None
+        if ((not fit['success'] or fit.get('partial'))
+                and fit.get('reason') != 'catalog_not_validated'):
+            t0 = time.monotonic()
+            recovered = recoverOrientation(detections, catalog, latitude, longitude,
+                obstime_unix, initial_params, work_width, work_height)
+            self._fit_s += time.monotonic() - t0
+            if recovered is not None:
+                fit = recovered
+                lens_altitude = fit['lens_altitude']
+                pointing_azimuth = fit['pointing_azimuth']
+
         timing['coarse_s'] = round(self._coarse_s, 3)
         timing['fit_s'] = round(self._fit_s, 3)
         timing['residual_evals'] = int(self._residual_evals)
@@ -263,6 +278,9 @@ class IndiAllSkyLensSolver(object):
             'OFFSET_X': int(round(offset_x_native)),
             'OFFSET_Y': int(round(offset_y_native)),
         }
+        if recovered is not None:
+            values.update(LENS_ALTITUDE=round(float(lens_altitude), 2),
+                          POINTING_AZIMUTH=round(float(pointing_azimuth), 2))
 
         # renderer-agnostic geometry for future non-VirtualSky consumers
         geometry = {
@@ -291,6 +309,8 @@ class IndiAllSkyLensSolver(object):
             quality['stars_matched'], quality['rms_px'])
         if fit['partial']:
             message += ' (tilt could not be determined -- left unchanged)'
+        elif recovered is not None:
+            message += ' (camera pointing recovered; latitude/longitude offsets reset to zero)'
 
         return finish({
             'success': True,
