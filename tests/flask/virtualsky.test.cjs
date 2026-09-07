@@ -110,7 +110,7 @@ function calibrationPage() {
     $('#lens_save').prop('disabled', /\sdisabled(?:\s|=|>)/.test(html.match(/<button id="lens_save"[^>]*>/)[0]));
     $('#LATITUDE_OFFSET').val('43.49');
     $('#POINTING_AZIMUTH').val('123');
-    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, lensCalibration: null,
+    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, lensCalibration: null, calibrationMessage: '',
         last_image_timestamp: 1770000000,
         forceRedrawPlanetarium() {}});
     vm.runInContext(html.slice(html.indexOf('const SOLVE_FIELDS')).split('</script>')[0], context);
@@ -183,4 +183,31 @@ test('recovered pointing updates the overlay, displayed altitude and next Save/S
         for (const [field, value] of Object.entries(values)) assert.equal(payload[field], value);
         requests.at(-1).complete();
     }
+});
+
+test('declined calibration keeps the requested switch and explains why toggling has no effect', () => {
+    const {$, requests} = calibrationPage();
+    const values = {AZIMUTH_ANGLE: 200, LATITUDE_OFFSET: 0, LONGITUDE_OFFSET: 0,
+        IMAGE_CIRCLE_DIAMETER: 2951, OFFSET_X: 7, OFFSET_Y: -135};
+    $('#CALIBRATION_ENABLED').prop('checked', true);
+    $('#lens_solve').handlers.click();
+    requests[0].success({success: true, values, calibration: null,
+        calibration_message: 'Too few reliable stars.', message: 'Geometry solved.'});
+    requests[0].complete();
+    assert.equal($('#CALIBRATION_ENABLED').prop('checked'), true);
+    assert.equal($('#calibration_summary').value, 'No correction applied. Too few reliable stars.');
+    for (const enabled of [false, true]) {
+        $('#CALIBRATION_ENABLED').prop('checked', enabled);
+        $('#CALIBRATION_ENABLED').handlers.change();
+        assert.equal($('#calibration_summary').value, 'No correction applied. Too few reliable stars.');
+    }
+    $('#lens_solve').handlers.click();
+    assert.equal(JSON.parse(requests[1].data).CALIBRATION_ENABLED, true);
+    requests[1].success({success: true, values,
+        calibration: {summary: 'Validated on unused stars.'}, message: 'Solved.'});
+    requests[1].complete();
+    assert.equal($('#calibration_summary').value, 'Correction enabled. Validated on unused stars.');
+    $('#CALIBRATION_ENABLED').prop('checked', false);
+    $('#CALIBRATION_ENABLED').handlers.change();
+    assert.equal($('#calibration_summary').value, 'Correction off. Validated on unused stars.');
 });

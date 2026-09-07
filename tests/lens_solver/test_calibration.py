@@ -60,6 +60,23 @@ def test_correct_mapping_is_retained_when_no_improvement_is_needed():
     assert result is None
 
 
+def test_useful_correction_is_attenuated_to_keep_boundary_taper_safe():
+    source = np.array(np.meshgrid(np.linspace(-.9, .9, 13), np.linspace(-.9, .9, 13))).reshape(2, -1).T
+    source = source[np.linalg.norm(source, axis=1) < .92]
+    shift = np.array([.028, .038])
+    result, reason = fitCorrection(source, source+shift, source, .08)
+    assert result is not None, reason
+    model, stats = result
+    # The full translation exceeds the existing gradient limit at the taper.
+    # Its reduced strength must still improve stars not used in the fit.
+    center_shift = displacement(np.zeros((1, 2)), model)[0]
+    assert 0 < np.linalg.norm(center_shift) < np.linalg.norm(shift)
+    assert stats['after'] < stats['before']*.3
+    saved = saved_model()
+    saved.update(model)
+    assert validateCalibration(saved)
+
+
 @pytest.mark.parametrize('kind', ['few', 'line', 'noise'])
 def test_unreliable_calibration_is_refused(kind):
     source, target, expected = field()
