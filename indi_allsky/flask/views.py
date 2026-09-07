@@ -8103,7 +8103,7 @@ class AjaxLensSolverView(BaseView):
         try:
             result = solver.solve(
                 image_file, latitude, longitude, obstime_unix, values,
-                lens_altitude=self.camera.alt,
+                lens_altitude=values.get('LENS_ALTITUDE', self.camera.alt),
                 pointing_azimuth=values.get('POINTING_AZIMUTH', self.camera.data.get('vs_pointing_azimuth', 0.0)))
         except Exception:  # noqa: BLE001
             # never return a raw exception string to the client

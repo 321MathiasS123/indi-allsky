@@ -55,6 +55,26 @@ def test_old_save_payload_preserves_pointing(endpoint):
     with app.test_request_context(json=values):
         assert view.dispatch_request().get_json()['success']
     assert saved[0]['VIRTUALSKY']['POINTING_AZIMUTH'] == 88
+    assert saved[0]['LENS_ALTITUDE'] == 54
+
+
+@pytest.mark.parametrize('altitude', [0, 54, 90])
+def test_save_recovered_pointing(endpoint, altitude):
+    app, view, _, saved = endpoint
+    with app.test_request_context(json=dict(VALUES, action='save', LENS_ALTITUDE=altitude,
+                                           POINTING_AZIMUTH=0, LATITUDE_OFFSET=0)):
+        assert view.dispatch_request().get_json()['success']
+    assert saved[0]['LENS_ALTITUDE'] == altitude
+    assert saved[0]['VIRTUALSKY']['POINTING_AZIMUTH'] == 0
+    assert saved[0]['VIRTUALSKY']['LATITUDE_OFFSET'] == 0
+
+
+@pytest.mark.parametrize('altitude', [-1, 91, None, 'bad', float('nan'), float('inf')])
+def test_invalid_altitude_never_saves(endpoint, altitude):
+    app, view, _, saved = endpoint
+    with app.test_request_context(json=dict(VALUES, action='save', LENS_ALTITUDE=altitude)):
+        assert view.dispatch_request()[1] == 400
+    assert saved == []
 
 
 @pytest.mark.parametrize('login_disabled', [False, True])
@@ -81,7 +101,8 @@ def test_invalid_pointing_never_saves(endpoint, heading):
 
 
 @pytest.mark.parametrize('explicit_heading', [None, 0, 123])
-def test_solve_uses_selected_camera_orientation(endpoint, tmp_path, explicit_heading):
+@pytest.mark.parametrize('explicit_altitude', [None, 0, 54])
+def test_solve_uses_selected_camera_orientation(endpoint, tmp_path, explicit_heading, explicit_altitude):
     app, view, namespace, _ = endpoint
     camera = SimpleNamespace(id=7, alt=20, data={'vs_pointing_azimuth': 250})
     image_file = tmp_path / 'sky.png'
@@ -116,10 +137,13 @@ def test_solve_uses_selected_camera_orientation(endpoint, tmp_path, explicit_hea
         del values['POINTING_AZIMUTH']
     else:
         values['POINTING_AZIMUTH'] = explicit_heading
+    if explicit_altitude is not None:
+        values['LENS_ALTITUDE'] = explicit_altitude
     with app.test_request_context(json=values):
         assert view.dispatch_request().get_json()['success']
     expected_heading = 250 if explicit_heading is None else explicit_heading
-    assert calls[0][1] == {'lens_altitude': 20, 'pointing_azimuth': expected_heading}
+    expected_altitude = 20 if explicit_altitude is None else explicit_altitude
+    assert calls[0][1] == {'lens_altitude': expected_altitude, 'pointing_azimuth': expected_heading}
 
 
 @pytest.mark.parametrize('altitude,expected', [(None, 90), (90, 90), (0, 0), (54, 54)])

@@ -81,7 +81,7 @@ function calibrationPage() {
             val(value) { if (value === undefined) return this.value; this.value = value; return this; },
             prop(key, value) { if (value === undefined) return this.properties[key]; this.properties[key] = value; return this; },
             addClass() { return this; }, removeClass() { return this; },
-            text() { return this; }, show() { return this; }, hide() { return this; },
+            text(value) { this.value = value; return this; }, show() { return this; }, hide() { return this; },
         });
         return controls.get(id);
     };
@@ -90,10 +90,10 @@ function calibrationPage() {
     $('#lens_save').prop('disabled', /\sdisabled(?:\s|=|>)/.test(html.match(/<button id="lens_save"[^>]*>/)[0]));
     $('#LATITUDE_OFFSET').val('43.49');
     $('#POINTING_AZIMUTH').val('123');
-    const context = vm.createContext({$, camera_id: 1, last_image_timestamp: 1770000000,
+    const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, last_image_timestamp: 1770000000,
         forceRedrawPlanetarium() {}});
     vm.runInContext(html.slice(html.indexOf('const SOLVE_FIELDS')).split('</script>')[0], context);
-    return {$, requests};
+    return {$, requests, context};
 }
 
 test('manual Save is available without solving and sends pointing and large offsets', () => {
@@ -142,5 +142,24 @@ test('unsuccessful solves restore manual Save after application and network fail
         requests[0].complete();
         assert.equal($('#lens_save').prop('disabled'), false);
         assert.equal($('#LATITUDE_OFFSET').val(), '43.49');
+    }
+});
+
+test('recovered pointing updates the overlay, displayed altitude and next Save/Solve payload', () => {
+    const {$, requests, context} = calibrationPage();
+    const values = {AZIMUTH_ANGLE: 200, LATITUDE_OFFSET: 0, LONGITUDE_OFFSET: 0,
+        IMAGE_CIRCLE_DIAMETER: 2951, OFFSET_X: 7, OFFSET_Y: -135,
+        LENS_ALTITUDE: 0, POINTING_AZIMUTH: 0};
+    $('#lens_solve').handlers.click();
+    requests[0].success({success: true, values, message: 'Pointing recovered'});
+    requests[0].complete();
+    assert.equal(context.camera_altitude, 0);
+    assert.equal($('#lens_altitude').value, 0);
+    assert.equal($('#POINTING_AZIMUTH').val(), 0);
+    for (const button of ['#lens_save', '#lens_solve']) {
+        $(button).handlers.click();
+        const payload = JSON.parse(requests.at(-1).data);
+        for (const [field, value] of Object.entries(values)) assert.equal(payload[field], value);
+        requests.at(-1).complete();
     }
 });

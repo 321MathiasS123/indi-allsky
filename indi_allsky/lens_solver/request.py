@@ -15,7 +15,7 @@ SOLVER_REQUEST_FIELDS = (
 def parseSolverRequestValues(data, for_save=False):
     """Validate and coerce the six solver form values from request JSON.
     Returns (values, None) or (None, error); only the six known keys are
-    ever passed through, plus the optional fixed pointing azimuth.
+    ever passed through, plus optional camera pointing angles.
     """
     values = {}
     for key, cast, vmin, vmax in SOLVER_REQUEST_FIELDS:
@@ -32,24 +32,27 @@ def parseSolverRequestValues(data, for_save=False):
             return None, '{0:s} out of range'.format(key)
         values[key] = v
 
-    if 'POINTING_AZIMUTH' in data:
+    for key, vmin, vmax in (('POINTING_AZIMUTH', 0.0, 360.0), ('LENS_ALTITUDE', 0.0, 90.0)):
+        if key not in data:
+            continue
         try:
-            heading = float(data['POINTING_AZIMUTH'])
+            angle = float(data[key])
         except (TypeError, ValueError, OverflowError):
-            return None, 'Invalid value for POINTING_AZIMUTH'
-        if not 0.0 <= heading <= 360.0:
-            return None, 'POINTING_AZIMUTH out of range'
-        values['POINTING_AZIMUTH'] = heading
+            return None, 'Invalid value for {0:s}'.format(key)
+        if not vmin <= angle <= vmax:
+            return None, '{0:s} out of range'.format(key)
+        values[key] = angle
 
     return values, None
 
 
 def applySolvedValuesToConfig(config, values):
-    """Write LENS_AZIMUTH, the five VIRTUALSKY offset/diameter keys and an
-    optional pointing azimuth, in place -- never LENS_ALTITUDE or the
-    LENS_IMAGE_CIRCLE family, which drive unrelated behavior.
+    """Write overlay calibration and optional camera pointing, in place.
+    The LENS_IMAGE_CIRCLE family drives unrelated behavior and stays unchanged.
     """
     config['LENS_AZIMUTH'] = values['AZIMUTH_ANGLE']
+    if 'LENS_ALTITUDE' in values:
+        config['LENS_ALTITUDE'] = values['LENS_ALTITUDE']
 
     if 'VIRTUALSKY' not in config:
         config['VIRTUALSKY'] = {}
