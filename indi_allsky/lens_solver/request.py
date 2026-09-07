@@ -18,8 +18,11 @@ def parseSolverRequestValues(data, for_save=False):
     ever passed through, plus optional camera pointing angles.
     """
     values = {}
-    for key, cast, vmin, vmax in SOLVER_REQUEST_FIELDS:
+    for key, cast, vmin, vmax in SOLVER_REQUEST_FIELDS + (
+            ('POINTING_AZIMUTH', float, 0.0, 360.0), ('LENS_ALTITUDE', float, 0.0, 90.0)):
         if key not in data:
+            if key in ('POINTING_AZIMUTH', 'LENS_ALTITUDE'):
+                continue  # optional for clients that predate camera pointing
             return None, 'Missing field: {0:s}'.format(key)
         try:
             if isinstance(data[key], bool):
@@ -33,19 +36,6 @@ def parseSolverRequestValues(data, for_save=False):
         if not math.isfinite(v) or (not manual_offset and not vmin <= v <= vmax):
             return None, '{0:s} out of range'.format(key)
         values[key] = v
-
-    for key, vmin, vmax in (('POINTING_AZIMUTH', 0.0, 360.0), ('LENS_ALTITUDE', 0.0, 90.0)):
-        if key not in data:
-            continue
-        try:
-            if isinstance(data[key], bool):
-                raise ValueError
-            angle = float(data[key])
-        except (TypeError, ValueError, OverflowError):
-            return None, 'Invalid value for {0:s}'.format(key)
-        if not vmin <= angle <= vmax:
-            return None, '{0:s} out of range'.format(key)
-        values[key] = angle
 
     return values, None
 
