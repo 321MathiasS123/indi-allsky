@@ -170,7 +170,14 @@ async function loop() {
         });
 
 
-        if (redraw_planetarium || image_timestamp != last_image_timestamp) {
+        // The photo is ready even if layout or overlay drawing is not. Solve
+        // must use this frame, independently of the planetarium's first draw.
+        if (!last_image_timestamp && !$('#lens_save').prop('disabled')) {
+            $('#lens_solve').prop('disabled', false);
+        }
+        redraw_planetarium = redraw_planetarium || image_timestamp != last_image_timestamp;
+        last_image_timestamp = image_timestamp;
+        if (redraw_planetarium) {
             var magnitude = Number($("#MAGNITUDE").val());
             var constellations = $("#CONSTELLATIONS").prop('checked');
             var constellationlabels = $("#CONSTELLATIONLABELS").prop('checked');
@@ -312,8 +319,6 @@ async function loop() {
 
             redraw_planetarium = false;
 
-            // update timestamp
-            last_image_timestamp = image_timestamp;
         }
     };
 
@@ -460,7 +465,7 @@ function loadJS(url, data, onDone, onError) {
 
                     <div class="tw:flex tw:flex-wrap tw:gap-3 tw:items-center">
                         {% if can_save_config %}
-                        <button id="lens_solve" type="button"
+                        <button id="lens_solve" type="button" disabled
                                 title="Solve overlay geometry and recover camera pointing if needed. Results fill the form for review; nothing is saved."
                                 class="tw:btn tw:btn-sm tw:btn-info tw:gap-1.5 tw:rounded-[var(--radius-box)]">
                             <span id="lens_solve_spinner" class="tw:loading tw:loading-spinner tw:loading-xs" style="display: none;" aria-hidden="true"></span>
@@ -1014,7 +1019,7 @@ $('#lens_save').on('click', function() {
             setSaveButtonFailed(true);
         },
         complete: function() {
-            $('#lens_solve').prop('disabled', false);
+            $('#lens_solve').prop('disabled', !last_image_timestamp);
             $('#lens_save').prop('disabled', false);
         },
     });
