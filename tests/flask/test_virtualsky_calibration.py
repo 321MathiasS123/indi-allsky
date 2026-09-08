@@ -1,12 +1,17 @@
 import ast
+from collections import OrderedDict
+from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 from flask_sqlalchemy import SQLAlchemy
 
+from indi_allsky.exceptions import ConfigSaveException
 from indi_allsky.lens_solver.calibration import displacement
 from tests.flask.test_virtualsky import run_node
 from tests.lens_solver.test_calibration import saved_model
@@ -112,3 +117,58 @@ def test_endpoint_saves_validated_calibration_and_disabled_preference(endpoint):
             CALIBRATION_ENABLED=True, CALIBRATION={'version': 1})):
         assert view.dispatch_request()[1] == 400
     assert len(saved) == 2
+
+
+@pytest.fixture
+def config_store(endpoint):
+    app, view, namespace, saved = endpoint
+    path = Path(__file__).resolve().parents[2] / 'indi_allsky/config.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    tree.body = [n for n in tree.body if isinstance(n, ast.ClassDef)
+                 and n.name in ('IndiAllSkyConfigBase', 'IndiAllSkyConfig')]
+    scope = dict(OrderedDict=OrderedDict, Path=Path, app=app, datetime=datetime,
+                 timezone=timezone, ConfigSaveException=ConfigSaveException,
+                 IndiAllSkyDbUserTable=MagicMock())
+    exec(compile(tree, str(path), 'exec'), scope)
+    cls = scope['IndiAllSkyConfig']
+    # Keep the real save, validation, encryption and reload paths. Only replace
+    # database access, preserving its JSON serialization boundary.
+    cls._getConfigEntry = lambda self: SimpleNamespace(
+        data=deepcopy(saved[-1]), id=len(saved), level='test', createDate=datetime.now())
+
+    def store(self, config, user, note, encrypted):
+        saved.append(json.loads(json.dumps(config)))
+        return SimpleNamespace(id=len(saved))
+
+    cls._setConfigEntry = store
+    saved.append(deepcopy(cls._base_config))
+    obj = cls()
+    view._indi_allsky_config_obj = obj
+    view.indi_allsky_config = obj.config
+    namespace['ConfigSaveException'] = ConfigSaveException
+    return app, view, cls, saved
+
+
+def test_calibration_survives_real_config_save_and_reload(config_store):
+    app, view, cls, saved = config_store
+    model = saved_model()
+    for enabled, calibration in [(True, model), (False, model), (False, None), (True, model)]:
+        with app.test_request_context(json=dict(VALUES, action='save', LENS_ALTITUDE=90,
+                CALIBRATION_ENABLED=enabled, CALIBRATION=calibration)):
+            response = app.make_response(view.dispatch_request())
+        assert response.status_code == 200, response.get_json()
+        reloaded = cls()
+        assert reloaded.config['VIRTUALSKY']['CALIBRATION'] == calibration
+        assert reloaded.config['VIRTUALSKY']['CALIBRATION_ENABLED'] is enabled
+        view._indi_allsky_config_obj = reloaded
+        view.indi_allsky_config = reloaded.config
+    assert len(saved) == 5
+
+
+@pytest.mark.parametrize('key,value', [('CALIBRATION', []), ('CALIBRATION', 'invalid'),
+    ('CALIBRATION', 1), ('CALIBRATION', True), ('POINTING_AZIMUTH', 'invalid')])
+def test_config_type_validation_remains_strict(config_store, key, value):
+    _, view, _, _ = config_store
+    view.indi_allsky_config['VIRTUALSKY'][key] = value
+    with pytest.raises(ConfigSaveException, match='wrong type'):
+        view._indi_allsky_config_obj._validateConfig()
