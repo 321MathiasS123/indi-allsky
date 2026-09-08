@@ -1268,7 +1268,10 @@ class IndiAllSkyConfig(IndiAllSkyConfigBase):
 
 
                     try:
-                        if isinstance(self.config[key][key_l2], int):
+                        if (key, key_l2) == ('VIRTUALSKY', 'CALIBRATION'):
+                            # An absent correction is null; a learned model is an object.
+                            valid_types = (dict, type(None))
+                        elif isinstance(self.config[key][key_l2], int):
                             # jq will convert floats that end in .0 to ints
                             valid_types = (int, float)
                         else:
