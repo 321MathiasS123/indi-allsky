@@ -230,19 +230,19 @@ test('declined calibration keeps the requested switch and explains why toggling 
         calibration_message: 'Too few reliable stars.', message: 'Geometry solved.'});
     requests[0].complete();
     assert.equal($('#CALIBRATION_ENABLED').prop('checked'), true);
-    assert.equal($('#calibration_summary').value, 'No correction applied. Too few reliable stars.');
+    assert.equal($('#calibration_summary').value, 'No additional correction applied. Too few reliable stars.');
     for (const enabled of [false, true]) {
         $('#CALIBRATION_ENABLED').prop('checked', enabled);
         $('#CALIBRATION_ENABLED').handlers.change();
-        assert.equal($('#calibration_summary').value, 'No correction applied. Too few reliable stars.');
+        assert.equal($('#calibration_summary').value, 'No additional correction applied. Too few reliable stars.');
     }
     $('#lens_solve').handlers.click();
     assert.equal(JSON.parse(requests[1].data).CALIBRATION_ENABLED, true);
     requests[1].success({success: true, values,
         calibration: {summary: 'Validated on unused stars.'}, message: 'Solved.'});
     requests[1].complete();
-    assert.equal($('#calibration_summary').value, 'Correction enabled. Validated on unused stars.');
+    assert.equal($('#calibration_summary').value, 'Learned correction enabled. Validated on unused stars.');
     $('#CALIBRATION_ENABLED').prop('checked', false);
     $('#CALIBRATION_ENABLED').handlers.change();
-    assert.equal($('#calibration_summary').value, 'Correction off. Validated on unused stars.');
+    assert.equal($('#calibration_summary').value, 'Learned correction off. Validated on unused stars.');
 });
