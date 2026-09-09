@@ -3267,6 +3267,11 @@ VirtualSky.prototype.drawCardinalPoints = function(){
 			y = isFinite(pos.y) ? pos.y - pt/2 : 0;
 			if(x < 0 || x > this.wide-pt) x = -r;
 		}
+		if(this.positionCardinalLabel){
+			pos = this.positionCardinalLabel(x,y,m ? m.width : r*2,fontsize);
+			if(!pos) continue;
+			x = pos[0]; y = pos[1];
+		}
 		if(x > 0) c.fillText(d[i],x,y);
 	}
 	c.fill();
