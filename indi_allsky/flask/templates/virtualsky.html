@@ -401,7 +401,7 @@ function loadJS(url, data, onDone, onError) {
                     <div id="virtualsky-hint" class="tw:alert tw:alert-info tw:text-xs tw:rounded-[var(--radius-box)]">
                         <i class="tw:icon-[lucide--info] tw:w-4 tw:h-4" aria-hidden="true"></i>
                         <span><strong>Camera location and image time must be correct</strong> for accurate sky alignment.
-                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all nine geometry values and the optional lens calibration shown below. Camera pointing and alignment are also available under Config → Location.{% endif %}
+                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all nine geometry values and the optional overlay correction shown below. Camera pointing and alignment are also available under Config → Location.{% endif %}
                         </span>
                     </div>
 
@@ -441,17 +441,17 @@ function loadJS(url, data, onDone, onError) {
                     </div>
 
                     <fieldset class="virtualsky-group">
-                        <legend>Lens calibration (optional)</legend>
+                        <legend>Additional overlay correction (optional)</legend>
                         <label class="virtualsky-layer" for="CALIBRATION_ENABLED">
                             <input id="CALIBRATION_ENABLED" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm"
                                    {{ 'checked' if lens_calibration_enabled | default(false) else '' }}>
-                            Use learned lens correction
+                            Apply additional correction
                         </label>
-                        <p>The normal solver already adjusts camera pointing and lens curvature. Enable this before Solve if stars still do not line up across the image.
-                            It learns an additional correction from matched stars, accepted only when independent validation shows an improvement.
+                        <p>If stars still do not line up after a normal solve, enable this and solve again.
+                            The correction is applied only when validation confirms an improvement.
                             Toggle to compare; only the overlay changes. Save remembers your choice.</p>
                         <p id="calibration_summary" role="status" aria-live="polite"></p>
-                        <details><summary>Calibration values included in Save</summary>
+                        <details><summary>Correction values included in Save</summary>
                             <pre id="calibration_details" style="max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
                         </details>
                     </fieldset>
@@ -524,7 +524,7 @@ function loadJS(url, data, onDone, onError) {
                         <p id="lens_save_help"><strong>Save</strong> writes all nine calibration values to the camera configuration,
                            including manually entered values. Display controls are not saved. Azimuth also repositions
                            the cardinal-direction labels burned into future captured images.</p>
-                        <p><strong>Learned lens correction</strong> is optional and can reduce residual mismatches
+                        <p><strong>Additional overlay correction</strong> is optional and can reduce residual mismatches
                            after the normal solve. It requires a reliable star match and uses the detection mask
                            and sky ROI as hints. The correction is accepted only when independent validation stars
                            support an improvement; otherwise the normal alignment is kept and the reason is shown.
@@ -881,7 +881,7 @@ function calibrationGeometry() {
 
 function updateCalibrationStatus() {
     $('#calibration_summary').text(lensCalibration
-        ? ( ($('#CALIBRATION_ENABLED').prop('checked') ? 'Learned correction enabled. ' : 'Learned correction off. ') + lensCalibration.summary )
+        ? ( ($('#CALIBRATION_ENABLED').prop('checked') ? 'Additional correction enabled. ' : 'Additional correction off. ') + lensCalibration.summary )
         : 'No additional correction applied. ' + (calibrationMessage || 'Use this if mismatches remain after a normal solve.'));
     $('#calibration_details').text(lensCalibration ? JSON.stringify(lensCalibration, null, 2) : 'None');
 }
@@ -893,7 +893,7 @@ $('#CALIBRATION_ENABLED').on('change', function() {
 $(SOLVE_FIELDS.map(f => '#' + f).concat('#POINTING_AZIMUTH').join(', ')).on('change', function() {
     // A residual field belongs to one base alignment, not arbitrary new settings.
     lensCalibration = null;
-    calibrationMessage = 'Alignment changed. Solve again to learn a correction.';
+    calibrationMessage = 'Alignment changed. Solve again to calculate an additional correction.';
     updateCalibrationStatus();
 });
 
