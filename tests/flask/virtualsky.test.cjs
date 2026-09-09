@@ -210,6 +210,8 @@ test('recovered pointing updates the overlay, displayed altitude and next Save/S
     assert.equal(context.precession, true);
     assert.equal($('#lens_altitude').value, 0);
     assert.equal($('#POINTING_AZIMUTH').val(), 0);
+    assert.deepEqual(Array.from(context.calibrationGeometry()),
+        [200, 0, 0, 2951, 7, -135, 0, 0, 0.08, 1]);
     for (const button of ['#lens_save', '#lens_solve']) {
         $(button).handlers.click();
         const payload = JSON.parse(requests.at(-1).data);

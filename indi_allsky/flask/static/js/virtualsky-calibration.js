@@ -22,8 +22,12 @@
     }
 
     function compatible(model, geometry, size, context, uuid) {
-        if (!model || model.version !== 1 || model.camera_uuid !== uuid) return false;
-        for (const [saved, current] of [[model.geometry, geometry], [model.image_size, size],
+        if (!model || ![1, 2].includes(model.version) || model.camera_uuid !== uuid
+            || !Array.isArray(model.geometry) || model.geometry.length !== (model.version === 2 ? 10 : 8)) return false;
+        // Version 1 predates lens curvature and catalogue-date correction.
+        const savedGeometry = model.version === 1 && geometry.length === 10
+            ? [...model.geometry, 0, 0] : model.geometry;
+        for (const [saved, current] of [[savedGeometry, geometry], [model.image_size, size],
                                         [model.context, context]]) {
             if (!Array.isArray(saved) || saved.length !== current.length ||
                 saved.some((n, i) => !Number.isFinite(n) || !Number.isFinite(current[i])
@@ -78,10 +82,11 @@
             let u = target[0], v = target[1];
             // Server validation bounds the displacement gradient below 0.45,
             // so this fixed-point inverse converges even across the taper.
-            for (let i = 0; i < 30; i++) {
+            // Orthographic rims need extra precision to remain inside the lens.
+            for (let i = 0; i < 40; i++) {
                 const d = delta(model, u, v);
                 const nu = target[0]-d[0], nv = target[1]-d[1];
-                if (Math.hypot(nu-u, nv-v) < 1e-10) {
+                if (Math.hypot(nu-u, nv-v) < 1e-14) {
                     return inverse.call(this, w/2+nu*r, h/2+nv*r, w, h);
                 }
                 u = nu; v = nv;

@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial import cKDTree, ConvexHull, QhullError
 
-from .projection import predictAltAz, projectToPixels, cameraAltAz
+from .projection import predictAltAz, projectToPixels, cameraAltAz, RADIAL_MIN, RADIAL_MAX
 
 
 TAPER = 0.15  # fade to the original mapping outside the supported rectangle
@@ -66,14 +66,18 @@ def _safeMapping(model):
 def validateCalibration(model):
     """Reject malformed/unbounded saved or submitted models before rendering."""
     try:
-        if not isinstance(model, dict) or type(model.get('version')) is not int or model['version'] != 1:
+        if not isinstance(model, dict) or type(model.get('version')) is not int or model['version'] not in (1, 2):
             return False
         for key, shape in [('coefficients', (10, 2)), ('bounds', (4,)),
-                           ('geometry', (8,)), ('image_size', (2,)), ('context', (3,))]:
+                           ('geometry', (10 if model['version'] == 2 else 8,)),
+                           ('image_size', (2,)), ('context', (3,))]:
             a = np.asarray(model[key])
             if (a.shape != shape or a.dtype.kind not in 'ifu' or not np.isfinite(a).all()
                     or any(isinstance(v, bool) for v in np.asarray(model[key], dtype=object).flat)):
                 return False
+        if model['version'] == 2 and (not RADIAL_MIN <= model['geometry'][8] <= RADIAL_MAX
+                                      or model['geometry'][9] not in (0, 1)):
+            return False
         bounds = np.array(model['bounds'])
         if (np.max(np.abs(model['coefficients'])) > 1 or np.max(np.abs(bounds)) > 3
                 or np.any(bounds[2:]-bounds[:2] < 0.15)

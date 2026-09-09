@@ -40,6 +40,10 @@ def parseSolverRequestValues(data, for_save=False):
             return None, '{0:s} out of range'.format(key)
         values[key] = v
 
+    if 'PRECESSION' in data:
+        if not isinstance(data['PRECESSION'], bool):
+            return None, 'PRECESSION must be a boolean'
+        values['PRECESSION'] = data['PRECESSION']
     if 'CALIBRATION_ENABLED' in data:
         if not isinstance(data['CALIBRATION_ENABLED'], bool):
             return None, 'CALIBRATION_ENABLED must be a boolean'
@@ -52,15 +56,14 @@ def parseSolverRequestValues(data, for_save=False):
                 geometry = [values.get(k) for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
                     'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y',
                     'LENS_ALTITUDE', 'POINTING_AZIMUTH')]
-                if model['geometry'] != geometry:
+                geometry += [values.get('RADIAL_DISTORTION', 0), int(values.get('PRECESSION', False))]
+                # Older corrections belong to the original lens and catalogue convention.
+                saved_geometry = model['geometry'] + ([0, 0] if model['version'] == 1 else [])
+                if saved_geometry != geometry:
                     return None, 'Alignment changed since calibration; solve again'
-            elif values['CALIBRATION_ENABLED']:
-                return None, 'Solve before enabling lens calibration'
+            # A successful solve may need no extra correction. Keep the opt-in
+            # preference without blocking Save or applying an absent model.
             values['CALIBRATION'] = model
-    if 'PRECESSION' in data:
-        if not isinstance(data['PRECESSION'], bool):
-            return None, 'PRECESSION must be a boolean'
-        values['PRECESSION'] = data['PRECESSION']
     return values, None
 
 

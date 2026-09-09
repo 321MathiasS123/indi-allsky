@@ -125,13 +125,15 @@ def test_unreliable_calibration_is_refused(kind):
     assert fitCorrection(source, target, expected, 0.025)[0] is None
 
 
-def saved_model():
+def saved_model(version=1):
     source, target, expected = field()
     model, _ = fitCorrection(source, target, expected, 0.025)[0]
     model.update(geometry=[VALUES[k] for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
         'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y')]+[90, 123],
         image_size=[2028, 1520], context=[53, 11, 0], camera_uuid='test-camera',
         pipeline=pipelineSignature({}), summary='Validation: 80 unused stars.')
+    if version == 2:
+        model.update(version=2, geometry=model['geometry']+[0.08, 1])
     return model
 
 
@@ -162,6 +164,20 @@ def test_model_save_toggle_and_geometry_binding():
     assert not config['VIRTUALSKY']['CALIBRATION_ENABLED']
     payload['OFFSET_X'] += 1
     assert parseSolverRequestValues(payload, for_save=True)[1]
+
+
+@pytest.mark.parametrize('version', [1, 2])
+def test_calibration_is_bound_to_lens_curve_and_catalogue_convention(version):
+    model = saved_model(version)
+    payload = dict(VALUES, LENS_ALTITUDE=90, CALIBRATION_ENABLED=True, CALIBRATION=model,
+                   RADIAL_DISTORTION=0.08 if version == 2 else 0, PRECESSION=version == 2)
+    assert validateCalibration(model)
+    assert parseSolverRequestValues(payload, for_save=True)[1] is None
+    for changed in (dict(RADIAL_DISTORTION=0.1), dict(PRECESSION=not payload['PRECESSION'])):
+        values, error = parseSolverRequestValues(dict(payload, **changed), for_save=True)
+        assert values is None and 'Alignment changed' in error
+    model['geometry'] = model['geometry'][:8]  # v2 must declare both new conventions
+    assert validateCalibration(model) is (version == 1)
 
 
 @pytest.mark.parametrize('value', ['true', 'false', 0, 1, None, [], {}])
@@ -267,3 +283,50 @@ def test_solver_learns_from_rendered_catalogue(tmp_path, altitude, heading):
     assert result['calibration'] is not None, result['message']
     assert validateCalibration(result['calibration'])
     assert result['calibration']['image_size'] == [2028, 1520]
+
+
+@pytest.mark.parametrize('scale', [1, 3])
+def test_learning_uses_solved_curvature_and_precessed_catalogue(tmp_path, monkeypatch, scale):
+    from indi_allsky.lens_solver import solver as solver_mod
+    from indi_allsky.lens_solver.projection import predictAltAz, precessCatalog
+    from tests.lens_solver.test_camera_tilt import PARAMS, KEYS, reference_pixels
+    from tests.lens_solver.test_orientation import render_stars
+
+    solver = solver_mod.IndiAllSkyLensSolver({})
+    timestamp = 1788731972
+    catalogue = precessCatalog(solver.loadCatalog(), timestamp)
+    alt, az = predictAltAz(catalogue, 53, 11, timestamp)
+    x, y, z = reference_pixels(alt, az, 54, 176)
+    center = np.array([1014+PARAMS[4], 760-PARAMS[5]])
+    xy = center+(np.column_stack([x, y])-center)*np.maximum(1+z, 1e-12)[:, None]**(-0.08)
+    keep = (alt > np.radians(10)) & (z > 0) & (xy[:, 0] > 5) & (xy[:, 0] < 2023) & (xy[:, 1] > 5) & (xy[:, 1] < 1515)
+    path = tmp_path/'curved.png'
+    render_stars(path, np.column_stack([xy[keep], np.ones(keep.sum())]))
+    if scale != 1:
+        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        assert cv2.imwrite(str(path), cv2.resize(image, None, fx=scale, fy=scale))
+    calls = []
+    calibrate = solver_mod.calibrate
+
+    def record(*args):
+        calls.append(args)
+        return calibrate(*args)
+
+    monkeypatch.setattr(solver_mod, 'calibrate', record)
+    initial = dict(zip(KEYS, PARAMS), LENS_ALTITUDE=90, PRECESSION=True,
+                   RADIAL_DISTORTION=0, CALIBRATION_ENABLED=True)
+    for key in KEYS[3:]:
+        initial[key] *= scale
+    result = solver.solve(path, 53, 11, timestamp, initial)
+    assert result['success'], result
+    assert len(calls) == 1
+    args = calls[0]
+    np.testing.assert_array_equal(args[1], catalogue)
+    values = result['values']
+    assert abs(values['RADIAL_DISTORTION']-0.08) < 0.01
+    assert abs((values['POINTING_AZIMUTH']-176+180) % 360-180) < 2
+    downscale = solver_mod._chooseDownscaleFactor(2028*scale, 1520*scale, initial['IMAGE_CIRCLE_DIAMETER'])
+    expected = np.array([values[k] for k in KEYS]+[values['RADIAL_DISTORTION']])
+    expected[3:6] /= downscale
+    np.testing.assert_array_equal(args[5], expected)
+    assert args[8:10] == (values['LENS_ALTITUDE'], values['POINTING_AZIMUTH'])

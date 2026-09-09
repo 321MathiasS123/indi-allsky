@@ -236,7 +236,12 @@ class IndiAllSkyLensSolver(object):
 
         preferred = self._detector.preferredDetections(detections, work_img.shape) if learn else detections[:0]
         seed = initial_params
+        hinted = detections
         if len(preferred) >= 60:
+            # Prefer likely sky in triangle seeding, retaining all detections.
+            preferred_xy = {tuple(row[:2]) for row in preferred}
+            other = numpy.array([row for row in detections if tuple(row[:2]) not in preferred_xy])
+            hinted = numpy.vstack([preferred, other]) if len(other) else preferred
             roi_fit = self.fitParameters(preferred, catalog, latitude, longitude, obstime_unix,
                 initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
             if roi_fit['success'] and not roi_fit.get('partial'):
@@ -259,11 +264,12 @@ class IndiAllSkyLensSolver(object):
                 yield fit, lens_altitude, pointing_azimuth
                 # Also retry a plausible but unreliable local fit. Otherwise
                 # it can hide the correct solution for a different lens law.
-                for curve in (0.0, -0.5, 0.5):
-                    candidate = recoverOrientation(detections, catalog, latitude, longitude,
-                        obstime_unix, initial_params, work_width, work_height, curve)
-                    if candidate is not None:
-                        yield candidate, candidate['lens_altitude'], candidate['pointing_azimuth']
+                for stars in ([hinted, detections] if hinted is not detections else [detections]):
+                    for curve in (0.0, -0.5, 0.5):
+                        candidate = recoverOrientation(stars, catalog, latitude, longitude,
+                            obstime_unix, initial_params, work_width, work_height, curve)
+                        if candidate is not None:
+                            yield candidate, candidate['lens_altitude'], candidate['pointing_azimuth']
 
             for candidate, altitude, heading in candidates():
                 if not candidate['success'] or candidate.get('partial'):
@@ -282,12 +288,7 @@ class IndiAllSkyLensSolver(object):
         elif ((not fit['success'] or fit.get('partial'))
                 and fit.get('reason') != 'catalog_not_validated'):
             t0 = time.monotonic()
-            if len(preferred) >= 60:
-                # Prefer likely sky in triangle seeding; retain every detection
-                # for the final fit and fall back to the original order if needed.
-                preferred_xy = {tuple(row[:2]) for row in preferred}
-                other = numpy.array([row for row in detections if tuple(row[:2]) not in preferred_xy])
-                hinted = numpy.vstack([preferred, other]) if len(other) else preferred
+            if hinted is not detections:
                 recovered = recoverOrientation(hinted, catalog, latitude, longitude,
                     obstime_unix, initial_params, work_width, work_height)
             if recovered is None:
@@ -397,12 +398,13 @@ class IndiAllSkyLensSolver(object):
             geometry_values = [values[k] for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
                 'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y')]
             geometry_values += [values.get('LENS_ALTITUDE', lens_altitude),
-                                values.get('POINTING_AZIMUTH', pointing_azimuth)]
-            work_params = numpy.array(geometry_values[:6], dtype=float)
-            work_params[3:] /= scale
+                                values.get('POINTING_AZIMUTH', pointing_azimuth),
+                                values.get('RADIAL_DISTORTION', 0), int(precession)]
+            work_params = numpy.array(geometry_values[:6] + [geometry_values[8]], dtype=float)
+            work_params[3:6] /= scale
             t0 = time.monotonic()
             correction, why = calibrate(detections, catalog, latitude, longitude, obstime_unix,
-                work_params, work_width, work_height, *geometry_values[6:],
+                work_params, work_width, work_height, *geometry_values[6:8],
                 self.buildExclusionMask(work_img.shape)) if not fit['partial'] else (None,
                     'A complete alignment is required before learning distortion.')
             if correction is not None:
@@ -411,7 +413,7 @@ class IndiAllSkyLensSolver(object):
                 summary = ('Validation: {0} unused stars, RMS {1:.2f} → {2:.2f} px; '
                            '{3:.0%} of unmasked sky covered.').format(stats['validation'],
                     stats['before']*radius_native, stats['after']*radius_native, stats['coverage'])
-                calibration.update(geometry=geometry_values, image_size=[native_width, native_height],
+                calibration.update(version=2, geometry=geometry_values, image_size=[native_width, native_height],
                     pipeline=pipelineSignature(self.config), summary=summary,
                     context=[latitude, longitude, 0], camera_uuid='')
                 message += '. ' + summary

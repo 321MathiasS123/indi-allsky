@@ -868,8 +868,9 @@ const SOLVE_FIELDS = ['AZIMUTH_ANGLE', 'LATITUDE_OFFSET', 'LONGITUDE_OFFSET',
                       'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y', 'RADIAL_DISTORTION'];
 
 function calibrationGeometry() {
-    return [...SOLVE_FIELDS.map(f => Number($('#' + f).val())),
-            camera_altitude, Number($('#POINTING_AZIMUTH').val())];
+    return [...SOLVE_FIELDS.slice(0, 6).map(f => Number($('#' + f).val())),
+            camera_altitude, Number($('#POINTING_AZIMUTH').val()),
+            Number($('#RADIAL_DISTORTION').val()), Number(precession)];
 }
 
 function updateCalibrationStatus() {
