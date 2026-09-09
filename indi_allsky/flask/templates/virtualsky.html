@@ -73,6 +73,7 @@ var fullscreen = false;  // initial state
 var camera_latitude = {{ camera_latitude }};
 var camera_longitude = {{ camera_longitude }};
 var camera_altitude = {{ camera_altitude }};
+var precession = {{ precession | default(false) | tojson }};
 var time_offset = {{ time_offset }};
 
 var planetarium;
@@ -257,6 +258,7 @@ async function loop() {
                 longitude: vs_longitude,
                 az: vs_az,
                 fisheye_altitude: camera_altitude,
+                precession: precession,
                 fisheye_azimuth: Number($('#POINTING_AZIMUTH').val()),
                 magnitude: magnitude,
                 constellations: constellations,
@@ -508,6 +510,8 @@ function loadJS(url, data, onDone, onError) {
                            to zero. Results update the fields and overlay for review; nothing is saved.</p>
                         <p>Use a clear, star-rich frame from the Gallery. Clouds, bright sky and obstructions can
                            prevent a reliable match. A reasonable diameter and image-center estimate help the search.</p>
+                        <p>New solves account for the catalogue reference date. Save retains this correction;
+                           existing saved alignments keep their original coordinates until solved again.</p>
                         <p id="lens_save_help"><strong>Save</strong> writes all eight calibration values to the camera configuration,
                            including manually entered values. Display controls are not saved. Rotation also repositions
                            the cardinal-direction labels burned into future captured images.</p>
@@ -886,6 +890,7 @@ function solverPayload(action) {
     var payload = {'action': action, 'camera_id': camera_id};
     payload['POINTING_AZIMUTH'] = $('#POINTING_AZIMUTH').val();
     payload['LENS_ALTITUDE'] = camera_altitude;
+    payload['PRECESSION'] = action === 'solve' ? true : precession;
     SOLVE_FIELDS.forEach(function(f) {
         payload[f] = $('#' + f).val();
     });
@@ -952,6 +957,7 @@ $('#lens_solve').on('click', function() {
         timeout: 60000,
         success: function(rdata) {
             if (rdata['success']) {
+                precession = rdata['values']['PRECESSION'] === true;
                 SOLVE_FIELDS.forEach(function(f) {
                     $('#' + f).val(rdata['values'][f]);
                 });

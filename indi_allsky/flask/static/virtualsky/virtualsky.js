@@ -302,6 +302,7 @@ function VirtualSky(input){
 	this.az_step = 0;
 	this.az_off = 0;
 	this.fisheye_altitude = 90;
+	this.precession = false;
 	this.fisheye_azimuth = 0;
 	this.ra_off = 0;
 	this.dc_off = 0;
@@ -1029,6 +1030,7 @@ VirtualSky.prototype.init = function(d){
 		negative: b,
 		meteorshowers: b,
 		showstars: b,
+		precession: b,
 		scalestars: n,
 		showstarlabels: b,
 		starnames: o,
@@ -1743,6 +1745,7 @@ VirtualSky.prototype.nearestObject = function(x,y){
 	e = {};
 	e.matched = this.whichPointer(x,y);
 	var skyPos = this.xy2radec(x,y);
+	var ofdate = skyPos && this.precession ? this.precessEquatorial(skyPos.ra,skyPos.dec) : skyPos;
 	if(skyPos){
 		e.ra = skyPos.ra / this.d2r;
 		e.dec = skyPos.dec / this.d2r;
@@ -1752,7 +1755,8 @@ VirtualSky.prototype.nearestObject = function(x,y){
 	for(t in this.lookup){
 		if(this.lookup[t]){
 			for(i = 0; i < this.lookup[t].length; i++){
-				ang = this.greatCircle(skyPos.ra,skyPos.dec,this.lookup[t][i].ra,this.lookup[t][i].dec);
+				var position = (t === 'planet' || t === 'sun' || t === 'moon') ? ofdate : skyPos;
+				ang = this.greatCircle(position.ra,position.dec,this.lookup[t][i].ra,this.lookup[t][i].dec);
 				if(ang < d){
 					nearest = {'distance':ang,'label':this.lookup[t][i].label+'','type':t,'data':this.lookup[t][i]};
 					d = ang;
@@ -2151,7 +2155,7 @@ VirtualSky.prototype.ecliptic2xy = function(l,b,LST){
 	else{
 		if(this.fullsky){
 			pos = this.ecliptic2radec(l,b);
-			return this.radec2xy(pos.ra,pos.dec);
+			return this.radec2xy(pos.ra,pos.dec,true);
 		}else{
 			pos = this.ecliptic2azel(l,b,LST);
 			var el = pos.el*this.r2d;
@@ -2161,6 +2165,28 @@ VirtualSky.prototype.ecliptic2xy = function(l,b,LST){
 		}
 	}
 	return 0;
+};
+
+// J2000 catalogue <-> mean equator/equinox of the image date, IAU 1976.
+// Keep the angles in sync with lens_solver.projection.precessCatalog.
+VirtualSky.prototype.precessEquatorial = function(ra,dec,inverse){
+	if(this._precessionJD !== this.times.JD){
+		var t = (this.times.JD-2451545.0)/36525;
+		var scale = this.d2r/3600;
+		this._precessionAngles = [
+			(2306.2181*t+0.30188*t*t+0.017998*t*t*t)*scale,
+			(2306.2181*t+1.09468*t*t+0.018203*t*t*t)*scale,
+			(2004.3109*t-0.42665*t*t-0.041833*t*t*t)*scale];
+		this._precessionJD = this.times.JD;
+	}
+	var p = this._precessionAngles;
+	var zeta = inverse ? -p[1] : p[0];
+	var z = inverse ? -p[0] : p[1];
+	var theta = inverse ? -p[2] : p[2];
+	var a = Math.cos(dec)*Math.sin(ra+zeta);
+	var b = Math.cos(theta)*Math.cos(dec)*Math.cos(ra+zeta)-Math.sin(theta)*Math.sin(dec);
+	var c = Math.sin(theta)*Math.cos(dec)*Math.cos(ra+zeta)+Math.cos(theta)*Math.sin(dec);
+	return {ra:(Math.atan2(a,b)+z+2*Math.PI)%(2*Math.PI),dec:Math.atan2(c,Math.hypot(a,b))};
 };
 
 // Geographic az/el -> lens az/el (radians); pointing options are in degrees.
@@ -2183,7 +2209,12 @@ VirtualSky.prototype.fisheyeAltAz = function(az,el,inverse){
 // Convert RA,Dec -> X,Y
 // Inputs: RA (rad), Dec (rad)
 // Returns [x, y (,elevation)]
-VirtualSky.prototype.radec2xy = function(ra,dec){
+VirtualSky.prototype.radec2xy = function(ra,dec,ofdate){
+	if(this.precession && !ofdate){
+		var equatorial = this.precessEquatorial(ra,dec);
+		ra = equatorial.ra;
+		dec = equatorial.dec;
+	}
 	if(typeof this.projection.radec2xy==="function") return this.projection.radec2xy.call(this,ra,dec);
 	else{
 		var coords = this.coord2horizon(ra, dec);
@@ -2211,7 +2242,8 @@ VirtualSky.prototype.xy2radec = function(x, y){
 			coords = [horizon[1],horizon[0]];
 		}
 
-		return this.horizon2coord(coords);
+		var equatorial = this.horizon2coord(coords);
+		return this.precession ? this.precessEquatorial(equatorial.ra,equatorial.dec,true) : equatorial;
 	} else {
 		return undefined;
 	}
@@ -2739,7 +2771,8 @@ VirtualSky.prototype.drawPlanets = function(){
 			dec = this.planets[p][3];
 		}
 		this.lookup.planet.push({'ra':ra*this.d2r,'dec':dec*this.d2r,'label':(this.lang.planets ? this.lang.planets[this.planets[p][0]] : "?")});
-		pos = this.radec2xy(ra*this.d2r,dec*this.d2r);
+		// Planet ephemerides already refer to the equinox of date.
+		pos = this.radec2xy(ra*this.d2r,dec*this.d2r,true);
 
 		if(!this.negative) colour = this.planets[p][1];
 		if(typeof colour==="string") c.strokeStyle = colour;
@@ -2761,7 +2794,7 @@ VirtualSky.prototype.drawPlanets = function(){
 			c.lineWidth = 1;
 			var previous = {x:-1,y:-1,el:-1};
 			for(i = 0 ; i < this.planets[p][2].length-4 ; i+=4){
-				var point = this.radec2xy(this.planets[p][2][i+1]*this.d2r, this.planets[p][2][i+2]*this.d2r);
+				var point = this.radec2xy(this.planets[p][2][i+1]*this.d2r, this.planets[p][2][i+2]*this.d2r,true);
 				if(previous.x > 0 && previous.y > 0 && this.isVisible(point.el)){
 					c.moveTo(previous.x,previous.y);
 					// Basic error checking: points behind us often have very long lines so we'll zap them

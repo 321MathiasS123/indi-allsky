@@ -1085,6 +1085,7 @@ class CaptureWorker(Process):
             calibration_enabled = calibration.get('pipeline') == pipelineSignature(self.config)
         camera_metadata['data']['vs_calibration'] = calibration
         camera_metadata['data']['vs_calibration_enabled'] = calibration_enabled
+        camera_metadata['data']['vs_precession'] = self.config.get('VIRTUALSKY', {}).get('PRECESSION', False)
         camera_metadata['data']['vs_magnitude'] = self.config.get('VIRTUALSKY', {}).get('MAGNITUDE', 6.0)
         camera_metadata['data']['vs_constellations'] = self.config.get('VIRTUALSKY', {}).get('CONSTELLATIONS', True)
         camera_metadata['data']['vs_constellationlabels'] = self.config.get('VIRTUALSKY', {}).get('CONSTELLATIONLABELS', False)
@@ -2554,4 +2555,3 @@ class CaptureWorker(Process):
 
         for x, label in enumerate(temp_label_list[:50]):  # limit to 50
             self.SENSOR_SLOTS[x + 80][1] = '{0:s}'.format(label)
-

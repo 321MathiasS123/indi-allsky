@@ -55,6 +55,10 @@ def parseSolverRequestValues(data, for_save=False):
             elif values['CALIBRATION_ENABLED']:
                 return None, 'Solve before enabling lens calibration'
             values['CALIBRATION'] = model
+    if 'PRECESSION' in data:
+        if not isinstance(data['PRECESSION'], bool):
+            return None, 'PRECESSION must be a boolean'
+        values['PRECESSION'] = data['PRECESSION']
     return values, None
 
 
@@ -80,5 +84,7 @@ def applySolvedValuesToConfig(config, values):
     if 'CALIBRATION_ENABLED' in values:
         virtualsky['CALIBRATION_ENABLED'] = values['CALIBRATION_ENABLED']
         virtualsky['CALIBRATION'] = values['CALIBRATION']
+    if 'PRECESSION' in values:
+        virtualsky['PRECESSION'] = values['PRECESSION']
 
     return config

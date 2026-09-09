@@ -12,7 +12,7 @@ from .detection import StarDetector
 from .fitting import FitEngine
 from .fitting import SolveContext
 from .orientation import recoverOrientation, pointingFromFit
-from .projection import projectToPixels
+from .projection import projectToPixels, precessCatalog
 from .calibration import calibrate, pipelineSignature
 
 logger = logging.getLogger('indi_allsky')
@@ -229,6 +229,9 @@ class IndiAllSkyLensSolver(object):
 
         t0 = time.monotonic()
         catalog = self.loadCatalog()
+        precession = initial_values.get('PRECESSION', False)
+        if precession:
+            catalog = precessCatalog(catalog, obstime_unix)
         timing['catalog_s'] = round(time.monotonic() - t0, 3)
 
         preferred = self._detector.preferredDetections(detections, work_img.shape) if learn else detections[:0]
@@ -317,6 +320,8 @@ class IndiAllSkyLensSolver(object):
         if pointing_solved:
             values.update(LENS_ALTITUDE=round(float(lens_altitude), 2),
                           POINTING_AZIMUTH=round(float(pointing_azimuth), 2))
+        if precession:
+            values['PRECESSION'] = True
 
         # renderer-agnostic geometry for future non-VirtualSky consumers
         geometry = {

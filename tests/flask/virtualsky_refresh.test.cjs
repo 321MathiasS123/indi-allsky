@@ -125,17 +125,20 @@ test('new frames and edited controls update the existing projection, clock and d
     const {$, context: c, instances, entry} = page();
     await c.loop(); c.img.onload();
     const before = c.planetarium.times.LST;
+    c.precession = true;
     entry.timestamp += 3600;
     // Actual pixels, rather than potentially stale server dimensions, set the scale.
     entry.width = 2500;
     await c.loop(); c.img.onload();
     assert.notEqual(c.planetarium.times.LST, before);
+    assert.equal(c.planetarium.precession, true);
     assert.equal(c.planetarium.clock.getTime(), entry.timestamp*1000);
     $('#AZIMUTH_ANGLE').value = -3;
     $('#latest-image').renderWidth = 602;
     $('#latest-image').renderHeight = 587;
     c.forceRedrawPlanetarium(); c.img.onload();
     assert.equal(instances.length, 1);
+    assert.equal(c.planetarium.precession, true);
     assert.equal(c.planetarium.az_off, -3);
     assert.equal(c.planetarium.wide, 2211/4);
     assert.equal(parseFloat($('#starmap').styles.left), (602-2211/4)/2-7/4);

@@ -546,6 +546,7 @@ class VirtualSkyView(TemplateView):
                 100 if focus_mode else self.indi_allsky_config.get('IMAGE_SCALE', 100),
                 *[0 if focus_mode else self.indi_allsky_config.get('IMAGE_BORDER', {}).get(k, 0)
                   for k in ('TOP', 'RIGHT', 'BOTTOM', 'LEFT')]]
+        context['precession'] = self.camera.data.get('vs_precession', False)
 
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000
