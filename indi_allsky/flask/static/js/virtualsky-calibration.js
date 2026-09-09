@@ -96,9 +96,41 @@
     }
     function maskImage(sky, mask, size, binning, geometry) {
         if (sky.unmaskedDraw) sky.drawImmediate = sky.unmaskedDraw;
+        sky.positionCardinalLabel = undefined;
+        if (!Array.isArray(size) || size.length !== 2 || !size.every(n => Number.isFinite(n) && n > 0)
+            || !Array.isArray(geometry) || geometry.length !== 3 || !geometry.every(Number.isFinite) || geometry[0] <= 0) return;
+        const reference = geometry[0]/2;
+        const bounds = [(-size[0]/2-geometry[1])/reference, (-size[1]/2+geometry[2])/reference,
+                        (size[0]/2-geometry[1])/reference, (size[1]/2+geometry[2])/reference];
+        let circle;
+        // Labels are direction cues: keep their whole text inside the photo and
+        // its opaque mask, even when the reference circle extends beyond either.
+        // Normalized bounds also follow full-resolution downloads and resizes.
+        sky.positionCardinalLabel = function(x, y, width, height) {
+            const s = this.tall/2, mx = this.wide/2, my = this.tall/2;
+            const hx = width/2+2, hy = height/2+2;
+            const left = Math.max(0, mx+bounds[0]*s)+hx, right = Math.min(this.wide, mx+bounds[2]*s)-hx;
+            const top = Math.max(0, my+bounds[1]*s)+hy, bottom = Math.min(this.tall, my+bounds[3]*s)-hy;
+            if (left > right || top > bottom) return;
+            let px = Math.max(left, Math.min(right, x+width/2));
+            let py = Math.max(top, Math.min(bottom, y-height/2));
+            if (circle) {
+                const cx = mx+circle[0]*s, cy = my+circle[1]*s;
+                const radius = circle[2]*s-Math.hypot(hx, hy);
+                const ax = Math.max(left, Math.min(right, cx)), ay = Math.max(top, Math.min(bottom, cy));
+                if (radius <= 0 || Math.hypot(ax-cx, ay-cy) > radius) return;
+                if (Math.hypot(px-cx, py-cy) > radius) {
+                    // Intersect a segment from a visible anchor with the circle;
+                    // the whole segment also stays in the rectangular image.
+                    const dx = px-ax, dy = py-ay, d2 = dx*dx+dy*dy;
+                    const dot = (ax-cx)*dx+(ay-cy)*dy;
+                    const t = (-dot+Math.sqrt(Math.max(0, dot*dot-d2*((ax-cx)**2+(ay-cy)**2-radius*radius))))/d2;
+                    px = ax+t*dx; py = ay+t*dy;
+                }
+            }
+            return [px-width/2, py+height/2];
+        };
         if (!Array.isArray(mask) || mask.length !== 8 || !mask.every(Number.isFinite)
-            || !size.every(n => Number.isFinite(n) && n > 0)
-            || !geometry.every(Number.isFinite) || geometry[0] <= 0
             || !Number.isInteger(binning) || binning <= 0 || mask[0] <= 0 || mask[3] <= 0) return;
         const [diameter, ox, oy, percent, top, right, bottom, left] = mask;
         const scale = percent/100, width = size[0]-left-right, height = size[1]-top-bottom;
@@ -109,10 +141,10 @@
         const cy = top+height/2-Math.trunc(oy/binning)*scale;
         const radius = Math.trunc(diameter/(2*binning))*scale;
         if (radius <= 0 || ![cx, cy, radius].every(Number.isFinite)) return;
-        const reference = geometry[0]/2;
         const x = (cx-size[0]/2-geometry[1])/reference;
         const y = (cy-size[1]/2+geometry[2])/reference;
         const r = radius/reference;
+        circle = [x, y, r];
         const draw = sky.drawImmediate;
         sky.unmaskedDraw = draw;
         // Clip every draw, including refreshes and full-resolution downloads.

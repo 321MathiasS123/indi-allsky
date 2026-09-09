@@ -129,6 +129,39 @@ test('old corrections retain legacy geometry and new ones require the solved len
 });
 
 for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
+    test(`${asset}: direction labels fit the photo and its mask without moving stars`, () => {
+        for (const altitude of [0, 54, 87.57, 90]) for (const size of [300, 1000, 2300]) {
+            const sky = makeSky({fisheye_altitude: altitude, fisheye_azimuth: 171.09,
+                fisheye_radial: 0.077, az: 179.3, width: size, height: size}, asset);
+            const labels = [];
+            sky.ctx = {beginPath() {}, fill() {}, measureText: () => ({width: 10}),
+                fillText: (...args) => labels.push(args)};
+            sky.fontsize = () => 10;
+            sky.getPhrase = value => value;
+            const star = sky.azel2xy(1, 0.8, size, size);
+            for (const [photo, geometry, mask, photoCircle] of [
+                [[2406, 2350], [2297, -7, -34], [2200, 36, 3, 100, 80, 70, 0, 0], [1204, 1212, 1100]],
+                [[1600, 900], [2400, 30, -20], null, null],
+                [[900, 1600], [2000, -40, 90], [1800, -70, 110, 100, 0, 0, 0, 0], [380, 690, 900]],
+                [[3200, 800], [2500, 100, -50], [2200, 300, -100, 100, 0, 0, 0, 0], [1900, 500, 1100]],
+            ]) {
+                labels.length = 0;
+                calibration.maskImage(sky, mask, photo, 1, geometry);
+                sky.drawCardinalPoints();
+                assert.equal(labels.length, 4);
+                assert.deepEqual(sky.azel2xy(1, 0.8, size, size), star);
+                for (const [label, x, y] of labels) {
+                    for (const [cx, cy] of [[x, y-10], [x+10, y-10], [x, y], [x+10, y]]) {
+                        const px = (cx-size/2)*geometry[0]/size+photo[0]/2+geometry[1];
+                        const py = (cy-size/2)*geometry[0]/size+photo[1]/2-geometry[2];
+                        assert.ok(px >= 0 && px <= photo[0] && py >= 0 && py <= photo[1], label);
+                        if (photoCircle) assert.ok(Math.hypot(px-photoCircle[0], py-photoCircle[1]) < photoCircle[2], label);
+                    }
+                }
+            }
+        }
+    });
+
     test(`${asset}: forward and inverse stay consistent through tilt, scaling and taper`, () => {
         const m = model();
         for (const altitude of [0, 20, 54, 90]) for (const size of [400, 1000, 2200])
