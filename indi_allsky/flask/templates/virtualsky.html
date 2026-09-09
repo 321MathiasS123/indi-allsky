@@ -14,7 +14,7 @@
 #virtualsky-settings .virtualsky-settings-body { padding: 0 1rem 1rem; }
 #form_virtualsky { container-type: inline-size; }
 .virtualsky-groups { display: flex; flex-wrap: wrap; gap: .75rem; }
-.virtualsky-groups > .virtualsky-group { flex: 1 1 19rem; }
+.virtualsky-groups > .virtualsky-group { flex: 1 1 27rem; }
 .virtualsky-group {
     min-width: 0;
     padding: .625rem .75rem .75rem;
@@ -24,26 +24,28 @@
 .virtualsky-group legend { padding: 0 .25rem; font-size: .8125rem; font-weight: 600; }
 .virtualsky-fields {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 5rem), 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: .5rem;
 }
 .virtualsky-field { min-width: 0; display: flex; flex-direction: column; }
 .virtualsky-field > label { display: block; margin-bottom: .25rem; font-size: .75rem; }
+/* Reserve two label lines across neighboring groups, not just within each group. */
+.virtualsky-fields .virtualsky-field > label { min-height: 3em; line-height: 1.5; }
 .virtualsky-field input { width: 100%; min-width: 0; height: 2.25rem; padding-inline: .5rem; margin-top: auto; }
 .virtualsky-group > p { margin-top: .5rem; font-size: .75rem; opacity: .7; }
 .virtualsky-display {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: .75rem;
-    align-items: center;
+    align-items: stretch;
 }
 .virtualsky-layer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
-.virtualsky-display > .virtualsky-layer {
-    display: grid;
+.virtualsky-display > * {
     padding: .5rem .625rem;
     border: 1px solid var(--color-base-300);
     border-radius: var(--radius-box);
 }
+.virtualsky-display > .virtualsky-layer { display: grid; align-content: center; }
 .virtualsky-layer label { display: flex; align-items: center; gap: .5rem; font-size: .75rem; cursor: pointer; }
 #virtualsky-hint { display: flex; align-items: flex-start; padding: .625rem .75rem; gap: .5rem; }
 #virtualsky-hint i { flex-shrink: 0; margin-top: .125rem; }
@@ -51,6 +53,12 @@
 #lens_solver_message:empty { display: none; }
 #latest-image { max-width: 100%; }
 .virtualsky-downloads > button { height: auto; min-height: 2.5rem; white-space: normal; }
+@container (max-width: 27rem) {
+    .virtualsky-fields { grid-template-columns: minmax(0, 1fr); }
+    .virtualsky-fields .virtualsky-field { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: .75rem; }
+    .virtualsky-fields .virtualsky-field > label { min-height: 0; margin: 0; }
+    .virtualsky-fields input { margin-top: 0; }
+}
 @container (min-width: 32rem) {
     .virtualsky-display { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -383,7 +391,7 @@ function loadJS(url, data, onDone, onError) {
 {% set can_save_config = login_disabled or (current_user.is_authenticated and current_user.is_admin) %}
 {% macro calibration_input(field, units='', title='') %}
 <div class="virtualsky-field">
-    <label for="{{ field.id }}">{{ field.label.text }}{% if units %} ({{ units }}){% endif %}</label>
+    <label for="{{ field.id }}">{{ field.label.text }}{% if units %}&nbsp;({{ units }}){% endif %}</label>
     {{ field(class='tw:input tw:input-bordered tw:input-sm tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm', title=title) }}
 </div>
 {% endmacro %}
