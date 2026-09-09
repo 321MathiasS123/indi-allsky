@@ -38,8 +38,13 @@
     align-items: center;
 }
 .virtualsky-layer { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+.virtualsky-display > .virtualsky-layer {
+    display: grid;
+    padding: .5rem .625rem;
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
+}
 .virtualsky-layer label { display: flex; align-items: center; gap: .5rem; font-size: .75rem; cursor: pointer; }
-.virtualsky-layer label:first-child { min-width: 8rem; }
 #virtualsky-hint { display: flex; align-items: flex-start; padding: .625rem .75rem; gap: .5rem; }
 #virtualsky-hint i { flex-shrink: 0; margin-top: .125rem; }
 #lens_solver_message { flex-basis: 100%; overflow-wrap: anywhere; }
@@ -455,7 +460,7 @@ function loadJS(url, data, onDone, onError) {
                         <div class="virtualsky-display">
                             {{ calibration_input(form_virtualsky.MAGNITUDE) }}
                             {% for field, labels in [(form_virtualsky.CONSTELLATIONS, form_virtualsky.CONSTELLATIONLABELS), (form_virtualsky.SHOWSTARS, form_virtualsky.SHOWSTARLABELS), (form_virtualsky.SHOWPLANETS, form_virtualsky.SHOWPLANETLABELS)] %}
-                            <div class="virtualsky-layer">
+                            <div class="virtualsky-layer" role="group" aria-label="{{ field.label.text }}">
                                 <label for="{{ field.id }}">
                                     <input type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm" {{ 'checked' if field.data else '' }} id="{{ field.id }}" name="{{ field.name }}"> {{ field.label.text }}
                                 </label>
