@@ -27,9 +27,9 @@
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 5rem), 1fr));
     gap: .5rem;
 }
-.virtualsky-field { min-width: 0; }
+.virtualsky-field { min-width: 0; display: flex; flex-direction: column; }
 .virtualsky-field > label { display: block; margin-bottom: .25rem; font-size: .75rem; }
-.virtualsky-field input { width: 100%; min-width: 0; height: 2.25rem; padding-inline: .5rem; }
+.virtualsky-field input { width: 100%; min-width: 0; height: 2.25rem; padding-inline: .5rem; margin-top: auto; }
 .virtualsky-group > p { margin-top: .5rem; font-size: .75rem; opacity: .7; }
 .virtualsky-display {
     display: grid;
@@ -376,9 +376,9 @@ function loadJS(url, data, onDone, onError) {
 {% block content %}
 {# Match Config-save access, including installations with authentication disabled. #}
 {% set can_save_config = login_disabled or (current_user.is_authenticated and current_user.is_admin) %}
-{% macro calibration_input(field, label, title='') %}
+{% macro calibration_input(field, units='', title='') %}
 <div class="virtualsky-field">
-    <label for="{{ field.id }}">{{ label }}</label>
+    <label for="{{ field.id }}">{{ field.label.text }}{% if units %} ({{ units }}){% endif %}</label>
     {{ field(class='tw:input tw:input-bordered tw:input-sm tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm', title=title) }}
 </div>
 {% endmacro %}
@@ -405,31 +405,31 @@ function loadJS(url, data, onDone, onError) {
                             <legend>Camera orientation</legend>
                             <div class="virtualsky-fields">
                                 <div class="virtualsky-field">
-                                    <label for="lens_altitude">Camera elevation (°)</label>
+                                    <label for="lens_altitude">Altitude (°)</label>
                                     <input id="lens_altitude" name="LENS_ALTITUDE" type="number" value="{{ camera_altitude }}" readonly
                                            title="Angle above the horizon: 0° is horizontal, 90° is straight up (zenith). Updated by Solve and included in Save. To set it manually, use Altitude under Config → Location."
                                            class="tw:input tw:input-bordered tw:input-sm tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm">
                                 </div>
-                                {{ calibration_input(form_virtualsky.POINTING_AZIMUTH, 'Pointing direction (°)', 'Pointing azimuth: compass direction the lens points toward. 0° north, 90° east, 180° south, 270° west. For a nearly vertical camera, this is the direction of its slight lean. Ignored at 90° elevation.') }}
-                                {{ calibration_input(form_virtualsky.AZIMUTH_ANGLE, 'Overlay rotation (°)', 'Rotates the sky overlay to align it with the photo. Also positions direction labels in future captured images. Saved as Azimuth under Config → Location.') }}
+                                {{ calibration_input(form_virtualsky.POINTING_AZIMUTH, '°', "Direction of the camera's lean: 0° N, 90° E, 180° S, 270° W. Ignored at 90° Altitude.") }}
+                                {{ calibration_input(form_virtualsky.AZIMUTH_ANGLE, '°', 'Rotation of the overlay and cardinal-direction labels to match the image.') }}
                             </div>
-                            <p>90° elevation points straight up. Pointing direction describes the camera's lean toward the horizon; overlay rotation aligns the sky with the photo.</p>
+                            <p>Altitude: 0° horizontal, 90° straight up. Camera pointing direction describes the lean; Azimuth aligns the overlay with the image.</p>
                         </fieldset>
                         <fieldset class="virtualsky-group">
                             <legend>Image alignment</legend>
                             <div class="virtualsky-fields">
-                                {{ calibration_input(form_virtualsky.IMAGE_CIRCLE_DIAMETER, 'Reference diameter (px)', "The 180° reference circle under VirtualSky's equisolid fisheye projection. It may differ from the visible illuminated circle: larger for lenses with less than a 180° field of view, smaller for lenses with more than 180°.") }}
-                                {{ calibration_input(form_virtualsky.OFFSET_X, 'X offset (px)') }}
-                                {{ calibration_input(form_virtualsky.OFFSET_Y, 'Y offset (px)') }}
+                                {{ calibration_input(form_virtualsky.IMAGE_CIRCLE_DIAMETER, 'px', '180° reference diameter for the overlay. It may differ from the visible lens circle.') }}
+                                {{ calibration_input(form_virtualsky.OFFSET_X, 'px') }}
+                                {{ calibration_input(form_virtualsky.OFFSET_Y, 'px') }}
                             </div>
-                            <p>Reference circle size and position in the image.</p>
+                            <p>VirtualSky reference circle size and position. The image-processing circle and offsets in Config are separate settings.</p>
                         </fieldset>
                         <fieldset class="virtualsky-group">
                             <legend>Fine adjustments</legend>
                             <div class="virtualsky-fields">
-                                {{ calibration_input(form_virtualsky.RADIAL_DISTORTION, 'Lens curvature', 'Solve measures radial lens distortion before determining camera pointing. Zero uses the original equisolid lens model.') }}
-                                {{ calibration_input(form_virtualsky.LATITUDE_OFFSET, 'Latitude offset (°)') }}
-                                {{ calibration_input(form_virtualsky.LONGITUDE_OFFSET, 'Longitude offset (°)') }}
+                                {{ calibration_input(form_virtualsky.RADIAL_DISTORTION, title='Radial lens distortion measured by the normal solver. Zero uses the original equisolid lens model.') }}
+                                {{ calibration_input(form_virtualsky.LATITUDE_OFFSET, '°') }}
+                                {{ calibration_input(form_virtualsky.LONGITUDE_OFFSET, '°') }}
                             </div>
                             <p>Recovering camera pointing resets latitude/longitude offsets to zero.</p>
                         </fieldset>
@@ -453,14 +453,14 @@ function loadJS(url, data, onDone, onError) {
                     <fieldset class="virtualsky-group">
                         <legend>Display only</legend>
                         <div class="virtualsky-display">
-                            {{ calibration_input(form_virtualsky.MAGNITUDE, 'Limiting magnitude') }}
+                            {{ calibration_input(form_virtualsky.MAGNITUDE) }}
                             {% for field, labels in [(form_virtualsky.CONSTELLATIONS, form_virtualsky.CONSTELLATIONLABELS), (form_virtualsky.SHOWSTARS, form_virtualsky.SHOWSTARLABELS), (form_virtualsky.SHOWPLANETS, form_virtualsky.SHOWPLANETLABELS)] %}
                             <div class="virtualsky-layer">
                                 <label for="{{ field.id }}">
                                     <input type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm" {{ 'checked' if field.data else '' }} id="{{ field.id }}" name="{{ field.name }}"> {{ field.label.text }}
                                 </label>
                                 <label for="{{ labels.id }}">
-                                    <input type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm" {{ 'checked' if labels.data else '' }} id="{{ labels.id }}" name="{{ labels.name }}" aria-label="{{ field.label.text }} labels"> Labels
+                                    <input type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm" {{ 'checked' if labels.data else '' }} id="{{ labels.id }}" name="{{ labels.name }}"> {{ labels.label.text }}
                                 </label>
                             </div>
                             {% endfor %}
@@ -508,7 +508,7 @@ function loadJS(url, data, onDone, onError) {
                          class="tw:text-xs tw:text-base-content/70 tw:space-y-1.5 tw:pt-2 tw:max-w-2xl">
                         <p><strong>Solve</strong> matches stars in the displayed image using the camera location and
                            image time, which must be correct. It starts from the entered alignment and searches for
-                           camera elevation and pointing direction (azimuth) if needed. Recovered pointing resets latitude/longitude offsets
+                           Altitude and Camera pointing direction if needed. Recovered pointing resets latitude/longitude offsets
                            to zero. Results update the fields and overlay for review; nothing is saved.</p>
                         <p>Use a clear, star-rich frame from the Gallery. Clouds, bright sky and obstructions can
                            prevent a reliable match. A reasonable diameter and image-center estimate help the search.</p>
@@ -517,7 +517,7 @@ function loadJS(url, data, onDone, onError) {
                         <p>Lens curvature separates radial lens distortion from camera tilt. It is calibrated by
                            the normal solver; zero retains the original equisolid projection.</p>
                         <p id="lens_save_help"><strong>Save</strong> writes all nine calibration values to the camera configuration,
-                           including manually entered values. Display controls are not saved. Overlay rotation also repositions
+                           including manually entered values. Display controls are not saved. Azimuth also repositions
                            the cardinal-direction labels burned into future captured images.</p>
                         <p><strong>Experimental lens correction</strong> is optional. When enabled, Solve also fits
                            lens distortion from matched stars, using the detection mask and sky ROI as hints.

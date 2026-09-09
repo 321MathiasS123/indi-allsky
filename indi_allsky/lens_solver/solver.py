@@ -253,8 +253,9 @@ class IndiAllSkyLensSolver(object):
             fit = self.fitParameters(detections, catalog, latitude, longitude, obstime_unix,
                 initial_params, work_width, work_height, lens_altitude, pointing_azimuth)
 
-        # Preserve the existing zenith/small-tilt calibration whenever it works.
-        # A failed or partial fit may instead need a different camera pointing.
+        # New clients fit lens curvature even after a good local match: otherwise
+        # lens distortion can masquerade as tilt. Older clients retain the
+        # six-parameter fit, with orientation recovery only when it fails.
         recovered = None
         if ('RADIAL_DISTORTION' in initial_values
                 and fit.get('reason') != 'catalog_not_validated'):
@@ -315,6 +316,7 @@ class IndiAllSkyLensSolver(object):
         if 'rms_px' in fit:
             quality['rms_px'] = round(float(fit['rms_px']) * scale, 2)
         if 'azimuth_uncertainty_deg' in fit:
+            # This legacy result key describes pointing direction, not Config's Azimuth (roll).
             quality['azimuth_uncertainty_deg'] = round(fit['azimuth_uncertainty_deg'], 2)
 
         if not fit['success']:
@@ -387,9 +389,9 @@ class IndiAllSkyLensSolver(object):
             message += ' (camera pointing recovered; latitude/longitude offsets reset to zero)'
         if 'azimuth_uncertainty_deg' in quality:
             if quality['azimuth_uncertainty_deg'] > 2:
-                message += '; nearly vertical camera: azimuth is not reliably determined'
+                message += '; nearly vertical camera: camera pointing direction is not reliably determined'
             else:
-                message += '; estimated azimuth uncertainty +/-{0:.2f} degrees'.format(quality['azimuth_uncertainty_deg'])
+                message += '; estimated camera pointing direction uncertainty +/-{0:.2f} degrees'.format(quality['azimuth_uncertainty_deg'])
 
         calibration = None
         if learn:

@@ -99,10 +99,11 @@ def cameraAltAz(alt_rad, az_rad, lens_altitude=90.0, pointing_azimuth=0.0):
 
 def projectToPixels(alt_rad, az_rad, params, image_width, image_height, mirror=False,
                     lens_altitude=90.0, pointing_azimuth=0.0):
-    """Project alt/az to pixels via VirtualSky's equisolid fisheye.
+    """Project alt/az to pixels via VirtualSky's fisheye model.
     params: [azimuth_deg, lat_off_deg, long_off_deg, diameter_px,
     offset_x_px, offset_y_px]; the lat/long offsets (1, 2) are applied by
-    the caller before predictAltAz, not here.
+    the caller before predictAltAz, not here. Optional params[6] is lens
+    curvature; omitting it preserves the original equisolid projection exactly.
     """
     alt_rad, az_rad = cameraAltAz(alt_rad, az_rad, lens_altitude, pointing_azimuth)
     azimuth_deg = params[0]

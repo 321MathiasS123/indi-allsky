@@ -60,6 +60,8 @@ def _pixelRays(xy, diameter, center, radial=None):
 
 
 def _project(world, matrix, params, width, height):
+    # Unlike projectToPixels, rotation is supplied by matrix; params[:3] are
+    # rotation-vector increments used by the search, not geographic offsets.
     rays = world @ matrix.T
     factor = params[3]/(2*SIN45*numpy.sqrt(numpy.maximum(2*(1+rays[:, 2]), 1e-12)))
     if len(params) > 6:
