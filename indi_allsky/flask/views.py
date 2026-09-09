@@ -513,6 +513,7 @@ class VirtualSkyView(TemplateView):
         data = {
             'AZIMUTH_ANGLE'         : self.camera.az,
             'POINTING_AZIMUTH'      : self.camera.data.get('vs_pointing_azimuth', 0.0),
+            'RADIAL_DISTORTION'     : self.camera.data.get('vs_radial_distortion', 0.0),
             'IMAGE_CIRCLE_DIAMETER' : self.camera.data.get('vs_image_circle_diameter', 3500),
             'LATITUDE_OFFSET'       : self.camera.data.get('vs_latitude_offset', 0.0),
             'LONGITUDE_OFFSET'      : self.camera.data.get('vs_longitude_offset', 0.0),

@@ -11,7 +11,7 @@ from . import fitting
 from .detection import StarDetector
 from .fitting import FitEngine
 from .fitting import SolveContext
-from .orientation import recoverOrientation, pointingFromFit
+from .orientation import recoverOrientation, pointingFromFit, refineLensModel
 from .projection import projectToPixels, precessCatalog
 from .calibration import calibrate, pipelineSignature
 
@@ -271,6 +271,19 @@ class IndiAllSkyLensSolver(object):
                 lens_altitude = fit['lens_altitude']
                 pointing_azimuth = fit['pointing_azimuth']
 
+        if fit['success'] and 'RADIAL_DISTORTION' in initial_values:
+            t0 = time.monotonic()
+            refined = refineLensModel(detections, catalog, latitude, longitude,
+                obstime_unix, fit['params'], work_width, work_height,
+                lens_altitude, pointing_azimuth)
+            self._fit_s += time.monotonic() - t0
+            if refined is None:
+                return finish({'success': False, 'reason': 'lens_model_unconstrained',
+                    'message': 'Could not constrain the lens model reliably. Try a clearer frame with stars spread across the image.',
+                    'quality': {'stars_detected': stars_detected, 'stars_matched': fit['stars_matched']}})
+            fit = refined
+            recovered = None  # Convert the refined sky offsets into camera pointing below.
+
         timing['coarse_s'] = round(self._coarse_s, 3)
         timing['fit_s'] = round(self._fit_s, 3)
         timing['residual_evals'] = int(self._residual_evals)
@@ -322,6 +335,8 @@ class IndiAllSkyLensSolver(object):
                           POINTING_AZIMUTH=round(float(pointing_azimuth), 2))
         if precession:
             values['PRECESSION'] = True
+        if len(p) > 6:
+            values['RADIAL_DISTORTION'] = round(float(p[6]), 6)
 
         # renderer-agnostic geometry for future non-VirtualSky consumers
         geometry = {
@@ -339,7 +354,7 @@ class IndiAllSkyLensSolver(object):
                             lens_altitude_deg=float(lens_altitude),
                             pointing_azimuth_deg=float(pointing_azimuth))
             native_params = p.copy()
-            native_params[3:] *= scale
+            native_params[3:6] *= scale
             zx, zy = projectToPixels(numpy.pi / 2, 0.0,
                                      native_params, native_width, native_height,
                                      lens_altitude=lens_altitude, pointing_azimuth=pointing_azimuth)

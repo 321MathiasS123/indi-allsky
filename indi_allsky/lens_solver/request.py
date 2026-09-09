@@ -1,4 +1,5 @@
 import math
+from .projection import RADIAL_MIN, RADIAL_MAX
 
 from .calibration import validateCalibration
 
@@ -20,9 +21,10 @@ def parseSolverRequestValues(data, for_save=False):
     """
     values = {}
     for key, cast, vmin, vmax in SOLVER_REQUEST_FIELDS + (
-            ('POINTING_AZIMUTH', float, 0.0, 360.0), ('LENS_ALTITUDE', float, 0.0, 90.0)):
+            ('POINTING_AZIMUTH', float, 0.0, 360.0), ('LENS_ALTITUDE', float, 0.0, 90.0),
+            ('RADIAL_DISTORTION', float, RADIAL_MIN, RADIAL_MAX)):
         if key not in data:
-            if key in ('POINTING_AZIMUTH', 'LENS_ALTITUDE'):
+            if key in ('POINTING_AZIMUTH', 'LENS_ALTITUDE', 'RADIAL_DISTORTION'):
                 continue  # optional for clients that predate camera pointing
             return None, 'Missing field: {0:s}'.format(key)
         try:
@@ -86,5 +88,7 @@ def applySolvedValuesToConfig(config, values):
         virtualsky['CALIBRATION'] = values['CALIBRATION']
     if 'PRECESSION' in values:
         virtualsky['PRECESSION'] = values['PRECESSION']
+    if 'RADIAL_DISTORTION' in values:
+        virtualsky['RADIAL_DISTORTION'] = values['RADIAL_DISTORTION']
 
     return config

@@ -302,6 +302,7 @@ function VirtualSky(input){
 	this.az_step = 0;
 	this.az_off = 0;
 	this.fisheye_altitude = 90;
+	this.fisheye_radial = 0;
 	this.precession = false;
 	this.fisheye_azimuth = 0;
 	this.ra_off = 0;
@@ -353,7 +354,9 @@ function VirtualSky(input){
 					if(el < 0 && !unclipped) return {x:NaN,y:NaN,el:horizonEl};
 				}
 				var radius = h/2;
+				if(this.fisheye_radial && unclipped) el = Math.max(0,el); // off-camera direction labels stay at the rim
 				var r = radius*Math.sin(((Math.PI/2)-el)/2)/0.70710678;	// the field of view is bigger than 180 degrees
+				if(this.fisheye_radial) r *= Math.pow(Math.max(2-Math.pow(r/radius,2),1e-12),-this.fisheye_radial);
 				return {x:(w/2-r*Math.sin(az)),y:(radius-r*Math.cos(az)),el:horizonEl};
 			},
 			xy2azel: function(x, y, w, h) {
@@ -364,6 +367,16 @@ function VirtualSky(input){
 				r = Math.sqrt(X*X + Y*Y);
 				if (r > radius) {
 					return undefined;
+				}
+				if(this.fisheye_radial){
+					// Invert the monotonic radial model on the front hemisphere.
+					var lo = 0, hi = 1, target = r/radius;
+					for(var j = 0; j < 40; j++){
+						var mid = (lo+hi)/2;
+						if(mid*Math.pow(2-mid*mid,-this.fisheye_radial) < target) lo = mid;
+						else hi = mid;
+					}
+					r = radius*(lo+hi)/2;
 				}
 				var el = Math.PI/2 - 2 * Math.asin(r * 0.70710678 / radius);
 				var az = Math.atan2(X, Y);
@@ -1080,6 +1093,7 @@ VirtualSky.prototype.init = function(d){
 	if(is(d.clock,s)) this.updateClock(new Date(d.clock.replace(/%20/g,' ')));
 	if(is(d.az,n)) this.az_off = (d.az%360)-180;
 	if(is(d.fisheye_altitude,n) && d.fisheye_altitude >= 0 && d.fisheye_altitude <= 90) this.fisheye_altitude = d.fisheye_altitude;
+	if(is(d.fisheye_radial,n) && d.fisheye_radial >= -0.5 && d.fisheye_radial <= 1) this.fisheye_radial = d.fisheye_radial;
 	if(is(d.fisheye_azimuth,n) && isFinite(d.fisheye_azimuth)) this.fisheye_azimuth = d.fisheye_azimuth;
 	if(is(d.ra,n)) this.setRA(d.ra);
 	if(is(d.dec,n)) this.setDec(d.dec);
@@ -2231,7 +2245,7 @@ VirtualSky.prototype.radec2xy = function(ra,dec,ofdate){
 VirtualSky.prototype.xy2radec = function(x, y){
 	if (typeof this.projection.xy2radec==="function") return this.projection.xy2radec.call(this,x,y);
 	else if (typeof this.projection.xy2azel === "function") {
-		var azel = this.projection.xy2azel(x, y,this.wide,this.tall);
+		var azel = this.projection.xy2azel.call(this,x,y,this.wide,this.tall);
 		if (azel === undefined) {
 			return undefined;
 		}

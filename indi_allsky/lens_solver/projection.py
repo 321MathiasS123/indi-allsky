@@ -14,6 +14,8 @@ iers.conf.auto_max_age = None
 
 
 SIN45 = 0.70710678            # constant from virtualsky.js fisheye projection
+RADIAL_MIN = -0.5  # monotonic on the front hemisphere, including orthographic
+RADIAL_MAX = 1.0
 
 
 def precessCatalog(catalog, obstime_unix):
@@ -113,6 +115,11 @@ def projectToPixels(alt_rad, az_rad, params, image_width, image_height, mirror=F
 
     theta = (numpy.pi / 2.0) - alt_rad
     r = (diameter / 2.0) * numpy.sin(theta / 2.0) / SIN45
+    if len(params) > 6 and params[6]:
+        # r = sin(theta) / (1+cos(theta))**(0.5+k), normalized at 90 degrees.
+        # k=0: equisolid; -0.5: orthographic; +0.5: stereographic. Unlike a
+        # truncated polynomial this handles those common lenses exactly.
+        r *= numpy.maximum(2-(r / (diameter / 2.0))**2, 1e-12)**(-params[6])
 
     psi = az_rad - numpy.radians(azimuth_deg)
 

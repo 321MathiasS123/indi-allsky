@@ -126,12 +126,14 @@ test('new frames and edited controls update the existing projection, clock and d
     await c.loop(); c.img.onload();
     const before = c.planetarium.times.LST;
     c.precession = true;
+    $('#RADIAL_DISTORTION').value = 0.08;
     entry.timestamp += 3600;
     // Actual pixels, rather than potentially stale server dimensions, set the scale.
     entry.width = 2500;
     await c.loop(); c.img.onload();
     assert.notEqual(c.planetarium.times.LST, before);
     assert.equal(c.planetarium.precession, true);
+    assert.equal(c.planetarium.fisheye_radial, 0.08);
     assert.equal(c.planetarium.clock.getTime(), entry.timestamp*1000);
     $('#AZIMUTH_ANGLE').value = -3;
     $('#latest-image').renderWidth = 602;

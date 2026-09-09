@@ -680,6 +680,7 @@ class IndiAllSkyConfigBase(object):
             "CALIBRATION"         : None,
             "POINTING_AZIMUTH"       : 0.0,
             "PRECESSION"             : False,
+            "RADIAL_DISTORTION"      : 0.0,
             "MAGNITUDE"              : 6.0,
             "CONSTELLATIONS"         : True,
             "CONSTELLATIONLABELS"    : False,

@@ -8,6 +8,13 @@ const rad = Math.PI / 180;
 const close = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a-b) < tolerance, `${a} != ${b}`);
 
 for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
+    test(`${asset}: invalid lens curvature cannot replace a working projection`, () => {
+        const sky = makeSky({fisheye_radial: 0.08}, asset);
+        for (const value of [null, '0.1', NaN, Infinity, -0.51, 1.01]) {
+            sky.init({fisheye_radial: value});
+            assert.equal(sky.fisheye_radial, 0.08);
+        }
+    });
     test(`${asset}: catalogue precession preserves solar-system rendering and lookup`, () => {
         const sky = makeSky();
         const date = sky.horizon2coord([1, 0.3]);
@@ -193,7 +200,7 @@ test('recovered pointing updates the overlay, displayed altitude and next Save/S
     const {$, requests, context} = calibrationPage();
     const values = {AZIMUTH_ANGLE: 200, LATITUDE_OFFSET: 0, LONGITUDE_OFFSET: 0,
         IMAGE_CIRCLE_DIAMETER: 2951, OFFSET_X: 7, OFFSET_Y: -135,
-        LENS_ALTITUDE: 0, POINTING_AZIMUTH: 0, PRECESSION: true};
+        LENS_ALTITUDE: 0, POINTING_AZIMUTH: 0, PRECESSION: true, RADIAL_DISTORTION: 0.08};
     $('#lens_solve').handlers.click();
     assert.equal(JSON.parse(requests[0].data).PRECESSION, true);
     assert.equal(context.precession, false);

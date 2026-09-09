@@ -13,7 +13,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 from . import fitting
-from .projection import SIN45, predictAltAz, cameraAltAz
+from .projection import SIN45, predictAltAz, cameraAltAz, projectToPixels, RADIAL_MIN, RADIAL_MAX
 
 
 PATTERN_STARS = 120
@@ -204,3 +204,71 @@ def recoverOrientation(detections, catalog, latitude, longitude, timestamp, init
                 and Rotation.from_matrix(rotation @ matrix.T).magnitude() > numpy.radians(5)):
             return None  # competing orientations: do not silently pick one
     return best
+
+
+def refineLensModel(detections, catalog, latitude, longitude, timestamp, initial,
+                    width, height, lens_altitude, pointing_azimuth):
+    """Separate radial lens curvature from pointing after establishing star matches.
+
+    A fixed equisolid model can move its fitted centre to absorb distortion,
+    changing the inferred tilt as different stars cross the field. One radial
+    term lets the optical centre remain a measured quantity, not a locked hint.
+    This physical camera model is independent of the experimental overlay warp.
+    """
+    # Strongly different lens laws can otherwise keep a plausible inner-field
+    # match while never bringing the outer stars into the fit. Preserve the
+    # on-axis scale when seeding each of the three common projection families.
+    candidates = [_fitLensModel(detections, catalog, latitude, longitude, timestamp,
+        initial, width, height, lens_altitude, pointing_azimuth, seed)
+        for seed in (0.0, -0.5, 0.5)]
+    candidates = [fit for fit in candidates if fit is not None]
+    return max(candidates, key=lambda fit: fit['match_score']) if candidates else None
+
+
+def _fitLensModel(detections, catalog, latitude, longitude, timestamp, initial,
+                  width, height, lens_altitude, pointing_azimuth, seed):
+    p = numpy.r_[initial[:6], seed]
+    diameter = initial[3]
+    p[3] *= 2**seed
+    detections = fitting._truncateDetections(detections, width/2+p[4], height/2-p[5],
+                                             fitting.MAX_DETECTED_STARS)
+    lower = [p[0]-10, -20, -20, diameter*0.5, p[4]-diameter*0.1,
+             p[5]-diameter*0.1, RADIAL_MIN]
+    upper = [p[0]+10, 20, 20, diameter*2, p[4]+diameter*0.1,
+             p[5]+diameter*0.1, RADIAL_MAX]
+
+    def project(trial):
+        alt, az = predictAltAz(catalog, latitude+trial[1], longitude+trial[2], timestamp)
+        camera_alt, _ = cameraAltAz(alt, az, lens_altitude, pointing_azimuth)
+        xy = numpy.column_stack(projectToPixels(alt, az, trial, width, height,
+            lens_altitude=lens_altitude, pointing_azimuth=pointing_azimuth))
+        visible = (alt > numpy.radians(fitting.MIN_STAR_ALT_DEG)) & (camera_alt > 0)
+        return xy, numpy.flatnonzero(visible)
+
+    for fraction in (0.02, 0.01, 0.006, 0.005, 0.004, 0.003):
+        xy, visible = project(p)
+        radius = max(3., fraction*diameter)
+        ci, di = fitting._matchStars(detections, xy[visible], radius)
+        if len(ci) < fitting.EFFECTIVE_MIN_MATCHED_STARS:
+            return None
+        ci, target = visible[ci], detections[di, :2]
+        result = least_squares(lambda trial: (project(trial)[0][ci]-target).ravel(),
+            p, bounds=(lower, upper), loss=fitting.FIT_LOSS,
+            f_scale=max(1., diameter*0.001), x_scale='jac', max_nfev=100)
+        p = result.x
+
+    # Reject an unconstrained solution or an unsupported lens curve. Do not
+    # silently label the original distortion-biased pointing as a full solve.
+    if (not result.success or numpy.linalg.matrix_rank(result.jac) < len(p)
+            or RADIAL_MAX-p[6] < 1e-5):
+        return None
+    xy, visible = project(p)
+    ci, di = fitting._matchStars(detections, xy[visible], radius)
+    if len(ci) < fitting.EFFECTIVE_MIN_MATCHED_STARS:
+        return None
+    residual = xy[visible[ci]]-detections[di, :2]
+    rms = numpy.sqrt(numpy.mean(numpy.sum(residual**2, axis=1)))
+    fit = fitting._buildFitResult(p, len(ci), rms, radius, False)
+    # A few extra, loose coincidences must not beat a precise physical solution.
+    fit['match_score'] = numpy.sum(1/(1+numpy.sum(residual**2, axis=1)/max(1., diameter*0.001)**2))
+    return fit if fit['success'] else None
