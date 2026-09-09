@@ -251,7 +251,35 @@ class IndiAllSkyLensSolver(object):
         # Preserve the existing zenith/small-tilt calibration whenever it works.
         # A failed or partial fit may instead need a different camera pointing.
         recovered = None
-        if ((not fit['success'] or fit.get('partial'))
+        if ('RADIAL_DISTORTION' in initial_values
+                and fit.get('reason') != 'catalog_not_validated'):
+            t0 = time.monotonic()
+
+            def candidates():
+                yield fit, lens_altitude, pointing_azimuth
+                # Also retry a plausible but unreliable local fit. Otherwise
+                # it can hide the correct solution for a different lens law.
+                for curve in (0.0, -0.5, 0.5):
+                    candidate = recoverOrientation(detections, catalog, latitude, longitude,
+                        obstime_unix, initial_params, work_width, work_height, curve)
+                    if candidate is not None:
+                        yield candidate, candidate['lens_altitude'], candidate['pointing_azimuth']
+
+            for candidate, altitude, heading in candidates():
+                if not candidate['success'] or candidate.get('partial'):
+                    continue
+                refined = refineLensModel(detections, catalog, latitude, longitude,
+                    obstime_unix, candidate['params'], work_width, work_height, altitude, heading)
+                if refined is not None:
+                    fit, lens_altitude, pointing_azimuth = refined, altitude, heading
+                    break
+            else:
+                if fit.get('reason') != 'chirality_mismatch':
+                    fit = dict(success=False, reason='lens_model_unconstrained',
+                        message='Camera pointing is not reliable for this frame or lens model. Try a clearer image with stars spread across the field.',
+                        stars_matched=fit['stars_matched'])
+            self._fit_s += time.monotonic() - t0
+        elif ((not fit['success'] or fit.get('partial'))
                 and fit.get('reason') != 'catalog_not_validated'):
             t0 = time.monotonic()
             if len(preferred) >= 60:
@@ -271,19 +299,6 @@ class IndiAllSkyLensSolver(object):
                 lens_altitude = fit['lens_altitude']
                 pointing_azimuth = fit['pointing_azimuth']
 
-        if fit['success'] and 'RADIAL_DISTORTION' in initial_values:
-            t0 = time.monotonic()
-            refined = refineLensModel(detections, catalog, latitude, longitude,
-                obstime_unix, fit['params'], work_width, work_height,
-                lens_altitude, pointing_azimuth)
-            self._fit_s += time.monotonic() - t0
-            if refined is None:
-                return finish({'success': False, 'reason': 'lens_model_unconstrained',
-                    'message': 'Could not constrain the lens model reliably. Try a clearer frame with stars spread across the image.',
-                    'quality': {'stars_detected': stars_detected, 'stars_matched': fit['stars_matched']}})
-            fit = refined
-            recovered = None  # Convert the refined sky offsets into camera pointing below.
-
         timing['coarse_s'] = round(self._coarse_s, 3)
         timing['fit_s'] = round(self._fit_s, 3)
         timing['residual_evals'] = int(self._residual_evals)
@@ -298,6 +313,8 @@ class IndiAllSkyLensSolver(object):
             quality['final_match_radius'] = round(float(fit['final_match_radius']) * scale, 2)
         if 'rms_px' in fit:
             quality['rms_px'] = round(float(fit['rms_px']) * scale, 2)
+        if 'azimuth_uncertainty_deg' in fit:
+            quality['azimuth_uncertainty_deg'] = round(fit['azimuth_uncertainty_deg'], 2)
 
         if not fit['success']:
             return finish({
@@ -367,6 +384,11 @@ class IndiAllSkyLensSolver(object):
             message += ' (tilt could not be determined -- left unchanged)'
         elif pointing_solved:
             message += ' (camera pointing recovered; latitude/longitude offsets reset to zero)'
+        if 'azimuth_uncertainty_deg' in quality:
+            if quality['azimuth_uncertainty_deg'] > 2:
+                message += '; nearly vertical camera: azimuth is not reliably determined'
+            else:
+                message += '; estimated azimuth uncertainty +/-{0:.2f} degrees'.format(quality['azimuth_uncertainty_deg'])
 
         calibration = None
         if learn:

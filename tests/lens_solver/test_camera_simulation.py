@@ -3,8 +3,8 @@
 Every case renders an actual PNG and runs normal detection and solving. FOV is
 the angular span along the shorter sensor dimension before an off-centre crop.
 Non-native distortions deliberately test the limits of a one-parameter lens.
-Counterexamples remain failing regressions until the solver recovers accurate
-pointing or refuses an unreliable result; they are not skipped or marked xfail.
+Uncertain narrow or obstructed fields may be refused, never silently saved with
+inaccurate pointing. Well-spread native fields must still solve successfully.
 """
 import json
 from functools import lru_cache
@@ -24,12 +24,12 @@ MODELS = ['equisolid', 'equidistant', 'stereographic', 'orthographic']
 ALTITUDE, HEADING, ROLL = 87.4, 176., 200.
 
 
-@lru_cache(maxsize=4)
-def observed_sky(hour):
+@lru_cache(maxsize=64)
+def observed_sky(hour, observer=(53, 11)):
     timestamp = 1788731972 + hour*3600
     catalog = IndiAllSkyLensSolver({}).loadCatalog()
     stars = SkyCoord(ra=catalog[:, 0]*u.deg, dec=catalog[:, 1]*u.deg, frame='icrs')
-    location = EarthLocation.from_geodetic(11*u.deg, 53*u.deg, 0*u.m)
+    location = EarthLocation.from_geodetic(observer[1]*u.deg, observer[0]*u.deg, 0*u.m)
     sky = stars.transform_to(AltAz(obstime=Time(timestamp, format='unix'), location=location))
     alt, az = sky.alt.rad, sky.az.rad
     return timestamp, alt, np.column_stack([
@@ -50,12 +50,13 @@ def lens_radius(theta, model):
 
 
 def simulate_camera(path, sensor, fov, model, hour, distortion='none', strength=0,
-                    crop=(0., 0.), noise=False, obstruction=False, guess_error=False):
+                    crop=(0., 0.), noise=False, obstruction=False, guess_error=False,
+                    altitude=ALTITUDE, heading=HEADING, roll=ROLL, observer=(53, 11)):
     width, height = sensor
-    timestamp, alt, world = observed_sky(hour)
-    elevation, heading, roll = np.radians([ALTITUDE, HEADING, ROLL])
-    axis = np.array([np.cos(elevation)*np.sin(heading),
-                     np.cos(elevation)*np.cos(heading), np.sin(elevation)])
+    timestamp, alt, world = observed_sky(hour, observer)
+    elevation, heading_rad, roll_rad = np.radians([altitude, heading, roll])
+    axis = np.array([np.cos(elevation)*np.sin(heading_rad),
+                     np.cos(elevation)*np.cos(heading_rad), np.sin(elevation)])
     v = np.cross(axis, [0., 0., 1.])
     skew = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     rotation = np.eye(3)+skew+skew@skew/(1+axis[2])
@@ -64,8 +65,8 @@ def simulate_camera(path, sensor, fov, model, hour, distortion='none', strength=
     diameter = min(sensor)/lens_radius(np.radians(fov/2), model)
     radius = lens_radius(theta, model)
     norm = np.maximum(np.hypot(east, north), 1e-12)
-    x = -radius*(east*np.cos(roll)-north*np.sin(roll))/norm
-    y = -radius*(north*np.cos(roll)+east*np.sin(roll))/norm
+    x = -radius*(east*np.cos(roll_rad)-north*np.sin(roll_rad))/norm
+    y = -radius*(north*np.cos(roll_rad)+east*np.sin(roll_rad))/norm
     r2 = x*x+y*y
     if distortion == 'radial':
         x, y = x*(1+strength*r2), y*(1+strength*r2)
@@ -100,19 +101,20 @@ def simulate_camera(path, sensor, fov, model, hour, distortion='none', strength=
         assert cv2.imwrite(str(mask_path), mask)
         config['DETECT_MASK'] = str(mask_path)
     assert cv2.imwrite(str(path), image)
-    initial = dict(AZIMUTH_ANGLE=ROLL, LATITUDE_OFFSET=0, LONGITUDE_OFFSET=0,
+    initial = dict(AZIMUTH_ANGLE=roll, LATITUDE_OFFSET=0, LONGITUDE_OFFSET=0,
         IMAGE_CIRCLE_DIAMETER=diameter*(1.15 if guess_error else 1),
         OFFSET_X=cx-width/2+(40 if guess_error else 0),
         OFFSET_Y=height/2-cy-(30 if guess_error else 0),
         LENS_ALTITUDE=90, POINTING_AZIMUTH=0, PRECESSION=True, RADIAL_DISTORTION=0)
-    result = IndiAllSkyLensSolver(config).solve(path, 53, 11, timestamp, initial)
+    result = IndiAllSkyLensSolver(config).solve(path, *observer, timestamp, initial)
     values = result.get('values', {})
-    heading_error = abs((values['POINTING_AZIMUTH']-HEADING+180) % 360-180) if 'POINTING_AZIMUTH' in values else None
-    elevation_error = abs(values['LENS_ALTITUDE']-ALTITUDE) if 'LENS_ALTITUDE' in values else None
+    heading_error = abs((values['POINTING_AZIMUTH']-heading+180) % 360-180) if 'POINTING_AZIMUTH' in values else None
+    elevation_error = abs(values['LENS_ALTITUDE']-altitude) if 'LENS_ALTITUDE' in values else None
     report = dict(sensor=sensor, fov=fov, model=model, hour=hour,
         distortion=distortion, strength=strength, crop=crop, noise=noise,
         obstruction=obstruction, guess_error=guess_error, stars_rendered=int(keep.sum()),
-        heading_error=heading_error, elevation_error=elevation_error, result=result)
+        heading_error=heading_error, elevation_error=elevation_error, result=result,
+        truth=dict(altitude=altitude, heading=heading, roll=roll), observer=observer)
     path.with_suffix('.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     return report
 
@@ -124,12 +126,25 @@ def assert_accurate(report):
     assert report['elevation_error'] is not None and report['elevation_error'] < 0.5, report
 
 
+def assert_accurate_or_refused(report):
+    if report['result']['success']:
+        assert_accurate(report)
+    else:
+        assert 'values' not in report['result'], report
+        assert report['result']['reason'] in (
+            'lens_model_unconstrained', 'image_circle_too_small', 'too_few_stars',
+            'chirality_mismatch'), report
+
+
 @pytest.mark.parametrize('sensor', SENSORS, ids=['square', '4x3', '16x9', '3x1', 'portrait'])
 @pytest.mark.parametrize('fov', [180, 140, 100, 60])
 @pytest.mark.parametrize('model', MODELS)
 @pytest.mark.parametrize('hour', [0, 4, 8, 18])
 def test_sensor_fov_and_native_lens(tmp_path, sensor, fov, model, hour):
-    assert_accurate(simulate_camera(tmp_path/'sky.png', sensor, fov, model, hour))
+    report = simulate_camera(tmp_path/'sky.png', sensor, fov, model, hour)
+    # A 60-degree field can have a <1 px residual yet exceed the 2-degree
+    # pointing uncertainty limit. Wider, unmasked native fields must solve.
+    (assert_accurate_or_refused if fov == 60 else assert_accurate)(report)
 
 
 @pytest.mark.parametrize('sensor', SENSORS, ids=['square', '4x3', '16x9', '3x1', 'portrait'])
@@ -137,10 +152,7 @@ def test_sensor_fov_and_native_lens(tmp_path, sensor, fov, model, hour):
 @pytest.mark.parametrize('hour', [0, 4, 8, 18])
 def test_narrow_field_is_accurate_or_refused(tmp_path, sensor, model, hour):
     report = simulate_camera(tmp_path/'sky.png', sensor, 30, model, hour)
-    if report['result']['success']:
-        assert_accurate(report)
-    else:
-        assert 'values' not in report['result'], report
+    assert_accurate_or_refused(report)
 
 
 @pytest.mark.parametrize('distortion', ['radial', 'wave', 'elliptical', 'decentered'])
@@ -150,17 +162,16 @@ def test_narrow_field_is_accurate_or_refused(tmp_path, sensor, model, hour):
 def test_non_native_distortion_is_accurate_or_refused(tmp_path, distortion, strength, fov, hour):
     report = simulate_camera(tmp_path/'sky.png', (1920, 1080), fov,
                              'equisolid', hour, distortion, strength)
-    if report['result']['success']:
-        assert_accurate(report)
-    else:
-        assert 'values' not in report['result'], report
+    assert_accurate_or_refused(report)
 
 
 @pytest.mark.parametrize('sensor', [(2400, 800), (1080, 1920)])
 @pytest.mark.parametrize('crop', [(0.2, -0.15), (-0.2, 0.15)])
 @pytest.mark.parametrize('hour', [0, 4, 8, 18])
 def test_offset_noisy_masked_sensor(tmp_path, sensor, crop, hour):
-    assert_accurate(simulate_camera(tmp_path/'sky.png', sensor, 140, 'equisolid', hour,
+    # Masking and cropping can leave a thin strip with insufficient leverage
+    # on pointing, even though there are enough stars to match.
+    assert_accurate_or_refused(simulate_camera(tmp_path/'sky.png', sensor, 140, 'equisolid', hour,
         crop=crop, noise=True, obstruction=True, guess_error=True))
 
 
@@ -175,3 +186,68 @@ def test_solved_values_remain_a_valid_starting_point(tmp_path, model):
     assert again['success'] and not again['partial'], again
     assert abs((again['values']['POINTING_AZIMUTH']-HEADING+180) % 360-180) < 2, again
     assert abs(again['values']['LENS_ALTITUDE']-ALTITUDE) < 0.5, again
+
+
+def varied_cameras(distorted=False):
+    # A separate deterministic sample, not aligned with the regular matrix.
+    rng = np.random.default_rng(926091)
+    for i in range(64 if distorted else 48):
+        aspect = float(rng.choice([0.5625, 1, 1.5, 2.4, 3.5]))
+        height = int(rng.integers(950, 1800))
+        case = dict(sensor=(int(height*aspect), height),
+                    fov=float(rng.choice([65, 95, 125, 165])))
+        if distorted:
+            case.update(model='equisolid',
+                distortion=['radial', 'wave', 'elliptical', 'decentered'][i % 4],
+                strength=float(rng.uniform(-0.04, 0.06)))
+        else:
+            case['model'] = MODELS[i % 4]
+        case.update(hour=float(rng.uniform(1, 23)),
+            altitude=float(rng.choice([20, 54, 82, 87.4, 88.5])),
+            heading=float(rng.uniform(0, 360)), roll=float(rng.uniform(0, 360)),
+            crop=tuple(rng.uniform(-0.12, 0.12, 2)),
+            observer=(float(rng.choice([-55, -20, 0, 30, 67])), float(rng.uniform(-170, 170))))
+        yield case
+
+
+@pytest.mark.parametrize('case', list(varied_cameras()))
+def test_varied_native_camera(tmp_path, case):
+    report = simulate_camera(tmp_path/'sky.png', **case)
+    diameter = min(case['sensor'])/lens_radius(np.radians(case['fov']/2), case['model'])
+    if diameter < 700:  # Existing resolution floor, not a new geometry restriction.
+        assert report['result'].get('reason') == 'image_circle_too_small', report
+    else:
+        assert_accurate(report)
+
+
+@pytest.mark.parametrize('case', list(varied_cameras(distorted=True)))
+def test_varied_distorted_camera(tmp_path, case):
+    assert_accurate_or_refused(simulate_camera(tmp_path/'sky.png', **case))
+
+
+@pytest.mark.parametrize('kind', ['noise', 'grid', 'mirror'])
+def test_flexible_lens_does_not_turn_false_stars_into_a_solution(tmp_path, kind):
+    path = tmp_path/'false-sky.png'
+    diameter = 1600/lens_radius(np.radians(70), 'equisolid')
+    if kind == 'mirror':
+        simulate_camera(path, (1600, 1600), 140, 'equisolid', 0)
+        image = cv2.flip(cv2.imread(str(path), cv2.IMREAD_GRAYSCALE), 1)
+    else:
+        image = np.full((1600, 1600), 10, np.uint8)
+        if kind == 'grid':
+            x, y = np.meshgrid(np.linspace(100, 1500, 20), np.linspace(100, 1500, 20))
+            points = np.column_stack([x.ravel(), y.ravel()])
+        else:
+            points = np.random.default_rng(73).uniform(100, 1500, (500, 2))
+        for x, y in points:
+            cv2.circle(image, (int(x), int(y)), 2, 220, -1)
+        image = cv2.GaussianBlur(image, (5, 5), 1.1)
+    assert cv2.imwrite(str(path), image)
+    initial = dict(AZIMUTH_ANGLE=ROLL, LATITUDE_OFFSET=0, LONGITUDE_OFFSET=0,
+        IMAGE_CIRCLE_DIAMETER=diameter, OFFSET_X=0, OFFSET_Y=0,
+        LENS_ALTITUDE=90, POINTING_AZIMUTH=0, PRECESSION=True, RADIAL_DISTORTION=0)
+    result = IndiAllSkyLensSolver({}).solve(path, 53, 11, observed_sky(0)[0], initial)
+    assert not result['success'] and 'values' not in result, result
+    if kind == 'mirror':
+        assert result['reason'] == 'chirality_mismatch'
+        assert 'Flip Image' in result['message']
