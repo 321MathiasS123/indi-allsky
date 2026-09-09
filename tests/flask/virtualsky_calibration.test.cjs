@@ -112,12 +112,29 @@ test('stale geometry, camera, location, time and size cannot reuse calibration',
     assert.equal(calibration.compatible(bad, ...args.slice(1)), false);
 });
 
+test('old corrections retain legacy geometry and new ones require the solved lens and catalogue convention', () => {
+    for (const version of [1, 2]) {
+        const m = model();
+        m.version = version;
+        const geometry = [...m.geometry, version === 2 ? 0.08 : 0, version === 2 ? 1 : 0];
+        if (version === 2) m.geometry = [...geometry];
+        const compatible = g => calibration.compatible(m, g, m.image_size, m.context, m.camera_uuid);
+        assert.equal(compatible(geometry), true);
+        for (const i of [8, 9]) {
+            const changed = [...geometry];
+            changed[i] += 0.01;
+            assert.equal(compatible(changed), false);
+        }
+    }
+});
+
 for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
     test(`${asset}: forward and inverse stay consistent through tilt, scaling and taper`, () => {
         const m = model();
-        for (const altitude of [0, 20, 54, 90]) for (const size of [400, 1000, 2200]) {
+        for (const altitude of [0, 20, 54, 90]) for (const size of [400, 1000, 2200])
+        for (const curvature of [-0.5, 0, 0.08, 0.5]) {
             const options = {fisheye_altitude: altitude, fisheye_azimuth: 123, az: 70,
-                width: size, height: size};
+                width: size, height: size, fisheye_radial: curvature, precession: true};
             const sky = makeSky(options, asset), original = makeSky(options, asset);
             calibration.install(sky, m);
             for (let az = 0; az < 360; az += 30) for (const el of [15, 40, 70, 90]) {
@@ -132,7 +149,7 @@ for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
                 const expected = original.xy2radec(before.x, before.y);
                 const actual = sky.xy2radec(p.x, p.y);
                 if (!expected) continue; // numerical points just beyond the horizon circle
-                assert.ok(actual);
+                assert.ok(actual, JSON.stringify({altitude, size, curvature, az, el, before, p}));
                 assert.ok(Math.abs(actual.dec-expected.dec) < 1e-8);
                 assert.ok(Math.abs(Math.cos(actual.ra)-Math.cos(expected.ra)) < 1e-8);
             }

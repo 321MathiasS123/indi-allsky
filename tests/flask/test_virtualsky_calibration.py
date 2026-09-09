@@ -149,20 +149,24 @@ def config_store(endpoint):
     return app, view, cls, saved
 
 
-def test_calibration_survives_real_config_save_and_reload(config_store):
+@pytest.mark.parametrize('version', [1, 2])
+def test_calibration_survives_real_config_save_and_reload(config_store, version):
     app, view, cls, saved = config_store
-    model = saved_model()
-    for enabled, calibration in [(True, model), (False, model), (False, None), (True, model)]:
+    model = saved_model(version)
+    for enabled, calibration in [(True, model), (False, model), (False, None), (True, None), (True, model)]:
         with app.test_request_context(json=dict(VALUES, action='save', LENS_ALTITUDE=90,
+                RADIAL_DISTORTION=0.08 if version == 2 else 0, PRECESSION=version == 2,
                 CALIBRATION_ENABLED=enabled, CALIBRATION=calibration)):
             response = app.make_response(view.dispatch_request())
         assert response.status_code == 200, response.get_json()
         reloaded = cls()
         assert reloaded.config['VIRTUALSKY']['CALIBRATION'] == calibration
         assert reloaded.config['VIRTUALSKY']['CALIBRATION_ENABLED'] is enabled
+        assert reloaded.config['VIRTUALSKY']['RADIAL_DISTORTION'] == (0.08 if version == 2 else 0)
+        assert reloaded.config['VIRTUALSKY']['PRECESSION'] is (version == 2)
         view._indi_allsky_config_obj = reloaded
         view.indi_allsky_config = reloaded.config
-    assert len(saved) == 5
+    assert len(saved) == 6
 
 
 @pytest.mark.parametrize('key,value', [('CALIBRATION', []), ('CALIBRATION', 'invalid'),

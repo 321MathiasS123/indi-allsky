@@ -655,6 +655,7 @@ class VirtualSkyView(TemplateView):
         data = {
             'AZIMUTH_ANGLE'         : self.camera.az,
             'POINTING_AZIMUTH'      : self.camera.data.get('vs_pointing_azimuth', 0.0),
+            'RADIAL_DISTORTION'     : self.camera.data.get('vs_radial_distortion', 0.0),
             'IMAGE_CIRCLE_DIAMETER' : self.camera.data.get('vs_image_circle_diameter', 3500),
             'LATITUDE_OFFSET'       : self.camera.data.get('vs_latitude_offset', 0.0),
             'LONGITUDE_OFFSET'      : self.camera.data.get('vs_longitude_offset', 0.0),
@@ -688,6 +689,7 @@ class VirtualSkyView(TemplateView):
                 100 if focus_mode else self.indi_allsky_config.get('IMAGE_SCALE', 100),
                 *[0 if focus_mode else self.indi_allsky_config.get('IMAGE_BORDER', {}).get(k, 0)
                   for k in ('TOP', 'RIGHT', 'BOTTOM', 'LEFT')]]
+        context['precession'] = self.camera.data.get('vs_precession', False)
 
 
         refreshInterval_ms = math.ceil(self.indi_allsky_config.get('CCD_EXPOSURE_MAX', 15.0)) * 1000

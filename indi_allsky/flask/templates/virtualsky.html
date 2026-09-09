@@ -73,6 +73,7 @@ var fullscreen = false;  // initial state
 var camera_latitude = {{ camera_latitude }};
 var camera_longitude = {{ camera_longitude }};
 var camera_altitude = {{ camera_altitude }};
+var precession = {{ precession | default(false) | tojson }};
 var time_offset = {{ time_offset }};
 
 var planetarium;
@@ -257,6 +258,8 @@ async function loop() {
                 longitude: vs_longitude,
                 az: vs_az,
                 fisheye_altitude: camera_altitude,
+                precession: precession,
+                fisheye_radial: Number($('#RADIAL_DISTORTION').val()),
                 fisheye_azimuth: Number($('#POINTING_AZIMUTH').val()),
                 magnitude: magnitude,
                 constellations: constellations,
@@ -393,7 +396,7 @@ function loadJS(url, data, onDone, onError) {
                     <div id="virtualsky-hint" class="tw:alert tw:alert-info tw:text-xs tw:rounded-[var(--radius-box)]">
                         <i class="tw:icon-[lucide--info] tw:w-4 tw:h-4" aria-hidden="true"></i>
                         <span><strong>Camera location and image time must be correct</strong> for accurate sky alignment.
-                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all eight geometry values and the optional lens calibration shown below. You can also edit geometry under Config → Location.{% endif %}
+                            {% if can_save_config %}Solve fills the calibration fields for review; Save writes all nine geometry values and the optional lens calibration shown below. Camera pointing and alignment are also available under Config → Location.{% endif %}
                         </span>
                     </div>
 
@@ -424,6 +427,7 @@ function loadJS(url, data, onDone, onError) {
                         <fieldset class="virtualsky-group">
                             <legend>Fine adjustments</legend>
                             <div class="virtualsky-fields">
+                                {{ calibration_input(form_virtualsky.RADIAL_DISTORTION, 'Lens curvature', 'Solve measures radial lens distortion before determining camera pointing. Zero uses the original equisolid lens model.') }}
                                 {{ calibration_input(form_virtualsky.LATITUDE_OFFSET, 'Latitude offset (°)') }}
                                 {{ calibration_input(form_virtualsky.LONGITUDE_OFFSET, 'Longitude offset (°)') }}
                             </div>
@@ -508,7 +512,11 @@ function loadJS(url, data, onDone, onError) {
                            to zero. Results update the fields and overlay for review; nothing is saved.</p>
                         <p>Use a clear, star-rich frame from the Gallery. Clouds, bright sky and obstructions can
                            prevent a reliable match. A reasonable diameter and image-center estimate help the search.</p>
-                        <p id="lens_save_help"><strong>Save</strong> writes all eight calibration values to the camera configuration,
+                        <p>New solves account for the catalogue reference date. Save retains this correction;
+                           existing saved alignments keep their original coordinates until solved again.</p>
+                        <p>Lens curvature separates radial lens distortion from camera tilt. It is calibrated by
+                           the normal solver; zero retains the original equisolid projection.</p>
+                        <p id="lens_save_help"><strong>Save</strong> writes all nine calibration values to the camera configuration,
                            including manually entered values. Display controls are not saved. Rotation also repositions
                            the cardinal-direction labels burned into future captured images.</p>
                         <p><strong>Experimental lens correction</strong> is optional. When enabled, Solve also fits
@@ -584,7 +592,7 @@ $("#OFFSET_X").on("change", function() {
     forceRedrawPlanetarium();
 });
 
-$("#OFFSET_Y").on("change", function() {
+$("#OFFSET_Y, #RADIAL_DISTORTION").on("change", function() {
     forceRedrawPlanetarium();
 });
 
@@ -857,11 +865,12 @@ $('#download_map').on('click', function(e) {
 
 
 const SOLVE_FIELDS = ['AZIMUTH_ANGLE', 'LATITUDE_OFFSET', 'LONGITUDE_OFFSET',
-                      'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y'];
+                      'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y', 'RADIAL_DISTORTION'];
 
 function calibrationGeometry() {
-    return [...SOLVE_FIELDS.map(f => Number($('#' + f).val())),
-            camera_altitude, Number($('#POINTING_AZIMUTH').val())];
+    return [...SOLVE_FIELDS.slice(0, 6).map(f => Number($('#' + f).val())),
+            camera_altitude, Number($('#POINTING_AZIMUTH').val()),
+            Number($('#RADIAL_DISTORTION').val()), Number(precession)];
 }
 
 function updateCalibrationStatus() {
@@ -886,6 +895,7 @@ function solverPayload(action) {
     var payload = {'action': action, 'camera_id': camera_id};
     payload['POINTING_AZIMUTH'] = $('#POINTING_AZIMUTH').val();
     payload['LENS_ALTITUDE'] = camera_altitude;
+    payload['PRECESSION'] = action === 'solve' ? true : precession;
     SOLVE_FIELDS.forEach(function(f) {
         payload[f] = $('#' + f).val();
     });
@@ -952,6 +962,7 @@ $('#lens_solve').on('click', function() {
         timeout: 60000,
         success: function(rdata) {
             if (rdata['success']) {
+                precession = rdata['values']['PRECESSION'] === true;
                 SOLVE_FIELDS.forEach(function(f) {
                     $('#' + f).val(rdata['values'][f]);
                 });

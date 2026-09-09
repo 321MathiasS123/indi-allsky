@@ -8,6 +8,34 @@ const rad = Math.PI / 180;
 const close = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a-b) < tolerance, `${a} != ${b}`);
 
 for (const asset of ['virtualsky.js', 'virtualsky.min.js']) {
+    test(`${asset}: invalid lens curvature cannot replace a working projection`, () => {
+        const sky = makeSky({fisheye_radial: 0.08}, asset);
+        for (const value of [null, '0.1', NaN, Infinity, -0.51, 1.01]) {
+            sky.init({fisheye_radial: value});
+            assert.equal(sky.fisheye_radial, 0.08);
+        }
+    });
+    test(`${asset}: catalogue precession preserves solar-system rendering and lookup`, () => {
+        const sky = makeSky();
+        const date = sky.horizon2coord([1, 0.3]);
+        sky.ctx = {};
+        sky.showplanets = true;
+        sky.planets = [['test', 'white', [sky.times.JD-1, date.ra/rad, date.dec/rad, 0,
+            sky.times.JD+1, date.ra/rad, date.dec/rad, 0]]];
+        const drawn = [];
+        sky.drawPlanet = (x,y,r,colour,label) => drawn.push([x,y,label]);
+        sky.drawPlanets();
+        const expected = drawn.splice(0);
+        sky.precession = true;
+        sky.drawPlanets();
+        assert.deepEqual(drawn, expected);
+        const [x,y] = drawn.find(p => p[2] === 'test');
+        sky.lookup = {planet: sky.lookup.planet};
+        const nearest = sky.nearestObject(x,y);
+        assert.equal(nearest.type, 'planet');
+        assert.ok(nearest.distance < 1e-4);
+    });
+
     test(`${asset}: zenith retains the original projection exactly`, () => {
         for (const altitude of [undefined, null, 90]) {
             const sky = makeSky({fisheye_altitude: altitude, fisheye_azimuth: 213}, asset);
@@ -111,7 +139,7 @@ function calibrationPage() {
     $('#LATITUDE_OFFSET').val('43.49');
     $('#POINTING_AZIMUTH').val('123');
     const context = vm.createContext({$, camera_id: 1, camera_altitude: 90, lensCalibration: null, calibrationMessage: '',
-        last_image_timestamp: 1770000000,
+        precession: false, last_image_timestamp: 1770000000,
         forceRedrawPlanetarium() {}});
     vm.runInContext(html.slice(html.indexOf('const SOLVE_FIELDS')).split('</script>')[0], context);
     return {$, requests, context};
@@ -123,6 +151,7 @@ test('manual Save is available without solving and sends pointing and large offs
     $('#lens_save').handlers.click();
     const payload = JSON.parse(requests[0].data);
     assert.equal(payload.action, 'save');
+    assert.equal(payload.PRECESSION, false);
     assert.equal(payload.LATITUDE_OFFSET, '43.49');
     assert.equal(payload.POINTING_AZIMUTH, '123');
     assert.equal($('#lens_solve').prop('disabled'), true);
@@ -156,13 +185,14 @@ test('successful requests restore both buttons and keep the heading used by the 
 
 test('unsuccessful solves restore manual Save after application and network failures', () => {
     for (const failure of ['success', 'error']) {
-        const {$, requests} = calibrationPage();
+        const {$, requests, context} = calibrationPage();
         $('#lens_solve').handlers.click();
         assert.equal($('#lens_save').prop('disabled'), true);
         requests[0][failure]({success: false, message: 'No stars'});
         requests[0].complete();
         assert.equal($('#lens_save').prop('disabled'), false);
         assert.equal($('#LATITUDE_OFFSET').val(), '43.49');
+        assert.equal(context.precession, false);
     }
 });
 
@@ -170,13 +200,18 @@ test('recovered pointing updates the overlay, displayed altitude and next Save/S
     const {$, requests, context} = calibrationPage();
     const values = {AZIMUTH_ANGLE: 200, LATITUDE_OFFSET: 0, LONGITUDE_OFFSET: 0,
         IMAGE_CIRCLE_DIAMETER: 2951, OFFSET_X: 7, OFFSET_Y: -135,
-        LENS_ALTITUDE: 0, POINTING_AZIMUTH: 0};
+        LENS_ALTITUDE: 0, POINTING_AZIMUTH: 0, PRECESSION: true, RADIAL_DISTORTION: 0.08};
     $('#lens_solve').handlers.click();
+    assert.equal(JSON.parse(requests[0].data).PRECESSION, true);
+    assert.equal(context.precession, false);
     requests[0].success({success: true, values, message: 'Pointing recovered'});
     requests[0].complete();
     assert.equal(context.camera_altitude, 0);
+    assert.equal(context.precession, true);
     assert.equal($('#lens_altitude').value, 0);
     assert.equal($('#POINTING_AZIMUTH').val(), 0);
+    assert.deepEqual(Array.from(context.calibrationGeometry()),
+        [200, 0, 0, 2951, 7, -135, 0, 0, 0.08, 1]);
     for (const button of ['#lens_save', '#lens_solve']) {
         $(button).handlers.click();
         const payload = JSON.parse(requests.at(-1).data);

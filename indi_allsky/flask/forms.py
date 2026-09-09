@@ -10457,6 +10457,7 @@ class IndiAllskyImageCircleHelperForm(FlaskForm):
 
 
 class IndiAllskyVirtualSkyHelperForm(FlaskForm):
+    RADIAL_DISTORTION      = FloatField('Lens curvature', default=0.0, validators=[NumberRange(min=-0.5, max=1.0)], widget=NumberInput(min=-0.5, max=1, step=0.001))
     POINTING_AZIMUTH        = FloatField('Pointing Azimuth', default=0.0, validators=[NumberRange(min=0.0, max=360.0)], widget=NumberInput(min=0, max=360, step=0.1))
     AZIMUTH_ANGLE           = FloatField('Azimuth Angle', widget=NumberInput(min=0.0, max=359.9, step=0.1))
     LATITUDE_OFFSET         = FloatField('Latitude Offset', widget=NumberInput(step=0.25))
