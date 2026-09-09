@@ -241,8 +241,8 @@ test('declined calibration keeps the requested switch and explains why toggling 
     requests[1].success({success: true, values,
         calibration: {summary: 'Validated on unused stars.'}, message: 'Solved.'});
     requests[1].complete();
-    assert.equal($('#calibration_summary').value, 'Learned correction enabled. Validated on unused stars.');
+    assert.equal($('#calibration_summary').value, 'Additional correction enabled. Validated on unused stars.');
     $('#CALIBRATION_ENABLED').prop('checked', false);
     $('#CALIBRATION_ENABLED').handlers.change();
-    assert.equal($('#calibration_summary').value, 'Learned correction off. Validated on unused stars.');
+    assert.equal($('#calibration_summary').value, 'Additional correction off. Validated on unused stars.');
 });
