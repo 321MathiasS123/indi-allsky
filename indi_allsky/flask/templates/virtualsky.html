@@ -402,23 +402,23 @@ function loadJS(url, data, onDone, onError) {
 
                     <div class="virtualsky-groups">
                         <fieldset class="virtualsky-group">
-                            <legend>Camera pointing</legend>
+                            <legend>Camera orientation</legend>
                             <div class="virtualsky-fields">
                                 <div class="virtualsky-field">
-                                    <label for="lens_altitude">Elevation (°)</label>
+                                    <label for="lens_altitude">Camera elevation (°)</label>
                                     <input id="lens_altitude" name="LENS_ALTITUDE" type="number" value="{{ camera_altitude }}" readonly
-                                           title="Camera elevation above the horizon. Updated by Solve and included in Save. To set it manually, use Config → Location."
+                                           title="Angle above the horizon: 0° is horizontal, 90° is straight up (zenith). Updated by Solve and included in Save. To set it manually, use Altitude under Config → Location."
                                            class="tw:input tw:input-bordered tw:input-sm tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:text-sm">
                                 </div>
-                                {{ calibration_input(form_virtualsky.POINTING_AZIMUTH, 'Azimuth (°)', 'Direction the lens points: 0° north, 90° east. Ignored at 90° elevation.') }}
-                                {{ calibration_input(form_virtualsky.AZIMUTH_ANGLE, 'Rotation (°)', 'Azimuth Angle: image rotation around the lens axis. Also positions the direction labels in future captured images.') }}
+                                {{ calibration_input(form_virtualsky.POINTING_AZIMUTH, 'Pointing direction (°)', 'Pointing azimuth: compass direction the lens points toward. 0° north, 90° east, 180° south, 270° west. For a nearly vertical camera, this is the direction of its slight lean. Ignored at 90° elevation.') }}
+                                {{ calibration_input(form_virtualsky.AZIMUTH_ANGLE, 'Overlay rotation (°)', 'Rotates the sky overlay to align it with the photo. Also positions direction labels in future captured images. Saved as Azimuth under Config → Location.') }}
                             </div>
-                            <p>90° elevation is zenith; azimuth is ignored there.</p>
+                            <p>90° elevation points straight up. Pointing direction describes the camera's lean toward the horizon; overlay rotation aligns the sky with the photo.</p>
                         </fieldset>
                         <fieldset class="virtualsky-group">
                             <legend>Image alignment</legend>
                             <div class="virtualsky-fields">
-                                {{ calibration_input(form_virtualsky.IMAGE_CIRCLE_DIAMETER, 'Diameter (px)', "The 180° reference circle under VirtualSky's equisolid fisheye projection. It may differ from the visible illuminated circle: larger for lenses with less than a 180° field of view, smaller for lenses with more than 180°.") }}
+                                {{ calibration_input(form_virtualsky.IMAGE_CIRCLE_DIAMETER, 'Reference diameter (px)', "The 180° reference circle under VirtualSky's equisolid fisheye projection. It may differ from the visible illuminated circle: larger for lenses with less than a 180° field of view, smaller for lenses with more than 180°.") }}
                                 {{ calibration_input(form_virtualsky.OFFSET_X, 'X offset (px)') }}
                                 {{ calibration_input(form_virtualsky.OFFSET_Y, 'Y offset (px)') }}
                             </div>
@@ -431,7 +431,7 @@ function loadJS(url, data, onDone, onError) {
                                 {{ calibration_input(form_virtualsky.LATITUDE_OFFSET, 'Latitude offset (°)') }}
                                 {{ calibration_input(form_virtualsky.LONGITUDE_OFFSET, 'Longitude offset (°)') }}
                             </div>
-                            <p>Sky alignment offsets; camera pointing recovery resets these to zero.</p>
+                            <p>Recovering camera pointing resets latitude/longitude offsets to zero.</p>
                         </fieldset>
                     </div>
 
@@ -508,7 +508,7 @@ function loadJS(url, data, onDone, onError) {
                          class="tw:text-xs tw:text-base-content/70 tw:space-y-1.5 tw:pt-2 tw:max-w-2xl">
                         <p><strong>Solve</strong> matches stars in the displayed image using the camera location and
                            image time, which must be correct. It starts from the entered alignment and searches for
-                           camera elevation and azimuth if needed. Recovered pointing resets latitude/longitude offsets
+                           camera elevation and pointing direction (azimuth) if needed. Recovered pointing resets latitude/longitude offsets
                            to zero. Results update the fields and overlay for review; nothing is saved.</p>
                         <p>Use a clear, star-rich frame from the Gallery. Clouds, bright sky and obstructions can
                            prevent a reliable match. A reasonable diameter and image-center estimate help the search.</p>
@@ -517,7 +517,7 @@ function loadJS(url, data, onDone, onError) {
                         <p>Lens curvature separates radial lens distortion from camera tilt. It is calibrated by
                            the normal solver; zero retains the original equisolid projection.</p>
                         <p id="lens_save_help"><strong>Save</strong> writes all nine calibration values to the camera configuration,
-                           including manually entered values. Display controls are not saved. Rotation also repositions
+                           including manually entered values. Display controls are not saved. Overlay rotation also repositions
                            the cardinal-direction labels burned into future captured images.</p>
                         <p><strong>Experimental lens correction</strong> is optional. When enabled, Solve also fits
                            lens distortion from matched stars, using the detection mask and sky ROI as hints.
@@ -525,8 +525,8 @@ function loadJS(url, data, onDone, onError) {
                            Save also stores this model and whether it is enabled; only the overlay is corrected.</p>
                         <p><strong>Reload on Save</strong> also reloads the capture service to apply the saved
                            configuration. If unchecked, the values become page defaults after the next service reload.</p>
-                        <p>With a tilted camera, direction labels stay near their projected horizon positions;
-                           labels beyond the reference circle are placed at its rim as direction cues.</p>
+                        <p>Direction labels stay inside the visible photo and its image mask. Directions outside
+                           the camera's view are shown near the edge as direction cues.</p>
                     </div>
                     {% endif %}
                 </div>
