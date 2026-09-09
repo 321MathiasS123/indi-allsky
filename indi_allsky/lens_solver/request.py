@@ -40,30 +40,27 @@ def parseSolverRequestValues(data, for_save=False):
             return None, '{0:s} out of range'.format(key)
         values[key] = v
 
-    if 'PRECESSION' in data:
-        if not isinstance(data['PRECESSION'], bool):
-            return None, 'PRECESSION must be a boolean'
-        values['PRECESSION'] = data['PRECESSION']
-    if 'CALIBRATION_ENABLED' in data:
-        if not isinstance(data['CALIBRATION_ENABLED'], bool):
-            return None, 'CALIBRATION_ENABLED must be a boolean'
-        values['CALIBRATION_ENABLED'] = data['CALIBRATION_ENABLED']
-        if for_save:
-            model = data.get('CALIBRATION')
-            if model is not None:
-                if not validateCalibration(model):
-                    return None, 'Invalid lens calibration; solve again'
-                geometry = [values.get(k) for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
-                    'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y',
-                    'LENS_ALTITUDE', 'POINTING_AZIMUTH')]
-                geometry += [values.get('RADIAL_DISTORTION', 0), int(values.get('PRECESSION', False))]
-                # Older corrections belong to the original lens and catalogue convention.
-                saved_geometry = model['geometry'] + ([0, 0] if model['version'] == 1 else [])
-                if saved_geometry != geometry:
-                    return None, 'Alignment changed since calibration; solve again'
-            # A successful solve may need no extra correction. Keep the opt-in
-            # preference without blocking Save or applying an absent model.
-            values['CALIBRATION'] = model
+    for key in ('PRECESSION', 'CALIBRATION_ENABLED'):
+        if key in data:
+            if not isinstance(data[key], bool):
+                return None, '{0:s} must be a boolean'.format(key)
+            values[key] = data[key]
+    if for_save and 'CALIBRATION_ENABLED' in values:
+        model = data.get('CALIBRATION')
+        if model is not None:
+            if not validateCalibration(model):
+                return None, 'Invalid lens calibration; solve again'
+            geometry = [values.get(k) for k in ('AZIMUTH_ANGLE', 'LATITUDE_OFFSET',
+                'LONGITUDE_OFFSET', 'IMAGE_CIRCLE_DIAMETER', 'OFFSET_X', 'OFFSET_Y',
+                'LENS_ALTITUDE', 'POINTING_AZIMUTH')]
+            geometry += [values.get('RADIAL_DISTORTION', 0), int(values.get('PRECESSION', False))]
+            # Older corrections belong to the original lens and catalogue convention.
+            saved_geometry = model['geometry'] + ([0, 0] if model['version'] == 1 else [])
+            if saved_geometry != geometry:
+                return None, 'Alignment changed since calibration; solve again'
+        # A successful solve may need no extra correction. Keep the opt-in
+        # preference without blocking Save or applying an absent model.
+        values['CALIBRATION'] = model
     return values, None
 
 
@@ -84,14 +81,12 @@ def applySolvedValuesToConfig(config, values):
     virtualsky['IMAGE_CIRCLE_DIAMETER'] = values['IMAGE_CIRCLE_DIAMETER']
     virtualsky['OFFSET_X'] = values['OFFSET_X']
     virtualsky['OFFSET_Y'] = values['OFFSET_Y']
-    if 'POINTING_AZIMUTH' in values:
-        virtualsky['POINTING_AZIMUTH'] = values['POINTING_AZIMUTH']
+    # Omitted extension fields leave existing settings intact for older clients.
+    for key in ('POINTING_AZIMUTH', 'PRECESSION', 'RADIAL_DISTORTION'):
+        if key in values:
+            virtualsky[key] = values[key]
     if 'CALIBRATION_ENABLED' in values:
         virtualsky['CALIBRATION_ENABLED'] = values['CALIBRATION_ENABLED']
         virtualsky['CALIBRATION'] = values['CALIBRATION']
-    if 'PRECESSION' in values:
-        virtualsky['PRECESSION'] = values['PRECESSION']
-    if 'RADIAL_DISTORTION' in values:
-        virtualsky['RADIAL_DISTORTION'] = values['RADIAL_DISTORTION']
 
     return config

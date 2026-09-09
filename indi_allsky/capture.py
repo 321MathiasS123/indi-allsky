@@ -1102,6 +1102,7 @@ class CaptureWorker(Process):
         calibration = self.config.get('VIRTUALSKY', {}).get('CALIBRATION')
         calibration_enabled = self.config.get('VIRTUALSKY', {}).get('CALIBRATION_ENABLED', False)
         if calibration and calibration_enabled:
+            # A changed crop/rotation/scale invalidates the learned pixel mapping.
             from .lens_solver.calibration import pipelineSignature
             calibration_enabled = calibration.get('pipeline') == pipelineSignature(self.config)
         camera_metadata['data']['vs_calibration'] = calibration
@@ -2585,3 +2586,4 @@ class CaptureWorker(Process):
 
         for x, label in enumerate(temp_label_list[:50]):  # limit to 50
             self.SENSOR_SLOTS[x + 80][1] = '{0:s}'.format(label)
+

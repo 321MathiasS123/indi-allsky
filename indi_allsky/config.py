@@ -676,8 +676,8 @@ class IndiAllSkyConfigBase(object):
             "BUBBLE_COUNT"           : 1000,
         },
         "VIRTUALSKY" : {
-            "CALIBRATION_ENABLED" : False,
-            "CALIBRATION"         : None,
+            "CALIBRATION_ENABLED"    : False,
+            "CALIBRATION"            : None,
             "POINTING_AZIMUTH"       : 0.0,
             "PRECESSION"             : False,
             "RADIAL_DISTORTION"      : 0.0,
