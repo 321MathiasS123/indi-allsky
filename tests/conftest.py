@@ -59,6 +59,9 @@ def sync_env(tmp_path, monkeypatch, request):
     transport = load('indi_allsky.filetransfer.requests_syncapi_v1', 'indi_allsky/filetransfer/requests_syncapi_v1.py')
     transfers.requests_syncapi_v1 = transport.requests_syncapi_v1
     worker_module = load('indi_allsky.syncapi_sync', 'indi_allsky/syncapi_sync.py')
+    import indi_allsky
+    monkeypatch.setattr(indi_allsky, 'syncapi_sync', worker_module, raising=False)
+    load('indi_allsky.syncapi_schedule', 'indi_allsky/syncapi_schedule.py')
 
     def make_app(name):
         image_path = tmp_path / name

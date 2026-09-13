@@ -2,7 +2,8 @@
 
 The main service admits one worker at a time. Database state is for local UI
 progress and cancellation; per-asset sync_id values are the durable checkpoints.
-Neither polling status nor restarting the service starts a transfer.
+Polling status does not start transfers. An explicitly enabled availability
+schedule can request new runs, including after a service restart.
 """
 
 from copy import deepcopy
@@ -92,7 +93,7 @@ def status():
     return result
 
 
-def request_sync(config, types):
+def request_sync(config, types, schedule_revision=None):
     if not on_demand_enabled(config):
         raise ValueError('Save and apply On demand mode before starting a synchronization.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in MEDIA for t in types):
@@ -106,6 +107,8 @@ def request_sync(config, types):
         queue=models.TaskQueueQueue.MAIN, state=models.TaskQueueState.MANUAL, priority=100,
         data={'action': TASK_ACTION, 'types': list(dict.fromkeys(types)), 'destination': fingerprint},
     )
+    if schedule_revision is not None:
+        task.data['schedule_revision'] = schedule_revision
     db.session.add(task)
     db.session.commit()
     return task
@@ -189,6 +192,11 @@ class SyncApiSyncWorker(Thread):
         db.session.commit()
         if self.stop_event.is_set() or get_state(CANCEL_KEY, 0) >= self.task_id:
             raise SyncStopped('Synchronization cancelled. Press Sync now to continue.')
+        if getattr(self, 'schedule_revision', None) is not None:
+            from .syncapi_schedule import settings
+            schedule = settings()
+            if not schedule['enabled'] or schedule['revision'] != self.schedule_revision:
+                raise SyncStopped('Automatic synchronization paused or its settings changed.')
         latest = models.IndiAllSkyDbConfigTable.query.order_by(models.IndiAllSkyDbConfigTable.createDate.desc()).first()
         config = latest.data if latest else self.config
         if not on_demand_enabled(config) or destination_fingerprint(config) != self.destination:
@@ -211,9 +219,11 @@ class SyncApiSyncWorker(Thread):
         query = model.query.join(model.camera).filter(
             models.IndiAllSkyDbCameraTable.local.is_(True),
             models.IndiAllSkyDbCameraTable.hidden.is_(False),
-            model.id <= maximum, model.createDate <= cutoff,
+            model.createDate <= cutoff,
             or_(model.sync_id.is_(None), missing_thumbnail),
         )
+        if maximum is not None:
+            query = query.filter(model.id <= maximum)
         if hasattr(model, 'success'):
             query = query.filter(model.success.is_(True))
         return query
@@ -350,9 +360,11 @@ class SyncApiSyncWorker(Thread):
         task = db.session.get(models.IndiAllSkyDbTaskQueueTable, self.task_id)
         if not task or task.state not in ACTIVE_STATES:
             return
+        self.schedule_revision = task.data.get('schedule_revision')
         self.progress = dict(task_id=self.task_id, state='running', started=datetime.now().isoformat(),
                              completed=0, total=0, skipped=0, files=0, bytes=0, message='Preparing synchronization.')
         outcome = 'complete'
+        reason = None
         try:
             self.config = IndiAllSkyConfig().config
             self.destination = validate_destination(self.config)
@@ -400,19 +412,25 @@ class SyncApiSyncWorker(Thread):
             outcome, message = 'cancelled', str(exc)
         except CertificateValidationFailure:
             outcome, message = 'failed', 'Receiver certificate validation failed. Check the SyncAPI certificate settings.'
+            reason = 'certificate'
         except AuthenticationFailure:
             outcome, message = 'failed', 'Receiver authentication failed. Check the SyncAPI account and API key.'
+            reason = 'authentication'
         except ConnectionFailure as exc:
-            outcome, message = 'failed', '{0} Press Sync now to continue.'.format(exc)
+            continuation = 'The schedule will check the receiver again.' if self.schedule_revision is not None else 'Press Sync now to continue.'
+            outcome, message = 'failed', '{0} {1}'.format(exc, continuation)
+            reason = 'connection'
         except (TransferFailure, ValueError) as exc:
             outcome, message = 'failed', str(exc)
+            reason = 'configuration_or_receiver'
         except Exception:
             outcome, message = 'failed', 'Synchronization stopped due to a local or receiver error. Details are available at debug log level.'
             logger.debug('Manual SyncAPI exception', exc_info=True)
-        # This run is terminal, including after connection failure. Only another
-        # explicit Sync now request creates a worker for the remaining items.
+            reason = 'unexpected'
+        # This run is terminal. A manual request or an enabled schedule may
+        # create a separate run for the remaining items.
         db.session.rollback()
-        self.progress.update(state=outcome, message=message, finished=datetime.now().isoformat())
+        self.progress.update(state=outcome, reason=reason, message=message, finished=datetime.now().isoformat())
         task = db.session.get(models.IndiAllSkyDbTaskQueueTable, self.task_id)
         if task:
             if outcome == 'complete':

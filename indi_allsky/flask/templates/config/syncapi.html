@@ -26,7 +26,7 @@
                     <label for="SYNCAPI__MODE">{{ form_config.SYNCAPI__MODE.label.text }}</label>
                     {{ form_config.SYNCAPI__MODE(class='tw:select tw:select-bordered tw:w-full') }}
                     <div id="SYNCAPI__MODE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
-                    <p class="tw:text-xs">Turn Enable Sync API off to disable synchronization. In On demand mode, no uploads or connection attempts occur until you press Sync now. Saving a mode change reloads the service.</p>
+                    <p class="tw:text-xs">Turn Enable Sync API off to disable synchronization. In On demand mode, press Sync now or explicitly enable an availability schedule below. Saving a mode change reloads the service.</p>
                 </div>
 
                 <!-- Base URL -->
@@ -146,15 +146,33 @@
             <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
                 <h3>On-demand synchronization</h3>
                 <p>Save and apply On demand mode first. Sync now sends pending local files, including data older than 30 days, and skips recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
-                <p class="tw:text-xs">This archive run sends actual files of the selected types, without automatic image sampling or waiting for S3. Capture continues and you can close this page. If the destination is unavailable, the run stops until you start it again.</p>
+                <p class="tw:text-xs">This archive run sends actual files of the selected types, without automatic image sampling or waiting for S3. Capture continues and you can close this page. An enabled schedule starts another run after a connection interruption.</p>
                 <fieldset id="syncapi-run-types" class="tw:flex tw:flex-wrap tw:gap-4">
-                    <legend>Include in this run</legend>
+                    <legend>Include in manual runs and saved schedule</legend>
                 </fieldset>
                 <div class="tw:flex tw:gap-2">
                     <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary" disabled>Sync now</button>
                     <button id="syncapi-run-cancel" type="button" class="tw:btn" disabled>Cancel</button>
                 </div>
                 <p id="syncapi-run-status" role="status" aria-live="polite">Loading synchronization status…</p>
+                <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4" disabled>
+                    <legend>Sync when the receiver is available</legend>
+                    <label class="tw:flex tw:items-center tw:gap-2">
+                        <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:checkbox tw:checkbox-primary">
+                        Automatically sync when available
+                    </label>
+                    <div class="tw:flex tw:flex-wrap tw:gap-4">
+                        <label>Check every (minutes)
+                            <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="10" required class="tw:input tw:input-bordered tw:w-full">
+                        </label>
+                        <label>Wait after availability (minutes)
+                            <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="3" required class="tw:input tw:input-bordered tw:w-full">
+                        </label>
+                    </div>
+                    <button id="syncapi-run-schedule-save" type="button" class="tw:btn" disabled>Save schedule and selection</button>
+                </fieldset>
+                <p class="tw:text-xs">Checks use the SyncAPI URL, account, API key and certificate setting above. The schedule is saved separately with the selected content types and continues after this page closes or the Pi restarts. Cancel also pauses the schedule; enable and save it to resume.</p>
+                <p id="syncapi-run-schedule-status" role="status" aria-live="polite"></p>
                 <p id="syncapi-run-error" class="tw:text-error" role="alert"></p>
             </div>
         </div>
