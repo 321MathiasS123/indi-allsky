@@ -15,6 +15,7 @@ def on_demand_enabled(config):
 
 
 def destination_fingerprint(config):
+    """Identify the server/account owning sync IDs, allowing API-key rotation."""
     sync = config.get('SYNCAPI', {})
     url = urlsplit(sync.get('BASEURL', ''))
     if url.scheme not in ('https', 'http') or not url.hostname or url.username or url.password or url.query or url.fragment:

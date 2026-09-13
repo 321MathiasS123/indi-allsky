@@ -81,8 +81,9 @@ class requests_syncapi_v1(GenericFileTransfer):
 
         #logger.info('requests URL: %s', self.url)
 
-        # cameras do not have files
-        if str(local_file) == 'camera':
+        # Lookups use the same signed multipart metadata as uploads, but do not
+        # open/send the local media. Cameras also have no media payload.
+        if kwargs.get('lookup') or str(local_file) == 'camera':
             local_file_p = Path('bogus.ext')
             local_file_size = 1024  # fake
             f_media = io.BytesIO(b'')  # no data
@@ -174,14 +175,14 @@ class requests_syncapi_v1(GenericFileTransfer):
 
         if r.status_code >= 400:
             if self.quiet:
-                if kwargs.get('lookup'):
-                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting on-demand synchronization and check its logs.'.format(r.status_code))
                 try:
                     error = r.json().get('error')
                 except (ValueError, AttributeError):
                     error = None
                 if r.status_code in (401, 403) or error == 'authentication failed':
                     raise AuthenticationFailure('Receiver authentication failed')
+                if kwargs.get('lookup'):
+                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting on-demand synchronization and check its logs.'.format(r.status_code))
                 raise TransferFailure('Receiver rejected the transfer (HTTP {0:d}). Check its storage and service logs.'.format(r.status_code))
             raise TransferFailure('Sync error: {0:d}'.format(r.status_code))
 

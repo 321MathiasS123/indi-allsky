@@ -11,7 +11,6 @@ import pytest
 def sync_env(tmp_path, monkeypatch):
     """Real models, SQLite and SyncAPI views without camera/D-Bus services."""
     import importlib.util
-    import io
     import json
     import tempfile
     import types

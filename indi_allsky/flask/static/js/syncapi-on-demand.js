@@ -24,6 +24,7 @@
 
         function render(value) {
             state = value;
+            // Initialize once so status polls preserve the user's selections.
             if (!initialized && Array.isArray(value.types)) {
                 value.types.forEach(function (type) {
                     const label = document.createElement('label');
@@ -56,11 +57,13 @@
             return data;
         }
 
-        async function action(payload) {
+        async function refresh(payload) {
+            // Serialize requests so an older poll cannot overwrite a command's
+            // response. Only a new command clears the previous action error.
             if (busy) return;
             busy = true;
             render(state);
-            error.textContent = '';
+            if (payload) error.textContent = '';
             try {
                 state = await request(payload);
             } catch (exception) {
@@ -77,24 +80,16 @@
                 error.textContent = 'Select at least one media type.';
                 return;
             }
-            return action({action: 'start', types: types});
+            return refresh({action: 'start', types: types});
         });
         cancel.addEventListener('click', function () {
-            return action({action: 'cancel', task_id: state.task_id});
+            return refresh({action: 'cancel', task_id: state.task_id});
         });
 
         async function poll() {
-            if (!busy) {
-                busy = true;
-                try {
-                    render(await request());
-                } catch (exception) {
-                    error.textContent = exception.message;
-                } finally {
-                    busy = false;
-                    render(state);
-                }
-            }
+            // This endpoint reads the Pi's saved status; polling never contacts
+            // the NAS. Only the explicit start/cancel handlers send commands.
+            await refresh();
             schedule(poll, 5000);
         }
         return poll();

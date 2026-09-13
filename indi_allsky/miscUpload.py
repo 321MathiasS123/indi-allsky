@@ -3,6 +3,7 @@ from datetime import datetime
 import logging
 
 from . import constants
+from .syncapi import automatic_sync_enabled
 
 from .flask import db
 
@@ -1030,7 +1031,6 @@ class miscUpload(object):
 
 
     def syncapi_image(self, asset_entry, asset_metadata):
-        from .syncapi import automatic_sync_enabled
         if not automatic_sync_enabled(self.config):
             return
 
@@ -1089,7 +1089,6 @@ class miscUpload(object):
 
     def syncapi_video(self, asset_entry, metadata):
         ### sync camera
-        from .syncapi import automatic_sync_enabled
         if not automatic_sync_enabled(self.config):
             return
 
@@ -1149,7 +1148,6 @@ class miscUpload(object):
 
 
     def syncapi_panorama(self, asset_entry, asset_metadata):
-        from .syncapi import automatic_sync_enabled
         if not automatic_sync_enabled(self.config):
             return
 

@@ -1,7 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timedelta
 import logging
-from pathlib import Path
 from queue import Queue
 import uuid
 
@@ -316,6 +315,45 @@ def test_old_receiver_stops_with_upgrade_message(sync_env, monkeypatch):
     assert result['state'] == 'failed'
     assert 'Update the receiver' in result['message']
     assert media_puts(env) == []
+
+
+@pytest.mark.parametrize('http_status, error', [(401, None), (403, None), (400, 'authentication failed')])
+def test_lookup_authentication_failure_is_not_an_upgrade_error(sync_env, monkeypatch, http_status, error):
+    from types import SimpleNamespace
+    env = sync_env
+    env.asset(age=3)
+    env.asset(age=2)
+    requests = []
+
+    def rejected_lookup(*args, **kwargs):
+        requests.append(1)
+        return SimpleNamespace(status_code=http_status, json=lambda: {'error': error})
+
+    monkeypatch.setattr(env.transport.requests, 'get', rejected_lookup)
+    result = env.run()
+    assert result['state'] == 'failed'
+    assert 'authentication failed' in result['message']
+    assert len(requests) == 1 and media_puts(env) == []
+
+
+def test_lookup_does_not_open_local_media(sync_env, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    env = sync_env
+    requests = []
+
+    def lookup(*args, **kwargs):
+        requests.append(kwargs['data'].fields['media'][1].read())
+        return SimpleNamespace(status_code=200, text='{"lookup_supported": true, "present": false}')
+
+    monkeypatch.setattr(env.transport.requests, 'get', lookup)
+    client = env.transport.requests_syncapi_v1(env.config, quiet=True)
+    client.connect(hostname='https://nas/indi-allsky/sync/v1/image', username='tester', apikey='test-api-key')
+    try:
+        result = client.put(local_file=tmp_path / 'not-present.jpg', metadata={'source_lookup': True}, empty_file=False, lookup=True)
+    finally:
+        client.close()
+    assert result == {'lookup_supported': True, 'present': False}
+    assert requests == [b'']
 
 
 def test_mysql_timestamp_precision(sync_env, monkeypatch):

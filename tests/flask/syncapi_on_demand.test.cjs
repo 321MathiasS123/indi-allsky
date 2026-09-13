@@ -49,15 +49,19 @@ test('polling only reads local status; start and cancel are explicit CSRF-protec
 
 test('failed start remains visible and does not trigger automatic retry', async () => {
     const {nodes, document, panel} = harness();
-    let requests = 0;
-    const fetcher = async () => {
-        requests++;
-        return {ok: requests === 1, json: async () => requests === 1 ?
+    const requests = [], scheduled = [];
+    const fetcher = async (url, options) => {
+        requests.push(options);
+        return {ok: !options.body, json: async () => !options.body ?
             {enabled: true, active: false, types: [{id: 'image', label: 'Images', selected: true}]} : {error: 'Apply configuration first'}};
     };
-    await mount(panel, document, fetcher, () => {});
+    await mount(panel, document, fetcher, fn => scheduled.push(fn));
     await nodes.start.handlers.click();
     assert.equal(nodes.error.textContent, 'Apply configuration first');
-    assert.equal(requests, 2);
+    assert.equal(requests.length, 2);
+    await scheduled.shift()();
+    assert.equal(requests.length, 3);
+    assert.equal(requests[2].method, undefined);
+    assert.equal(nodes.error.textContent, 'Apply configuration first');
     assert.equal(nodes.start.disabled, false);
 });

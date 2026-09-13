@@ -1,4 +1,9 @@
-"""Finite, explicitly requested SyncAPI archive runs."""
+"""Finite, explicitly requested SyncAPI archive runs.
+
+The main service admits one worker at a time. Database state is for local UI
+progress and cancellation; per-asset sync_id values are the durable checkpoints.
+Neither polling status nor restarting the service starts a transfer.
+"""
 
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -36,15 +41,19 @@ MEDIA = {
     'rawimage': (models.IndiAllSkyDbRawImageTable, constants.RAW_IMAGE, 'RAW files'),
     'fitsimage': (models.IndiAllSkyDbFitsImageTable, constants.FITS_IMAGE, 'FITS files'),
 }
-DEFAULT_TYPES = list(MEDIA)[:8]
+# RAW and FITS archives are opt-in regardless of where new types are added.
+DEFAULT_TYPES = [name for name in MEDIA if name not in ('rawimage', 'fitsimage')]
 
 
 def get_state(key, default=None):
+    # Flask requests and the worker use separate sessions. Refresh cached rows
+    # so cancellation and progress changes from another session are visible.
     row = db.session.get(models.IndiAllSkyDbStateTable, key, populate_existing=True)
     return json.loads(row.value) if row else default
 
 
 def set_state(key, value):
+    """Persist a local control/progress value, committing the current session."""
     row = db.session.get(models.IndiAllSkyDbStateTable, key)
     if row is None:
         row = models.IndiAllSkyDbStateTable(key=key)
@@ -55,6 +64,7 @@ def set_state(key, value):
 
 
 def validate_destination(config, previous=None):
+    # Media tables have only one sync_id each, not a checkpoint per destination.
     fingerprint = destination_fingerprint(config)
     bound = get_state(DESTINATION_KEY)
     if not bound and previous and previous.get('SYNCAPI', {}).get('ENABLE'):
@@ -117,7 +127,8 @@ def interrupt_previous_run():
 
 
 def metadata_for(entry, media_type, parent=None):
-    excluded = {'id', 'camera_id', 'filename', 'sync_id', 'uploaded', 'local'}
+    """Keep portable columns/custom data; never send sender-local identifiers."""
+    excluded = {'id', 'camera_id', 'filename', 'sync_id', 'uploaded', 'local', 'data'}
     if media_type == constants.CAMERA:
         excluded.update(('createDate', 'connectDate'))
     metadata = {}
@@ -154,6 +165,7 @@ class SyncStopped(Exception):
 
 
 class SyncApiSyncWorker(Thread):
+    """One finite archive pass with a separate Flask/database session."""
     page_size = 100
 
     def __init__(self, app, task_id):
@@ -190,6 +202,7 @@ class SyncApiSyncWorker(Thread):
             self.last_progress = now
 
     def candidate_query(self, model, maximum, cutoff):
+        # A parent can be acknowledged while its thumbnail still needs repair.
         thumbnail = models.IndiAllSkyDbThumbnailTable
         missing_thumbnail = db.session.query(thumbnail.id).filter(
             thumbnail.uuid == model.thumbnail_uuid, thumbnail.sync_id.is_(None),
@@ -212,6 +225,8 @@ class SyncApiSyncWorker(Thread):
             self.check_control()
             query = self.candidate_query(model, maximum, cutoff)
             if cursor:
+                # Offset pagination would skip rows as successful uploads leave
+                # this query. Use the last date/ID, including skipped files.
                 query = query.filter(or_(model.createDate > cursor[0], and_(model.createDate == cursor[0], model.id > cursor[1])))
             ids = query.with_entities(model.id, model.createDate).order_by(model.createDate, model.id).limit(self.page_size).all()
             if not ids:
@@ -221,11 +236,13 @@ class SyncApiSyncWorker(Thread):
                 yield created, name, entry_id
 
     def transfer(self, entry, metadata):
+        # Keep optional transfer backends out of the web/status import path.
         from .filetransfer.requests_syncapi_v1 import requests_syncapi_v1
         from .filetransfer.exceptions import TransferFailure
 
         self.check_control()
         settings = self.config['SYNCAPI']
+        path = entry.getFilesystemPath()
         client = requests_syncapi_v1(self.config, quiet=True)
         client.connect_timeout = float(settings.get('CONNECT_TIMEOUT', 10))
         client.timeout = float(settings.get('TIMEOUT', 60))
@@ -236,7 +253,8 @@ class SyncApiSyncWorker(Thread):
                            username=settings['USERNAME'], apikey=settings['APIKEY'],
                            cert_bypass=settings.get('CERT_BYPASS', False))
             if metadata['type'] != constants.CAMERA:
-                path = entry.getFilesystemPath()
+                # Recover a lost acknowledgement by verifying the remote bytes
+                # before sending the file again. A timestamp alone is not proof.
                 digest = hashlib.sha256()
                 with path.open('rb') as source:
                     for block in iter(lambda: source.read(1024 * 1024), b''):
@@ -245,17 +263,18 @@ class SyncApiSyncWorker(Thread):
                         digest.update(block)
                 lookup = dict(metadata, source_lookup=True, id=-1, expected_size=path.stat().st_size, sha256=digest.hexdigest())
                 self.check_control()
-                response = client.put(local_file='camera', metadata=lookup, empty_file=False, lookup=True)
+                response = client.put(local_file=path, metadata=lookup, empty_file=False, lookup=True)
                 if not isinstance(response, dict) or response.get('lookup_supported') is not True:
                     raise TransferFailure('Update the NAS receiver to a version supporting on-demand synchronization.')
                 if response.get('present') is True:
+                    # bool is an int subclass, but cannot be a valid remote ID.
                     if type(response.get('id')) is not int or response['id'] <= 0:
                         raise TransferFailure('Receiver did not return a valid transfer acknowledgement.')
                     return response['id']
                 if response.get('present') is not False:
                     raise TransferFailure('Receiver returned an invalid source lookup.')
                 self.check_control()
-            result = client.put(local_file=entry.getFilesystemPath(), metadata=metadata, empty_file=False)
+            result = client.put(local_file=path, metadata=metadata, empty_file=False)
             if not isinstance(result, dict) or type(result.get('id')) is not int or result['id'] <= 0:
                 raise TransferFailure('Receiver did not return a valid transfer acknowledgement.')
             if metadata['type'] != constants.CAMERA:
@@ -275,8 +294,9 @@ class SyncApiSyncWorker(Thread):
         if send_parent and (not entry.getFilesystemPath().is_file() or entry.getFilesystemPath().stat().st_size == 0):
             return False
         metadata = metadata_for(entry, media_type)
-        # No acknowledgement is committed until the entire unit is safe. A retry
-        # can overwrite a parent on v1 receivers and thereby delete its thumbnail.
+        # Keep IDs in local variables until BOTH requests succeed. check_control()
+        # commits between requests, so assigning entry.sync_id earlier would
+        # checkpoint a partial unit. Retrying a parent may delete its thumbnail.
         parent_id = self.transfer(entry, metadata) if send_parent else entry.sync_id
         thumbnail_id = None
         if thumbnail and (send_parent or thumbnail.sync_id is None):
@@ -304,6 +324,8 @@ class SyncApiSyncWorker(Thread):
                 raise ValueError('The destination changed after this run was requested.')
             self.check_control()
             types = task.data['types']
+            # Settle recently written files and exclude later inserts, even if
+            # their dates are older. Capture must not extend this run forever.
             cutoff = datetime.now() - timedelta(minutes=10)
             bounds = {name: db.session.query(func.max(MEDIA[name][0].id)).scalar() or 0 for name in types}
             self.progress['cutoff'] = cutoff.isoformat()
@@ -319,8 +341,10 @@ class SyncApiSyncWorker(Thread):
                 camera.sync_id = self.transfer(camera, metadata_for(camera, constants.CAMERA))
                 db.session.commit()
             last_log = time.monotonic()
+            # Merge sorted pages, not the entire archive in memory. Type and ID
+            # break equal-date ties; thumbnails stay inside transfer_unit().
             candidates = heapq.merge(*(self.candidate_entries(name, bounds[name], cutoff) for name in types))
-            for created, name, entry_id in candidates:
+            for _, name, entry_id in candidates:
                 self.check_control()
                 model, media_type, label = MEDIA[name]
                 entry = db.session.get(model, entry_id, populate_existing=True)
@@ -349,6 +373,8 @@ class SyncApiSyncWorker(Thread):
         except Exception:
             outcome, message = 'failed', 'Synchronization stopped due to a local or receiver error. Details are available at debug log level.'
             logger.debug('Manual SyncAPI exception', exc_info=True)
+        # This run is terminal, including after connection failure. Only another
+        # explicit Sync now request creates a worker for the remaining items.
         db.session.rollback()
         self.progress.update(state=outcome, message=message, finished=datetime.now().isoformat())
         task = db.session.get(models.IndiAllSkyDbTaskQueueTable, self.task_id)
