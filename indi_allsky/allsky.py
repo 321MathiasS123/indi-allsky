@@ -820,6 +820,7 @@ class IndiAllSky(object):
 
 
     def _startSyncWorker(self):
+        # Unlike capture workers, manual sync is never restarted automatically.
         if self.sync_worker and self.sync_worker.is_alive():
             return
         if self.sync_worker:
@@ -844,6 +845,8 @@ class IndiAllSky(object):
 
     def _stopSyncWorker(self):
         if self.sync_worker and self.sync_worker.is_alive():
+            # Finish the in-flight request before reload/shutdown replaces the
+            # configuration. The worker owns its Flask/database session.
             self.sync_worker.stop()
             self.sync_worker.join()
 
@@ -1364,6 +1367,7 @@ class IndiAllSky(object):
         flush_old_tasks = IndiAllSkyDbTaskQueueTable.query\
             .filter(IndiAllSkyDbTaskQueueTable.createDate < now_minus_3d)
 
+        # A large manual archive can legitimately outlive the task retention age.
         if self.sync_worker and self.sync_worker.is_alive():
             flush_old_tasks = flush_old_tasks.filter(IndiAllSkyDbTaskQueueTable.id != self.sync_worker.task_id)
         if self.sync_task_id is not None:

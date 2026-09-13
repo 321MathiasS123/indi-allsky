@@ -179,7 +179,6 @@ class SyncApiBaseView(BaseView):
 
     def lookupSource(self, metadata, camera):
         """Check a pending source file without transferring its media payload."""
-        import hashlib
         try:
             expected_size = metadata['expected_size']
             expected_hash = metadata['sha256']
@@ -197,6 +196,8 @@ class SyncApiBaseView(BaseView):
         except (KeyError, TypeError, ValueError, OverflowError):
             return jsonify({'error': 'invalid source lookup'}), 400
         result = {'lookup_supported': True, 'present': False}
+        # Only acknowledge a complete match. Missing/corrupt files and changed
+        # thumbnail references must follow the normal upload/repair path.
         if entry and entry.thumbnail_uuid == metadata.get('thumbnail_uuid'):
             path = entry.getFilesystemPath()
             try:
