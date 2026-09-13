@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.fixture
-def sync_env(tmp_path, monkeypatch):
+def sync_env(tmp_path, monkeypatch, request):
     """Real models, SQLite and SyncAPI views without camera/D-Bus services."""
     import importlib.util
     import json
@@ -68,6 +68,14 @@ def sync_env(tmp_path, monkeypatch):
                           SQLALCHEMY_DATABASE_URI='sqlite:///' + (tmp_path / (name + '.sqlite')).as_posix(),
                           INDI_ALLSKY_IMAGE_FOLDER=str(image_path), LOGIN_DISABLED=False)
         database.init_app(app)
+
+        def close_database():
+            with app.app_context():
+                database.session.remove()
+                database.engine.dispose()
+
+        # Each app owns a connection pool; close both even if fixture setup fails.
+        request.addfinalizer(close_database)
         with app.app_context():
             database.create_all()
         return app
@@ -163,4 +171,3 @@ def sync_env(tmp_path, monkeypatch):
         yield types.SimpleNamespace(app=source_app, nas=receiver_app, db=database, models=models, sync=worker_module,
                                     config=config, camera=camera, asset=asset, thumbnail=thumbnail, run=run,
                                     transport=transport, errors=exceptions, calls=calls, send=send, load=load, receiver=receiver)
-        database.session.remove()
