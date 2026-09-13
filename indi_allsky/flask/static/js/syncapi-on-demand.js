@@ -56,7 +56,10 @@
             state = value;
             // The server renders saved form values. Polling only updates
             // progress, never unsaved timing edits or one-off media choices.
-            start.disabled = commandPending || !value.enabled || value.active;
+            // Scheduler and task status are read separately; either can report
+            // a run first while the scheduler hands it to the transfer worker.
+            start.disabled = commandPending || !value.enabled || value.active ||
+                Boolean(value.schedule && value.schedule.state === 'running');
             cancel.disabled = commandPending || !value.active || value.cancel_requested;
             choices.disabled = commandPending || value.active;
             controls.disabled = commandPending || value.active;
