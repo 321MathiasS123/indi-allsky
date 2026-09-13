@@ -1020,7 +1020,10 @@ class IndiAllSky(object):
             # Finish the in-flight request before reload/shutdown replaces the
             # configuration. The worker owns its Flask/database session.
             self.sync_worker.stop()
-            self.sync_worker.join()
+            if hasattr(self, '_joinWorker'):
+                self._joinWorker(self.sync_worker)
+            else:
+                self.sync_worker.join()
 
 
     def _systemHealthCheck(self, task_state=TaskQueueState.QUEUED):

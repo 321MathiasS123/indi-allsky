@@ -290,7 +290,10 @@ def test_retry_wait_honors_control_before_next_request(sync_env, monkeypatch, co
     monkeypatch.setattr(env.transport.requests, 'put', offline)
     monkeypatch.setattr(worker.stop_event, 'wait', interrupt_wait)
     worker.execute()
-    assert env.sync.status()['state'] == 'cancelled'
+    assert env.sync.status()['state'] == ('interrupted' if control == 'shutdown' else 'cancelled')
+    assert env.sync.status()['reason'] == {
+        'cancel': 'manual_cancel', 'shutdown': 'maintenance', 'config': 'configuration_changed',
+    }[control]
     assert calls == [1] and waits == [1]
 
 
@@ -374,6 +377,33 @@ def test_restart_status_never_resumes(sync_env):
     assert env.sync.status()['state'] == 'interrupted'
     assert env.sync.status()['completed'] == 4
     assert env.calls == []
+
+
+def test_maintenance_prevents_new_runs_and_interrupts_existing(sync_env, monkeypatch):
+    env = sync_env
+    task = env.sync.request_sync(env.config, ['image'])
+    monkeypatch.setattr(env.sync, 'maintenance_active', lambda: True)
+    with pytest.raises(ValueError, match='recovery'):
+        env.sync.request_sync(env.config, ['image'])
+    env.sync.SyncApiSyncWorker(env.app, task.id).execute()
+    assert env.sync.status()['state'] == 'interrupted'
+    assert env.sync.status()['reason'] == 'maintenance'
+    assert env.calls == []
+
+
+def test_failure_streak_and_category_are_durable_and_reset(sync_env, monkeypatch):
+    env = sync_env
+    def fail(*args):
+        from indi_allsky.filetransfer.exceptions import AuthenticationFailure
+        raise AuthenticationFailure('bad credentials')
+    original = env.sync.SyncApiSyncWorker.transfer
+    monkeypatch.setattr(env.sync.SyncApiSyncWorker, 'transfer', fail)
+    first = env.run()
+    second = env.run()
+    assert first['reason'] == second['reason'] == 'authentication'
+    assert first['failure_streak'] == 1 and second['failure_streak'] == 2
+    monkeypatch.setattr(env.sync.SyncApiSyncWorker, 'transfer', original)
+    assert env.run()['failure_streak'] == 0
 
 
 def test_cancellation_between_image_and_thumbnail(sync_env, monkeypatch):
