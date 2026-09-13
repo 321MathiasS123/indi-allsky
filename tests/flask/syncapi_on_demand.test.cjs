@@ -170,6 +170,28 @@ function deferred() {
     return {promise, resolve};
 }
 
+test('Sync now stays disabled through scheduler handoff and unlocks between runs', async () => {
+    const {nodes, document, panel} = harness();
+    const polls = [];
+    let current = {enabled: true, active: false, schedule: {state: 'waiting', settings: {enabled: true}}};
+    const fetcher = async () => ({ok: true, json: async () => current});
+    await mount(panel, document, fetcher, fn => polls.push(fn));
+    assert.equal(nodes.start.disabled, false);
+    for (const active of [false, true, false]) {
+        // The scheduler can report its queued/running job before task status
+        // catches up, and keep that phase briefly after the worker finishes.
+        current = {...current, active, schedule: {...current.schedule, state: 'running'}};
+        const poll = polls.shift()();
+        await poll;
+        assert.equal(nodes.start.disabled, true);
+    }
+    for (const phase of ['waiting', 'checking', 'settling']) {
+        current = {...current, schedule: {...current.schedule, state: phase}};
+        await polls.shift()();
+        assert.equal(nodes.start.disabled, false, 'Manual sync remains available before a scheduled run');
+    }
+});
+
 for (const active of [false, true]) {
     test(`slow polling preserves controls and edits while ${active ? 'running' : 'idle'}`, async () => {
         const {nodes, document, panel} = harness();
