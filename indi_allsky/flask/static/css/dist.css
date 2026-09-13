@@ -209,6 +209,9 @@
   }
 }
 @layer utilities {
+  .tw\:\@container {
+    container-type: inline-size;
+  }
   @layer daisyui.l1.l2.l3 {
     .tw\:modal {
       pointer-events: none;
@@ -5596,6 +5599,12 @@
   .tw\:gap-x-3 {
     column-gap: calc(var(--tw-spacing) * 3);
   }
+  .tw\:gap-x-4 {
+    column-gap: calc(var(--tw-spacing) * 4);
+  }
+  .tw\:gap-y-2 {
+    row-gap: calc(var(--tw-spacing) * 2);
+  }
   :where(.tw\:divide-y > :not(:last-child)) {
     --tw-divide-y-reverse: 0;
     border-bottom-style: var(--tw-border-style);
@@ -7131,6 +7140,21 @@
     }
     .tw\:xl\:justify-end {
       justify-content: flex-end;
+    }
+  }
+  @container (width >= 20rem) {
+    .tw\:\@min-\[20rem\]\:grid-cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @container (width >= 44rem) {
+    .tw\:\@min-\[44rem\]\:grid-cols-5 {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+  }
+  @container (width >= 88rem) {
+    .tw\:\@min-\[88rem\]\:grid-cols-10 {
+      grid-template-columns: repeat(10, minmax(0, 1fr));
     }
   }
 }
