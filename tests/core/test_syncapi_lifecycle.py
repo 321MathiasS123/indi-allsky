@@ -62,3 +62,31 @@ def test_dead_worker_reports_failure_without_restart(sync_env):
     assert env.sync.status()['state'] == 'failed'
     assert main.sync_worker is None
     assert env.calls == []
+
+
+def test_shutdown_requests_capture_stop_before_waiting_for_sync(sync_env):
+    import sys
+    from indi_allsky import constants
+    env = sync_env
+    source = Path(__file__).resolve().parents[2] / 'indi_allsky/allsky.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'IndiAllSky')
+    run = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+    block = next(node for node in ast.walk(run) if isinstance(node, ast.If)
+                 and isinstance(node.test, ast.Attribute) and node.test.attr == '_shutdown')
+    main = main_service(env)
+    calls = []
+    main.sync_worker = SimpleNamespace(is_alive=lambda: True,
+        stop=lambda: calls.append('sync_stop_requested'), join=lambda: calls.append('sync_join'))
+    for method in ('_stopCaptureWorker', '_stopImageWorker', '_stopVideoWorker',
+                   '_stopSensorWorker', '_stopFileUploadWorkers'):
+        setattr(main, method, lambda method=method: calls.append(method))
+    main._miscDb = SimpleNamespace(setState=lambda *args: None)
+    main.pid_lock = None
+    namespace = dict(self=main, app=env.app, constants=constants, sys=sys,
+                     logger=logging.getLogger('indi_allsky'))
+    import pytest
+    with pytest.raises(SystemExit):
+        exec(compile(ast.Module(body=block.body, type_ignores=[]), str(source), 'exec'), namespace)
+    assert calls[0] == 'sync_stop_requested'
+    assert calls.index('_stopCaptureWorker') < calls.index('sync_join')
