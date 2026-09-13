@@ -2333,16 +2333,6 @@ chmod 644 "${HOME}/.config/systemd/user/${ALLSKY_SERVICE_NAME}.service"
 [[ -f "$TMP2" ]] && rm -f "$TMP2"
 
 
-# This fixed helper is started on demand; never enable it at boot.
-TMP_AUTOMATION=$(mktemp)
-sed \
- -e "s|%ALLSKY_DIRECTORY%|$ALLSKY_DIRECTORY|g" \
- -e "s|%ALLSKY_ETC%|$ALLSKY_ETC|g" \
- "${ALLSKY_DIRECTORY}/service/indi-allsky-automation.service" > "$TMP_AUTOMATION"
-cp -f "$TMP_AUTOMATION" "${HOME}/.config/systemd/user/indi-allsky-automation.service"
-chmod 644 "${HOME}/.config/systemd/user/indi-allsky-automation.service"
-rm -f "$TMP_AUTOMATION"
-
 echo "**** Setting up gunicorn service ****"
 TMP5=$(mktemp)
 sed \

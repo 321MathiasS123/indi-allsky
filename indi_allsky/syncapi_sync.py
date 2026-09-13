@@ -93,8 +93,6 @@ def status():
 
 
 def request_sync(config, types):
-    if maintenance_active():
-        raise ValueError('System recovery is in progress. Wait until maintenance finishes before syncing.')
     if not on_demand_enabled(config):
         raise ValueError('Save and apply On demand mode before starting a synchronization.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in MEDIA for t in types):
@@ -162,23 +160,8 @@ def metadata_for(entry, media_type, parent=None):
     return metadata
 
 
-def maintenance_active():
-    # The automation API is an optional feature on main; production combines it
-    # with this worker. Read its atomic journal without importing camera code.
-    try:
-        from .automation import maintenance_active as active
-    except ModuleNotFoundError as exc:
-        if exc.name != 'indi_allsky.automation':
-            raise
-        return False
-    from flask import current_app
-    return active(current_app.config)
-
-
 class SyncStopped(Exception):
-    def __init__(self, message, reason='manual_cancel'):
-        super().__init__(message)
-        self.reason = reason
+    pass
 
 
 class SyncApiSyncWorker(Thread):
@@ -204,14 +187,12 @@ class SyncApiSyncWorker(Thread):
     def check_control(self):
         # End read transactions before waiting on the network, including on MySQL.
         db.session.commit()
-        if get_state(CANCEL_KEY, 0) >= self.task_id:
+        if self.stop_event.is_set() or get_state(CANCEL_KEY, 0) >= self.task_id:
             raise SyncStopped('Synchronization cancelled. Press Sync now to continue.')
-        if self.stop_event.is_set() or maintenance_active():
-            raise SyncStopped('Synchronization interrupted by service maintenance.', 'maintenance')
         latest = models.IndiAllSkyDbConfigTable.query.order_by(models.IndiAllSkyDbConfigTable.createDate.desc()).first()
         config = latest.data if latest else self.config
         if not on_demand_enabled(config) or destination_fingerprint(config) != self.destination:
-            raise SyncStopped('SyncAPI configuration changed. Press Sync now after applying the desired settings.', 'configuration_changed')
+            raise SyncStopped('SyncAPI configuration changed. Press Sync now after applying the desired settings.')
         db.session.commit()
 
     def publish(self, force=False):
@@ -307,7 +288,7 @@ class SyncApiSyncWorker(Thread):
                 with path.open('rb') as source:
                     for block in iter(lambda: source.read(1024 * 1024), b''):
                         if self.stop_event.is_set():
-                            self.check_control()
+                            raise SyncStopped('Synchronization cancelled. Press Sync now to continue.')
                         digest.update(block)
                 lookup = dict(metadata, source_lookup=True, id=-1, expected_size=path.stat().st_size, sha256=digest.hexdigest())
                 self.check_control()
@@ -369,12 +350,9 @@ class SyncApiSyncWorker(Thread):
         task = db.session.get(models.IndiAllSkyDbTaskQueueTable, self.task_id)
         if not task or task.state not in ACTIVE_STATES:
             return
-        previous_failures = get_state(STATUS_KEY, {}).get('failure_streak', 0)
         self.progress = dict(task_id=self.task_id, state='running', started=datetime.now().isoformat(),
-                             completed=0, total=0, skipped=0, files=0, bytes=0,
-                             failure_streak=previous_failures, message='Preparing synchronization.')
+                             completed=0, total=0, skipped=0, files=0, bytes=0, message='Preparing synchronization.')
         outcome = 'complete'
-        reason = None
         try:
             self.config = IndiAllSkyConfig().config
             self.destination = validate_destination(self.config)
@@ -419,37 +397,27 @@ class SyncApiSyncWorker(Thread):
                     last_log = time.monotonic()
             message = 'Synchronization finished.' if not self.progress['skipped'] else 'Finished with missing local files; skipped items remain unsynchronized.'
         except SyncStopped as exc:
-            outcome, message = ('interrupted' if exc.reason == 'maintenance' else 'cancelled'), str(exc)
-            reason = exc.reason
+            outcome, message = 'cancelled', str(exc)
         except CertificateValidationFailure:
             outcome, message = 'failed', 'Receiver certificate validation failed. Check the SyncAPI certificate settings.'
-            reason = 'certificate'
         except AuthenticationFailure:
             outcome, message = 'failed', 'Receiver authentication failed. Check the SyncAPI account and API key.'
-            reason = 'authentication'
         except ConnectionFailure as exc:
             outcome, message = 'failed', '{0} Press Sync now to continue.'.format(exc)
-            reason = 'connection'
-        except ValueError as exc:
+        except (TransferFailure, ValueError) as exc:
             outcome, message = 'failed', str(exc)
-            reason = 'configuration'
-        except TransferFailure as exc:
-            outcome, message = 'failed', str(exc)
-            reason = 'receiver'
         except Exception:
             outcome, message = 'failed', 'Synchronization stopped due to a local or receiver error. Details are available at debug log level.'
-            reason = 'unexpected'
             logger.debug('Manual SyncAPI exception', exc_info=True)
         # This run is terminal, including after connection failure. Only another
         # explicit Sync now request creates a worker for the remaining items.
         db.session.rollback()
-        self.progress.update(state=outcome, reason=reason, message=message, finished=datetime.now().isoformat())
-        self.progress['failure_streak'] = previous_failures + 1 if outcome == 'failed' else 0
+        self.progress.update(state=outcome, message=message, finished=datetime.now().isoformat())
         task = db.session.get(models.IndiAllSkyDbTaskQueueTable, self.task_id)
         if task:
             if outcome == 'complete':
                 task.setSuccess(message)
-            elif outcome in ('cancelled', 'interrupted'):
+            elif outcome == 'cancelled':
                 task.setExpired()
             else:
                 task.setFailed(message[:255])
