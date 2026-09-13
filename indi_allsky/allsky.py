@@ -739,16 +739,12 @@ class IndiAllSky(object):
 
 
                 logger.warning('Shutting down')
-                # Let the in-flight transfer finish while capture and the other
-                # workers drain. A slow NAS must not delay the camera stop request.
-                if self.sync_worker and self.sync_worker.is_alive():
-                    self.sync_worker.stop()
+                self._stopSyncWorker()
                 self._stopCaptureWorker()  # stop this first so image queue is cleared out
                 self._stopImageWorker()
                 self._stopVideoWorker()
                 self._stopSensorWorker()
                 self._stopFileUploadWorkers()
-                self._stopSyncWorker()
 
 
                 with app.app_context():
@@ -852,10 +848,7 @@ class IndiAllSky(object):
             # Finish the in-flight request before reload/shutdown replaces the
             # configuration. The worker owns its Flask/database session.
             self.sync_worker.stop()
-            if hasattr(self, '_joinWorker'):
-                self._joinWorker(self.sync_worker)
-            else:
-                self.sync_worker.join()
+            self.sync_worker.join()
 
 
     def _systemHealthCheck(self, task_state=TaskQueueState.QUEUED):
@@ -1716,3 +1709,4 @@ class IndiAllSky(object):
         db.session.commit()
 
         self.video_q.put({'task_id' : task.id})
+
