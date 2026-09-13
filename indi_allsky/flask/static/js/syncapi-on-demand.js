@@ -23,6 +23,7 @@
         const interval = document.getElementById('syncapi-run-schedule-interval');
         const delay = document.getElementById('syncapi-run-schedule-delay');
         const save = document.getElementById('syncapi-run-schedule-save');
+        const saveFeedback = document.getElementById('syncapi-run-schedule-feedback');
         const scheduleOutput = document.getElementById('syncapi-run-schedule-status');
         let state = {};
         let commandPending = false;
@@ -53,6 +54,7 @@
                 // Preserve edits during polls; a saved revision also reflects
                 // cancellation or schedule changes made in another browser.
                 if (settings.revision !== settingsRevision) {
+                    saveFeedback.textContent = '';
                     enabled.checked = settings.enabled;
                     interval.value = String(settings.interval);
                     delay.value = String(settings.delay);
@@ -91,20 +93,29 @@
             // or errors. Only commands lock controls and clear action errors.
             if (commandPending) return;
             const revision = ++requestRevision;
+            let scheduleSaved = false;
             if (payload) {
                 commandPending = true;
                 render(state);
                 error.textContent = '';
+                saveFeedback.textContent = payload.action === 'schedule' ? 'Saving schedule…' : '';
             }
             try {
                 const value = await request(payload);
-                if (revision === requestRevision) state = value;
+                if (revision === requestRevision) {
+                    state = value;
+                    scheduleSaved = payload && payload.action === 'schedule';
+                }
             } catch (exception) {
                 if (revision === requestRevision) error.textContent = exception.message;
             } finally {
                 if (revision === requestRevision) {
                     commandPending = false;
                     render(state);
+                    if (payload && payload.action === 'schedule') {
+                        saveFeedback.textContent = scheduleSaved ? 'Schedule saved. Automatic synchronization is ' +
+                            (state.schedule.settings.enabled ? 'enabled.' : 'disabled.') : '';
+                    }
                 }
             }
         }
@@ -121,6 +132,7 @@
             return refresh({action: 'cancel', task_id: state.task_id});
         });
         save.addEventListener('click', function () {
+            saveFeedback.textContent = '';
             const types = Array.from(choices.querySelectorAll('input:checked'), input => input.value);
             if (!types.length || !interval.value.trim() || !delay.value.trim()) {
                 error.textContent = 'Select content types and enter both timing values.';
@@ -129,6 +141,9 @@
             return refresh({action: 'schedule', enabled: enabled.checked,
                 interval: Number(interval.value), delay: Number(delay.value), types: types});
         });
+        // A previous confirmation describes the saved values, not new edits.
+        controls.addEventListener('input', function () { saveFeedback.textContent = ''; });
+        choices.addEventListener('change', function () { saveFeedback.textContent = ''; });
 
         async function poll() {
             // This endpoint reads the Pi's saved status; polling never contacts

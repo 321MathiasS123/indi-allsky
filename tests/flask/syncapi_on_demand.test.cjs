@@ -9,7 +9,7 @@ function harness() {
             querySelectorAll(selector) { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
     const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error', 'schedule-controls',
-        'schedule-enabled', 'schedule-interval', 'schedule-delay', 'schedule-save', 'schedule-status'].map(key => [key, element()]));
+        'schedule-enabled', 'schedule-interval', 'schedule-delay', 'schedule-save', 'schedule-status', 'schedule-feedback'].map(key => [key, element()]));
     const document = {getElementById: id => nodes[id.replace('syncapi-run-', '')],
         createElement: element, createTextNode: text => ({textContent: text})};
     const panel = {dataset: {url: '/indi-allsky/ajax/syncapi/run', csrf: 'token'}};
@@ -105,6 +105,53 @@ function deferred() {
     const promise = new Promise(done => { resolve = done; });
     return {promise, resolve};
 }
+
+for (const enabled of [false, true]) {
+    test(`saving an idle schedule confirms automatic sync is ${enabled ? 'enabled' : 'disabled'}`, async () => {
+        const {nodes, document, panel} = harness();
+        const polls = [], pending = deferred();
+        let current = {enabled: true, active: false,
+            types: [{id: 'image', label: 'Images', selected: true}],
+            schedule: {settings: {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''}}};
+        const response = () => ({ok: true, json: async () => current});
+        const fetcher = async (url, options) => options.body ? pending.promise : response();
+        await mount(panel, document, fetcher, fn => polls.push(fn));
+        assert.equal(nodes['schedule-save'].disabled, false);
+        nodes['schedule-enabled'].checked = enabled;
+        const save = nodes['schedule-save'].handlers.click();
+        assert.equal(nodes['schedule-feedback'].textContent, 'Saving schedule…');
+        assert.equal(nodes['schedule-save'].disabled, true);
+        current = {...current, schedule: {settings: {...current.schedule.settings, enabled, revision: 'saved'}}};
+        pending.resolve(response());
+        await save;
+        const expected = `Schedule saved. Automatic synchronization is ${enabled ? 'enabled' : 'disabled'}.`;
+        assert.equal(nodes['schedule-feedback'].textContent, expected);
+        assert.equal(nodes['schedule-save'].disabled, false);
+        await polls.shift()();
+        assert.equal(nodes['schedule-feedback'].textContent, expected, 'Polling retains the confirmation');
+        nodes['schedule-controls'].handlers.input();
+        assert.equal(nodes['schedule-feedback'].textContent, '', 'Editing invalidates the old confirmation');
+        nodes['schedule-delay'].value = '';
+        await nodes['schedule-save'].handlers.click();
+        assert.equal(nodes['schedule-feedback'].textContent, '');
+        assert.match(nodes.error.textContent, /enter both timing values/);
+    });
+}
+
+test('a rejected schedule save shows the error without a success confirmation', async () => {
+    const {nodes, document, panel} = harness();
+    const polls = [];
+    const fetcher = async (url, options) => ({ok: !options.body, json: async () => options.body ?
+        {error: 'Apply the saved configuration first.'} : {enabled: true, active: false,
+            types: [{id: 'image', label: 'Images', selected: true}],
+            schedule: {settings: {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''}}}});
+    await mount(panel, document, fetcher, fn => polls.push(fn));
+    await nodes['schedule-save'].handlers.click();
+    await polls.shift()();
+    assert.equal(nodes.error.textContent, 'Apply the saved configuration first.');
+    assert.equal(nodes['schedule-feedback'].textContent, '');
+    assert.equal(nodes['schedule-save'].disabled, false);
+});
 
 for (const active of [false, true]) {
     test(`slow polling preserves controls and edits while ${active ? 'running' : 'idle'}`, async () => {
