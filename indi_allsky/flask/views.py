@@ -4654,6 +4654,7 @@ class ConfigView(FormView):
             'MQTTPUBLISH__CERT_BYPASS'       : self.indi_allsky_config.get('MQTTPUBLISH', {}).get('CERT_BYPASS', True),
             'MQTTPUBLISH__PUBLISH_IMAGE'     : self.indi_allsky_config.get('MQTTPUBLISH', {}).get('PUBLISH_IMAGE', True),
             'SYNCAPI__ENABLE'                : self.indi_allsky_config.get('SYNCAPI', {}).get('ENABLE', False),
+            'SYNCAPI__MODE'                  : self.indi_allsky_config.get('SYNCAPI', {}).get('MODE', 'automatic'),
             'SYNCAPI__BASEURL'               : self.indi_allsky_config.get('SYNCAPI', {}).get('BASEURL', 'https://example.com/indi-allsky'),
             'SYNCAPI__USERNAME'              : self.indi_allsky_config.get('SYNCAPI', {}).get('USERNAME', ''),
             'SYNCAPI__APIKEY'                : self.indi_allsky_config.get('SYNCAPI', {}).get('APIKEY', ''),
@@ -5190,6 +5191,7 @@ class AjaxConfigView(BaseView):
 
     def dispatch_request(self):
         form_config = IndiAllskyConfigForm(data=request.json)
+        previous_syncapi = dict(self.indi_allsky_config.get('SYNCAPI', {}))
 
 
         if not app.config['LOGIN_DISABLED']:
@@ -5731,6 +5733,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['MQTTPUBLISH']['CERT_BYPASS']           = bool(request.json['MQTTPUBLISH__CERT_BYPASS'])
         self.indi_allsky_config['MQTTPUBLISH']['PUBLISH_IMAGE']         = bool(request.json['MQTTPUBLISH__PUBLISH_IMAGE'])
         self.indi_allsky_config['SYNCAPI']['ENABLE']                    = bool(request.json['SYNCAPI__ENABLE'])
+        self.indi_allsky_config['SYNCAPI']['MODE']                      = str(request.json.get('SYNCAPI__MODE', previous_syncapi.get('MODE', 'automatic')))
         self.indi_allsky_config['SYNCAPI']['BASEURL']                   = str(request.json['SYNCAPI__BASEURL'])
         self.indi_allsky_config['SYNCAPI']['USERNAME']                  = str(request.json['SYNCAPI__USERNAME'])
         self.indi_allsky_config['SYNCAPI']['APIKEY']                    = str(request.json['SYNCAPI__APIKEY'])
@@ -6138,6 +6141,19 @@ class AjaxConfigView(BaseView):
 
 
         # save new config
+        from ..syncapi import on_demand_enabled
+        from ..syncapi_sync import validate_destination, set_state, DESTINATION_KEY
+        if on_demand_enabled(self.indi_allsky_config):
+            try:
+                sync_destination = validate_destination(self.indi_allsky_config, {'SYNCAPI': previous_syncapi})
+            except ValueError as exc:
+                return jsonify({'SYNCAPI__BASEURL': [str(exc)], 'form_global': [str(exc)]}), 400
+        else:
+            sync_destination = None
+        if (previous_syncapi.get('MODE', 'automatic'), previous_syncapi.get('ENABLE', False)) != (
+                self.indi_allsky_config['SYNCAPI']['MODE'], self.indi_allsky_config['SYNCAPI']['ENABLE']):
+            reload_on_save = True
+
         if not app.config['LOGIN_DISABLED']:
             username = current_user.username
         else:
@@ -6153,6 +6169,8 @@ class AjaxConfigView(BaseView):
             }
             return jsonify(error_data), 400
 
+        if sync_destination:
+            set_state(DESTINATION_KEY, sync_destination)
         # Check if Allsky Map reporting is enabled, and fire a test ping
         ping_status_msg = ""
         if self.indi_allsky_config.get('ALLSKYMAP', {}).get('ENABLE'):
@@ -6185,6 +6203,36 @@ class AjaxConfigView(BaseView):
             }
 
         return jsonify(message)
+
+
+class AjaxSyncApiRunView(BaseView):
+    methods = ['GET', 'POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        from ..syncapi_sync import request_sync, cancel_sync, status, MEDIA, DEFAULT_TYPES
+        from ..syncapi import on_demand_enabled
+        if not app.config.get('LOGIN_DISABLED') and not current_user.is_admin:
+            return jsonify({'error': 'Administrator access required.'}), 403
+        if request.method == 'POST':
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'Invalid synchronization request.'}), 400
+            try:
+                if payload.get('action') == 'start':
+                    if str(self._miscDb.getState('CONFIG_ID')) != str(self.indi_allsky_config_id):
+                        raise ValueError('Apply the saved configuration and wait for the service reload before syncing.')
+                    request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES))
+                elif payload.get('action') == 'cancel' and type(payload.get('task_id')) is int:
+                    cancel_sync(payload['task_id'])
+                else:
+                    raise ValueError('Invalid synchronization action.')
+            except (ValueError, NoResultFound) as exc:
+                return jsonify({'error': str(exc) if isinstance(exc, ValueError) else 'The indi-allsky service has not started yet.'}), 400
+        result = status()
+        result['enabled'] = on_demand_enabled(self.indi_allsky_config)
+        result['types'] = [{'id': key, 'label': value[2], 'selected': key in DEFAULT_TYPES} for key, value in MEDIA.items()]
+        return jsonify(result)
 
 
 class AjaxAllskyMapRequestKeyView(BaseView):
@@ -16444,6 +16492,7 @@ bp_allsky.add_url_rule('/ajax/minigenerate', view_func=AjaxMiniTimelapseGenerato
 
 bp_allsky.add_url_rule('/config', view_func=ConfigView.as_view('config_view', template_name='config.html'))
 bp_allsky.add_url_rule('/ajax/config', view_func=AjaxConfigView.as_view('ajax_config_view'))
+bp_allsky.add_url_rule('/ajax/syncapi/run', view_func=AjaxSyncApiRunView.as_view('ajax_syncapi_run_view'))
 bp_allsky.add_url_rule('/config/list', view_func=ConfigListView.as_view('config_list_view', template_name='config_list.html'))
 bp_allsky.add_url_rule('/config/download', view_func=ConfigDownloadView.as_view('config_download_view'))
 bp_allsky.add_url_rule('/config/restore', view_func=ConfigRestoreView.as_view('config_restore_view', template_name='config_restore.html'))

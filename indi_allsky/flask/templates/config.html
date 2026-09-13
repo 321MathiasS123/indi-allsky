@@ -5,6 +5,7 @@
 {% block head %}
 <link href="{{ url_for('indi_allsky.static', filename='css/style.css') }}" rel="stylesheet">
 <script src="{{ url_for('indi_allsky.static', filename='js/indi-allsky-tabs.js') }}"></script>
+<script defer src="{{ url_for('indi_allsky.static', filename='js/syncapi-on-demand.js') }}"></script>
 <script type="text/javascript">
 var camera_id = {{ camera_id }};
 </script>
@@ -488,6 +489,7 @@ const field_names = [
     'MQTTPUBLISH__BASE_TOPIC',
     'MQTTPUBLISH__QOS',
     'SYNCAPI__BASEURL',
+    'SYNCAPI__MODE',
     'SYNCAPI__USERNAME',
     'SYNCAPI__APIKEY',
     'SYNCAPI__UPLOAD_IMAGE',

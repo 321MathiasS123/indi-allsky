@@ -243,6 +243,8 @@ class IndiAllSky(object):
         self.upload_worker_list = []
         self.upload_worker_idx = 0
         self.upload_worker_restart_count = 0
+        self.sync_worker = None
+        self.sync_task_id = None
 
         for x in range(self.config.get('UPLOAD_WORKERS', 1)):
             self.upload_worker_list.append({
@@ -821,6 +823,8 @@ class IndiAllSky(object):
             self.write_pid()
 
             self._expireOrphanedTasks()
+            from .syncapi_sync import interrupt_previous_run
+            interrupt_previous_run()
 
             try:
                 dark_cleanup = dark_automation.cleanup_interrupted_capture_artifacts(
@@ -856,6 +860,7 @@ class IndiAllSky(object):
 
 
                 logger.warning('Shutting down')
+                self._stopSyncWorker()
                 self._stopCaptureWorker()  # stop this first so image queue is cleared out
                 self._stopImageWorker()
                 self._stopVideoWorker()
@@ -876,6 +881,7 @@ class IndiAllSky(object):
             if self._reload:
                 logger.warning('Restarting processes')
                 self._reload = False
+                self._stopSyncWorker()
                 self._stopCaptureWorker()  # stop this first so image queue is cleared out
                 self._stopImageWorker()
                 self._stopVideoWorker()
@@ -921,6 +927,7 @@ class IndiAllSky(object):
                 self._queueManualTasks()
                 self._periodic_tasks()
 
+            self._startSyncWorker()
 
             time.sleep(13)
 
@@ -982,6 +989,35 @@ class IndiAllSky(object):
 
         # indicate newer config is loaded
         self._miscDb.setState('CONFIG_ID', self._config_obj.config_id)
+
+
+    def _startSyncWorker(self):
+        if self.sync_worker and self.sync_worker.is_alive():
+            return
+        if self.sync_worker:
+            from .syncapi_sync import ACTIVE_STATES, STATUS_KEY, get_state, set_state
+            with app.app_context():
+                task = db.session.get(IndiAllSkyDbTaskQueueTable, self.sync_worker.task_id)
+                if task and task.state in ACTIVE_STATES:
+                    message = 'Synchronization worker stopped unexpectedly. Press Sync now to continue.'
+                    task.setFailed(message)
+                    result = get_state(STATUS_KEY, {})
+                    result.update(task_id=task.id, state='failed', message=message)
+                    set_state(STATUS_KEY, result)
+                    logger.warning(message)
+            self.sync_worker = None
+        if self.sync_task_id is None:
+            return
+        from .syncapi_sync import SyncApiSyncWorker
+        self.sync_worker = SyncApiSyncWorker(app, self.sync_task_id)
+        self.sync_task_id = None
+        self.sync_worker.start()
+
+
+    def _stopSyncWorker(self):
+        if self.sync_worker and self.sync_worker.is_alive():
+            self.sync_worker.stop()
+            self.sync_worker.join()
 
 
     def _systemHealthCheck(self, task_state=TaskQueueState.QUEUED):
@@ -1533,6 +1569,10 @@ class IndiAllSky(object):
         flush_old_tasks = IndiAllSkyDbTaskQueueTable.query\
             .filter(IndiAllSkyDbTaskQueueTable.createDate < now_minus_3d)
 
+        if self.sync_worker and self.sync_worker.is_alive():
+            flush_old_tasks = flush_old_tasks.filter(IndiAllSkyDbTaskQueueTable.id != self.sync_worker.task_id)
+        if self.sync_task_id is not None:
+            flush_old_tasks = flush_old_tasks.filter(IndiAllSkyDbTaskQueueTable.id != self.sync_task_id)
         logger.warning('Found %d expired tasks to delete', flush_old_tasks.count())
         flush_old_tasks.delete()
         db.session.commit()
@@ -1574,7 +1614,16 @@ class IndiAllSky(object):
 
                 action = task.data['action']
 
-                if action == 'reload':
+                if action == 'on_demand_sync':
+                    if self.sync_task_id is not None or (self.sync_worker and self.sync_worker.is_alive()):
+                        task.setExpired()
+                        continue
+                    # All admission happens in this single service loop. Start
+                    # the thread only after leaving the main Flask context.
+                    task.setQueued()
+                    self.sync_task_id = task.id
+
+                elif action == 'reload':
                     if reload_received:
                         logger.warning('Skipping duplicate reload signal')
                         task.setExpired()
