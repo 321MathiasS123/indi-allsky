@@ -147,9 +147,7 @@
              data-url="{{ url_for('indi_allsky.ajax_syncapi_run_view') }}" data-csrf="{{ csrf_token() }}">
             <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4">
                 <h3 class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">On-demand synchronization</h3>
-                <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
-                <p class="tw:text-xs tw:text-base-content/60">The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page.</p>
-                <p class="tw:text-xs tw:text-base-content/60">Save Configuration stores the availability settings and checked content. Sync now uses the current checkboxes for this run, including changes you have not saved.</p>
+                <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run. The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page. Save Configuration stores the availability settings and checked content. Sync now uses the current checkboxes for this run, including changes you have not saved.</p>
                 <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2">
                     <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Availability schedule</legend>
                     <label for="syncapi-run-schedule-enabled" class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-y tw:border-base-300/60 tw:cursor-pointer">
