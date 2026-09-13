@@ -149,46 +149,48 @@
                 <h3 class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">On-demand synchronization</h3>
                 <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
                 <p class="tw:text-xs tw:text-base-content/60">The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page.</p>
-                <fieldset id="syncapi-run-types" class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-3 tw:gap-2 tw:min-w-0">
-                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Content for manual runs and the saved schedule</legend>
-                </fieldset>
-                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:gap-2">
-                    <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Sync now</button>
-                    <button id="syncapi-run-cancel" type="button" class="tw:btn tw:btn-outline tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Cancel</button>
-                </div>
-                <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
-                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Transfer status</p>
-                    <p id="syncapi-run-status" class="tw:text-xs tw:leading-relaxed tw:break-words" role="status" aria-live="polite">Loading synchronization status…</p>
-                </div>
-                <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2" disabled>
+                <p class="tw:text-xs tw:text-base-content/60">Save Configuration stores the availability settings and checked content. Sync now uses the current checkboxes for this run, including changes you have not saved.</p>
+                <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2">
                     <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Availability schedule</legend>
                     <label for="syncapi-run-schedule-enabled" class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-y tw:border-base-300/60 tw:cursor-pointer">
                         <span class="tw:flex tw:flex-col tw:gap-1">
                             <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Automatically sync when available</span>
                             <span class="tw:text-xs tw:text-base-content/60">Check the receiver quietly and start a run when it is ready.</span>
                         </span>
-                        <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm tw:shrink-0">
+                        <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm tw:shrink-0" {% if syncapi_schedule.enabled %}checked{% endif %}>
                     </label>
                     <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4">
                         <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
                             <label for="syncapi-run-schedule-interval" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Check every (minutes)</label>
-                            <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="10" required aria-describedby="syncapi-run-interval-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
+                            <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="{{ syncapi_schedule.interval }}" required aria-describedby="syncapi-run-interval-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
                             <p id="syncapi-run-interval-help" class="tw:text-xs tw:text-base-content/60">Time between receiver checks, and before checking again after a run ends.</p>
                         </div>
                         <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
                             <label for="syncapi-run-schedule-delay" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Wait after availability (minutes)</label>
-                            <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="3" required aria-describedby="syncapi-run-delay-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
+                            <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="{{ syncapi_schedule.delay }}" required aria-describedby="syncapi-run-delay-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
                             <p id="syncapi-run-delay-help" class="tw:text-xs tw:text-base-content/60">Extra startup time before checking again and sending files. Use 0 to start immediately.</p>
                         </div>
                     </div>
-                    <button id="syncapi-run-schedule-save" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:h-auto tw:py-3 tw:w-full tw:sm:w-auto tw:self-start" disabled>Save schedule and selection</button>
-                    <p id="syncapi-run-schedule-feedback" class="tw:text-xs tw:text-base-content/70" role="status" aria-live="polite"></p>
                 </fieldset>
+                <div id="syncapi-run-schedule-controls-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <p class="tw:text-xs tw:text-base-content/60">Uses the connection settings above and continues with the page closed. Cancel also pauses the schedule; enable it and save the configuration to resume.</p>
+                <fieldset id="syncapi-run-types" class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-3 tw:gap-2 tw:min-w-0">
+                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Content to synchronize</legend>
+                    {% for type_id, type_label in syncapi_types %}
+                    <label class="tw:flex tw:items-center tw:gap-3 tw:p-3 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-field)] tw:text-xs tw:cursor-pointer">
+                        <input type="checkbox" value="{{ type_id }}" class="tw:checkbox tw:checkbox-primary tw:checkbox-sm tw:shrink-0" {% if type_id in syncapi_schedule.types %}checked{% endif %}>
+                        {{ type_label }}
+                    </label>
+                    {% endfor %}
+                </fieldset>
+                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:gap-2">
+                    <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Sync now</button>
+                    <button id="syncapi-run-cancel" type="button" class="tw:btn tw:btn-outline tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Cancel</button>
+                </div>
                 <p id="syncapi-run-error" class="tw:text-error tw:text-xs tw:break-words" role="alert"></p>
-                <p class="tw:text-xs tw:text-base-content/60">Uses the connection settings above. Save the schedule and selected content here, separately from the page configuration. The schedule continues after this page closes or the Pi restarts. Cancel also pauses it; enable and save it to resume.</p>
                 <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
-                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Schedule status</p>
-                    <p id="syncapi-run-schedule-status" class="tw:text-xs tw:leading-relaxed tw:break-words" role="status" aria-live="polite">Loading schedule status…</p>
+                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Synchronization status</p>
+                    <p id="syncapi-run-status" class="tw:text-xs tw:leading-relaxed tw:break-words tw:whitespace-pre-line" role="status" aria-live="polite">Loading synchronization status…</p>
                 </div>
             </div>
         </div>

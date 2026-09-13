@@ -18,7 +18,7 @@ During a run, connection failures and timeouts are retried twice, after 5 and 15
 
 ## Optional availability schedule
 
-In the same panel, select **Automatically sync when available**, set **Check every** (default 10 minutes) and **Wait after availability** (default 3 minutes), select content types, and press **Save schedule and selection**. The schedule is disabled by default. Check intervals accept 1–1440 minutes; startup delays accept 0–1440 minutes. These controls are saved immediately in the Pi's database, separately from the main configuration form. No service reload is needed for schedule changes. Cancel an active run before editing the schedule.
+In the same panel, select **Automatically sync when available**, set **Check every** (default 10 minutes) and **Wait after availability** (default 3 minutes), select content types, and press the page's **Save Configuration** button. The switch, timings and selected content are validated and saved together with the configuration. Changed scheduling settings request a service reload so the scheduler uses the newly saved configuration. The schedule is disabled by default. Check intervals accept 1–1440 minutes; startup delays accept 0–1440 minutes. Existing schedules are preserved when upgrading. Cancel an active run before changing its schedule; saving unchanged settings does not interrupt that run.
 
 After each check interval, the Pi uses the existing SyncAPI URL, username, API key and certificate setting for an authenticated, read-only camera lookup. This verifies that the receiver's application and database respond, rather than just its network interface. A receiver already supporting on-demand synchronization needs no further update. A camera not yet registered is also accepted as a readiness response; the first actual run registers it. Older receivers may log that initial missing-camera lookup.
 
@@ -26,7 +26,7 @@ If the receiver is unavailable, the Pi quietly waits another check interval. If 
 
 The schedule continues with the browser closed and after a Pi/service restart. A restart begins a fresh check interval, using existing transfer checkpoints when a new run starts. Only one run is admitted at a time; a manual run suspends availability checks. The most recently saved content selection is used for scheduled runs. Unsaved checkbox edits only affect **Sync now**.
 
-**Cancel also pauses the schedule.** To resume, enable it and save again. Authentication, certificate, unexpected response and non-connection transfer errors also pause it, with one warning instead of repeatedly trying the same broken configuration. Correct the problem, then enable and save again. The panel displays the current phase, next action time and pause reason. Switching away from On demand mode or disabling Sync API prevents scheduled checks and uploads.
+**Cancel also pauses the schedule.** To resume, enable it and use **Save Configuration**. Authentication, certificate, unexpected response and non-connection transfer errors also pause it, with one warning instead of repeatedly trying the same broken configuration. Correct the problem, then enable and save again. A single status area displays transfer progress, the schedule's current phase, next action time and pause reason. Switching away from On demand mode or disabling Sync API prevents scheduled checks and uploads.
 
 This scheduler is part of the existing on-demand worker; it adds no Home Assistant control API or reboot/recovery service.
 

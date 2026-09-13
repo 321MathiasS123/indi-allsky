@@ -26,7 +26,9 @@ def settings():
                                            types=list(sync.DEFAULT_TYPES), revision=''))
 
 
-def save_settings(config, payload):
+def save_settings(config, payload, commit=True):
+    if not isinstance(payload, dict):
+        raise ValueError('Invalid synchronization schedule.')
     enabled, interval, delay = (payload.get(key) for key in ('enabled', 'interval', 'delay'))
     types = payload.get('types')
     if type(enabled) is not bool:
@@ -37,14 +39,20 @@ def save_settings(config, payload):
         raise ValueError('Startup delay must be between 0 and 1440 minutes.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in sync.MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
+    options = dict(enabled=enabled, interval=interval, delay=delay, types=list(dict.fromkeys(types)))
+    current = settings()
+    # General configuration saves also submit unchanged schedule fields. Do not
+    # restart the timer or invalidate an active worker for an unrelated edit.
+    if all(current[key] == value for key, value in options.items()):
+        return False
     if sync.active_task():
         raise ValueError('Cancel the running synchronization before changing its schedule.')
-    if enabled:
-        if not on_demand_enabled(config):
-            raise ValueError('Save and apply On demand mode before enabling the schedule.')
+    # Keep the preference when SyncAPI is off or in automatic-upload mode.
+    # The scheduler already requires an applied On demand configuration.
+    if enabled and on_demand_enabled(config):
         sync.validate_destination(config)
-    sync.set_state(SETTINGS_KEY, dict(enabled=enabled, interval=interval, delay=delay,
-                                    types=list(dict.fromkeys(types)), revision=str(uuid4())))
+    sync.set_state(SETTINGS_KEY, dict(options, revision=str(uuid4())), commit=commit)
+    return True
 
 
 def pause(message):

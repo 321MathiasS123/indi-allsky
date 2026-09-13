@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {formatStatus, mount} = require('../../indi_allsky/flask/static/js/syncapi-on-demand.js');
+const {formatStatus, mount, schedulePayload} = require('../../indi_allsky/flask/static/js/syncapi-on-demand.js');
 
 function harness() {
     function element() {
@@ -9,7 +9,12 @@ function harness() {
             querySelectorAll(selector) { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
     const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error', 'schedule-controls',
-        'schedule-enabled', 'schedule-interval', 'schedule-delay', 'schedule-save', 'schedule-status', 'schedule-feedback'].map(key => [key, element()]));
+        'schedule-enabled', 'schedule-interval', 'schedule-delay'].map(key => [key, element()]));
+    nodes.types.children = [{children: [{type: 'checkbox', value: 'image', checked: true}]},
+        {children: [{type: 'checkbox', value: 'rawimage', checked: false}]}];
+    nodes['schedule-enabled'].checked = false;
+    nodes['schedule-interval'].value = '10';
+    nodes['schedule-delay'].value = '3';
     const document = {getElementById: id => nodes[id.replace('syncapi-run-', '')],
         createElement: element, createTextNode: text => ({textContent: text})};
     const panel = {dataset: {url: '/indi-allsky/ajax/syncapi/run', csrf: 'token'}};
@@ -68,36 +73,44 @@ test('failed start remains visible and does not trigger automatic retry', async 
     assert.equal(nodes.start.disabled, false);
 });
 
-test('schedule saves explicitly, preserves edits during polls, and reflects cancellation', async () => {
-    const {nodes, document, panel} = harness();
-    const requests = [], polls = [];
-    let saved = {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''};
-    const fetcher = async (url, options) => {
-        requests.push({url, options});
-        if (options.body) saved = {...JSON.parse(options.body), revision: 'saved'};
-        return {ok: true, json: async () => ({enabled: true, active: false,
-            schedule: {settings: saved, message: 'Waiting', next_action: '2026-09-13T20:15:00+02:00'},
-            types: [{id: 'image', label: 'Images', selected: true}, {id: 'rawimage', label: 'RAW', selected: false}]})};
-    };
-    await mount(panel, document, fetcher, fn => polls.push(fn));
-    assert.equal(nodes['schedule-interval'].value, '10');
+test('configuration payload includes current switch, timings and checkboxes without uploading', () => {
+    const {nodes, document} = harness();
     nodes['schedule-enabled'].checked = true;
     nodes['schedule-interval'].value = '5';
     nodes['schedule-delay'].value = '0';
     nodes.types.querySelectorAll('input')[1].checked = true;
+    assert.deepEqual(schedulePayload(document), {enabled: true, interval: 5, delay: 0, types: ['image', 'rawimage']});
+    nodes['schedule-delay'].value = '';
+    assert.equal(schedulePayload(document).delay, null, 'An empty delay must not silently become zero');
+});
+
+test('Sync now uses unsaved checkboxes without changing scheduled content, even across newer polls', async () => {
+    const {nodes, document, panel} = harness();
+    const requests = [], polls = [];
+    let revision = 'original';
+    const fetcher = async (url, options) => {
+        requests.push(options);
+        return {ok: true, json: async () => ({enabled: true, active: false,
+            schedule: {settings: {enabled: false, interval: 10, delay: 3, types: ['image'], revision},
+                message: 'Waiting for receiver.', next_action: '2026-09-13T20:15:00+02:00'}})};
+    };
+    // Edits made before the first poll returns must also survive.
+    nodes.types.querySelectorAll('input')[0].checked = false;
+    nodes.types.querySelectorAll('input')[1].checked = true;
+    nodes['schedule-interval'].value = '7';
+    await mount(panel, document, fetcher, fn => polls.push(fn));
+    revision = 'changed elsewhere';
     await polls.shift()();
-    assert.equal(nodes['schedule-interval'].value, '5');
-    assert.equal(nodes.types.querySelectorAll('input')[1].checked, true);
-    await nodes['schedule-save'].handlers.click();
-    assert.deepEqual(JSON.parse(requests[2].options.body), {action: 'schedule', enabled: true,
-        interval: 5, delay: 0, types: ['image', 'rawimage']});
-    assert.equal(requests[2].options.headers['X-CSRFToken'], 'token');
-    assert.match(nodes['schedule-status'].textContent, /2026-09-13 20:15:00/);
-    saved = {...saved, enabled: false, revision: 'cancelled'};
-    await polls.shift()();
-    assert.equal(nodes['schedule-enabled'].checked, false);
-    assert.equal(requests.filter(r => r.options.method === 'POST').length, 1);
-    assert.ok(requests.every(r => r.url === panel.dataset.url));
+    assert.equal(nodes['schedule-interval'].value, '7');
+    await nodes.start.handlers.click();
+    assert.deepEqual(JSON.parse(requests[2].body), {action: 'start', types: ['rawimage']});
+    assert.equal(requests.filter(options => options.method === 'POST').length, 1);
+    assert.match(nodes.status.textContent, /Waiting for receiver/);
+    assert.match(nodes.status.textContent, /Next check: 2026-09-13 20:15:00/);
+    nodes.types.querySelectorAll('input')[1].checked = false;
+    await nodes.start.handlers.click();
+    assert.equal(requests.length, 3);
+    assert.match(nodes.error.textContent, /Select at least one/);
 });
 
 function deferred() {
@@ -105,53 +118,6 @@ function deferred() {
     const promise = new Promise(done => { resolve = done; });
     return {promise, resolve};
 }
-
-for (const enabled of [false, true]) {
-    test(`saving an idle schedule confirms automatic sync is ${enabled ? 'enabled' : 'disabled'}`, async () => {
-        const {nodes, document, panel} = harness();
-        const polls = [], pending = deferred();
-        let current = {enabled: true, active: false,
-            types: [{id: 'image', label: 'Images', selected: true}],
-            schedule: {settings: {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''}}};
-        const response = () => ({ok: true, json: async () => current});
-        const fetcher = async (url, options) => options.body ? pending.promise : response();
-        await mount(panel, document, fetcher, fn => polls.push(fn));
-        assert.equal(nodes['schedule-save'].disabled, false);
-        nodes['schedule-enabled'].checked = enabled;
-        const save = nodes['schedule-save'].handlers.click();
-        assert.equal(nodes['schedule-feedback'].textContent, 'Saving schedule…');
-        assert.equal(nodes['schedule-save'].disabled, true);
-        current = {...current, schedule: {settings: {...current.schedule.settings, enabled, revision: 'saved'}}};
-        pending.resolve(response());
-        await save;
-        const expected = `Schedule saved. Automatic synchronization is ${enabled ? 'enabled' : 'disabled'}.`;
-        assert.equal(nodes['schedule-feedback'].textContent, expected);
-        assert.equal(nodes['schedule-save'].disabled, false);
-        await polls.shift()();
-        assert.equal(nodes['schedule-feedback'].textContent, expected, 'Polling retains the confirmation');
-        nodes['schedule-controls'].handlers.input();
-        assert.equal(nodes['schedule-feedback'].textContent, '', 'Editing invalidates the old confirmation');
-        nodes['schedule-delay'].value = '';
-        await nodes['schedule-save'].handlers.click();
-        assert.equal(nodes['schedule-feedback'].textContent, '');
-        assert.match(nodes.error.textContent, /enter both timing values/);
-    });
-}
-
-test('a rejected schedule save shows the error without a success confirmation', async () => {
-    const {nodes, document, panel} = harness();
-    const polls = [];
-    const fetcher = async (url, options) => ({ok: !options.body, json: async () => options.body ?
-        {error: 'Apply the saved configuration first.'} : {enabled: true, active: false,
-            types: [{id: 'image', label: 'Images', selected: true}],
-            schedule: {settings: {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''}}}});
-    await mount(panel, document, fetcher, fn => polls.push(fn));
-    await nodes['schedule-save'].handlers.click();
-    await polls.shift()();
-    assert.equal(nodes.error.textContent, 'Apply the saved configuration first.');
-    assert.equal(nodes['schedule-feedback'].textContent, '');
-    assert.equal(nodes['schedule-save'].disabled, false);
-});
 
 for (const active of [false, true]) {
     test(`slow polling preserves controls and edits while ${active ? 'running' : 'idle'}`, async () => {
@@ -163,7 +129,7 @@ for (const active of [false, true]) {
         const response = {ok: true, json: async () => state};
         let reads = 0;
         await mount(panel, document, async () => ++reads === 1 ? response : pending.promise, fn => polls.push(fn));
-        const controls = ['start', 'cancel', 'types', 'schedule-controls', 'schedule-save'];
+        const controls = ['start', 'cancel', 'types', 'schedule-controls'];
         const disabled = controls.map(key => nodes[key].disabled);
         nodes['schedule-interval'].value = '7';
         nodes.types.querySelectorAll('input')[0].checked = false;

@@ -6450,6 +6450,9 @@
   .tw\:whitespace-nowrap {
     white-space: nowrap;
   }
+  .tw\:whitespace-pre-line {
+    white-space: pre-line;
+  }
   @layer daisyui.l1.l2 {
     .tw\:file-input-error {
       --btn-color: var(--color-error);

@@ -3471,6 +3471,11 @@ class ConfigView(FormView):
         admin_network_text = '\n'.join(network_list)
         form_data['ADMIN_NETWORKS_FLASK'] = admin_network_text
 
+        from ..syncapi_schedule import settings as sync_schedule_settings
+        from ..syncapi_sync import MEDIA
+        context['syncapi_schedule'] = sync_schedule_settings()
+        context['syncapi_types'] = [(key, value[2]) for key, value in MEDIA.items()]
+
         context['form_config'] = IndiAllskyConfigForm(data=form_data)
 
         return context
@@ -4444,6 +4449,16 @@ class AjaxConfigView(BaseView):
                 self.indi_allsky_config['SYNCAPI']['MODE'], self.indi_allsky_config['SYNCAPI']['ENABLE']):
             reload_on_save = True
 
+        if 'SYNCAPI_SCHEDULE' in request.json:
+            from ..syncapi_schedule import save_settings
+            try:
+                # The config save below commits both records together. Older
+                # configuration pages omit this key and preserve the schedule.
+                if save_settings(self.indi_allsky_config, request.json['SYNCAPI_SCHEDULE'], commit=False):
+                    reload_on_save = True
+            except ValueError as exc:
+                return jsonify({'syncapi-run-schedule-controls': [str(exc)], 'form_global': [str(exc)]}), 400
+
         if not app.config['LOGIN_DISABLED']:
             username = current_user.username
         else:
@@ -4454,6 +4469,7 @@ class AjaxConfigView(BaseView):
             self._indi_allsky_config_obj.save(username, config_note)
             app.logger.info('Saved new config')
         except ConfigSaveException as e:
+            db.session.rollback()  # Includes any staged schedule change.
             error_data = {
                 'form_global' : [str(e)],
             }
