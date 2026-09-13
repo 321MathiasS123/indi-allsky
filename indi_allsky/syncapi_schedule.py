@@ -19,6 +19,7 @@ from . import syncapi_sync as sync
 logger = logging.getLogger('indi_allsky')
 SETTINGS_KEY = 'SYNCAPI_SCHEDULE_SETTINGS'
 STATUS_KEY = 'SYNCAPI_SCHEDULE_STATUS'
+APPLYING_MESSAGE = 'Schedule saved. Waiting for indi-allsky to apply the configuration.'
 
 
 def settings():
@@ -69,7 +70,7 @@ def status():
         state = dict(state='paused' if options.get('paused_reason') else 'disabled',
                      message=options.get('paused_reason', 'Automatic synchronization is disabled.'))
     elif state.get('revision') != options['revision']:
-        state = dict(state='waiting', message='Waiting for the indi-allsky service to apply the schedule.')
+        state = dict(state='applying', message=APPLYING_MESSAGE)
     return dict(settings=options, **state)
 
 
@@ -167,7 +168,12 @@ class SyncApiScheduler:
             self.task_id = None
             self.wait(options, 'Waiting for the next availability check.')
         if not enabled:
-            self.publish(options, 'disabled', 'Save and apply On demand mode to use the schedule.')
+            # A saved configuration can be waiting for the service's next
+            # reload. Do not ask users to save the same settings again.
+            if options['enabled'] and not applied:
+                self.publish(options, 'applying', APPLYING_MESSAGE)
+            else:
+                self.publish(options, 'disabled', 'Save and apply On demand mode to use the schedule.')
             return
 
         task = sync.active_task()

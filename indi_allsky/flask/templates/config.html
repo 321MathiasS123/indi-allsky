@@ -5,7 +5,7 @@
 {% block head %}
 <link href="{{ url_for('indi_allsky.static', filename='css/style.css') }}" rel="stylesheet">
 <script src="{{ url_for('indi_allsky.static', filename='js/indi-allsky-tabs.js') }}"></script>
-<script defer src="{{ url_for('indi_allsky.static', filename='js/syncapi-on-demand.js', v='availability-4') }}"></script>
+<script defer src="{{ url_for('indi_allsky.static', filename='js/syncapi-on-demand.js', v='availability-5') }}"></script>
 <script type="text/javascript">
 var camera_id = {{ camera_id }};
 </script>
@@ -953,6 +953,7 @@ $('#form_config').on('submit', function() {
         contentType: "application/json",
         data: JSON.stringify(json_data),
         success: function(rdata){
+            document.dispatchEvent(new Event('indi-allsky:config-saved'));
             $("#save-button").attr("class", "tw:btn tw:btn-success tw:btn-md tw:gap-2 tw:font-bold tw:uppercase tw:tracking-wider tw:flex-shrink-0 shadow-sm");
             $("#save-button").html(
                 '<i class="tw:icon-[lucide--check] tw:w-4 tw:h-4"></i> Saved'
