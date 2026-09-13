@@ -22,6 +22,14 @@
                 </div>
 
                 <!-- Base URL -->
+                <div class="tw:flex tw:flex-col tw:gap-2">
+                    <label for="SYNCAPI__MODE">{{ form_config.SYNCAPI__MODE.label.text }}</label>
+                    {{ form_config.SYNCAPI__MODE(class='tw:select tw:select-bordered tw:w-full') }}
+                    <div id="SYNCAPI__MODE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                    <p class="tw:text-xs">Turn Enable Sync API off to disable synchronization. In On demand mode, no uploads or connection attempts occur until you press Sync now. Saving a mode change reloads the service.</p>
+                </div>
+
+                <!-- Base URL -->
                 <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-2 md:tw:gap-4 tw:items-center tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__BASEURL.label.text }}</span>
@@ -65,7 +73,7 @@
         <!-- Sync Policy & Transfers Card -->
         <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
             <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
-                <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Upload Frequency & Timeouts</span>
+                <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Automatic Upload Frequency & Shared Timeouts</span>
 
                 <!-- Upload Image & Upload Panorama -->
                 <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
@@ -93,7 +101,7 @@
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__TIMEOUT.label.text }}</span>
                         {{ form_config.SYNCAPI__TIMEOUT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
-                        <span class="tw:text-[0.625rem] tw:text-base-content/40">Maximum seconds for the entire transfer; allow enough time for video files.</span>
+                        <span class="tw:text-[0.625rem] tw:text-base-content/40">Read timeout in seconds; allow enough time for the receiver to process video files.</span>
                         <div id="SYNCAPI__TIMEOUT-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                 </div>
@@ -133,5 +141,22 @@
             </div>
         </div>
 
+        <div id="syncapi-run-panel" class="tw:card tw:bg-base-200 tw:border tw:border-base-300"
+             data-url="{{ url_for('indi_allsky.ajax_syncapi_run_view') }}" data-csrf="{{ csrf_token() }}">
+            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
+                <h3>On-demand synchronization</h3>
+                <p>Save and apply On demand mode first. Sync now sends pending local files, including data older than 30 days, and skips recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
+                <p class="tw:text-xs">This archive run sends actual files of the selected types, without automatic image sampling or waiting for S3. Capture continues and you can close this page. If the destination is unavailable, the run stops until you start it again.</p>
+                <fieldset id="syncapi-run-types" class="tw:flex tw:flex-wrap tw:gap-4">
+                    <legend>Include in this run</legend>
+                </fieldset>
+                <div class="tw:flex tw:gap-2">
+                    <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary" disabled>Sync now</button>
+                    <button id="syncapi-run-cancel" type="button" class="tw:btn" disabled>Cancel</button>
+                </div>
+                <p id="syncapi-run-status" role="status" aria-live="polite">Loading synchronization status…</p>
+                <p id="syncapi-run-error" class="tw:text-error" role="alert"></p>
+            </div>
+        </div>
     </div>
 </div><!-- end syncapi tab -->

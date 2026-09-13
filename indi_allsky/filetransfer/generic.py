@@ -10,6 +10,7 @@ class GenericFileTransfer(object):
     def __init__(self, *args, **kwargs):
         self.config = args[0]
         self.delete = kwargs.get('delete', False)
+        self.quiet = kwargs.get('quiet', False)
 
         self._port = 0
         self._connect_timeout = 10.0
@@ -77,7 +78,8 @@ class GenericFileTransfer(object):
 
 
         local_file = kwargs['local_file']
-        logger.info('Uploading %s', local_file)
+        log = logger.debug if self.quiet else logger.info
+        log('Uploading %s', local_file)
 
 
     def delete(self, *args, **kwargs):

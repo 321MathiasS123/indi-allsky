@@ -599,6 +599,7 @@ class IndiAllSkyConfigBase(object):
         },
         "SYNCAPI" : {
             "ENABLE"                 : False,
+            "MODE"                   : "automatic",
             "BASEURL"                : "https://example.com/indi-allsky",
             "USERNAME"               : "",
             "APIKEY"                 : "",

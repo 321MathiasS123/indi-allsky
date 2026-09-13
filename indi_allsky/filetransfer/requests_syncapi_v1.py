@@ -1,5 +1,5 @@
 from .generic import GenericFileTransfer
-#from .exceptions import AuthenticationFailure
+from .exceptions import AuthenticationFailure
 from .exceptions import ConnectionFailure
 from .exceptions import CertificateValidationFailure
 from .exceptions import TransferFailure
@@ -145,7 +145,8 @@ class requests_syncapi_v1(GenericFileTransfer):
 
         try:
             # put allows overwrites
-            r = self.client.put(
+            request_method = self.client.get if kwargs.get('lookup') else self.client.put
+            r = request_method(
                 self.url,
                 data=mp_enc,
                 headers=headers,
@@ -158,13 +159,13 @@ class requests_syncapi_v1(GenericFileTransfer):
             raise ConnectionFailure(str(e)) from e
         except requests.exceptions.ConnectTimeout as e:
             raise ConnectionFailure(str(e)) from e
+        except requests.exceptions.SSLError as e:
+            raise CertificateValidationFailure(str(e)) from e
         except requests.exceptions.ConnectionError as e:
             raise ConnectionFailure(str(e)) from e
         except requests.exceptions.ReadTimeout as e:
             raise ConnectionFailure(str(e)) from e
         except ssl.SSLCertVerificationError as e:
-            raise CertificateValidationFailure(str(e)) from e
-        except requests.exceptions.SSLError as e:
             raise CertificateValidationFailure(str(e)) from e
         finally:
             f_metadata.close()
@@ -172,12 +173,26 @@ class requests_syncapi_v1(GenericFileTransfer):
 
 
         if r.status_code >= 400:
+            if self.quiet:
+                if kwargs.get('lookup'):
+                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting on-demand synchronization and check its logs.'.format(r.status_code))
+                try:
+                    error = r.json().get('error')
+                except (ValueError, AttributeError):
+                    error = None
+                if r.status_code in (401, 403) or error == 'authentication failed':
+                    raise AuthenticationFailure('Receiver authentication failed')
+                raise TransferFailure('Receiver rejected the transfer (HTTP {0:d}). Check its storage and service logs.'.format(r.status_code))
             raise TransferFailure('Sync error: {0:d}'.format(r.status_code))
 
 
         upload_elapsed_s = time.time() - start
-        logger.info('File transferred in %0.4f s (%0.2f kB/s)', upload_elapsed_s, local_file_size / upload_elapsed_s / 1024)
+        log = logger.debug if self.quiet else logger.info
+        log('File transferred in %0.4f s (%0.2f kB/s)', upload_elapsed_s, local_file_size / max(upload_elapsed_s, 0.000001) / 1024)
 
 
-        return json.loads(r.text)
+        try:
+            return json.loads(r.text)
+        except ValueError as e:
+            raise TransferFailure('Receiver returned an invalid transfer acknowledgement.') from e
 
