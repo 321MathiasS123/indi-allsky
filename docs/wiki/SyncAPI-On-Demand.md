@@ -14,7 +14,7 @@ Pending media are transferred oldest first by creation time across all selected 
 
 Successfully acknowledged items are skipped. If a previous upload arrived but its acknowledgement was lost, the Pi checks its identity, thumbnail reference, size and SHA-256 digest on the receiver and records the result without resending the media. Image/thumbnail completion is recorded together. Missing local files are reported as skipped and are never marked synchronized.
 
-An unavailable receiver or a failed transfer stops the run and produces one failure summary. There are no automatic retries, availability probes, or per-image SyncAPI attempts between manual runs. Press **Sync now** again to continue. **Cancel** stops further requests after the current request finishes or times out. Service restarts do not automatically resume a run.
+During a manual run, connection failures and timeouts are retried twice, after 5 and 15 seconds. Each retry checks whether the receiver already saved the file before sending it again. The panel shows the retry status; exhausted retries produce one failure summary with the file or camera, lookup/upload stage, and underlying error. Authentication, certificate and receiver rejection errors stop immediately. There are no availability probes or per-image SyncAPI attempts between manual runs. Press **Sync now** again to continue a stopped run. **Cancel** interrupts retry waits and stops further requests after the current request finishes or times out. Service restarts do not automatically resume a run.
 
 The panel reports progress and the last outcome using the Pi's database. It never probes the NAS merely because the page is open. Existing successful-upload records are preserved, including uploads made in Automatic mode.
 

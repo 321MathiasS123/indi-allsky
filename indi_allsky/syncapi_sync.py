@@ -167,6 +167,7 @@ class SyncStopped(Exception):
 class SyncApiSyncWorker(Thread):
     """One finite archive pass with a separate Flask/database session."""
     page_size = 100
+    retry_delays = (5, 15)
 
     def __init__(self, app, task_id):
         super().__init__(name='SyncAPI-on-demand')
@@ -236,9 +237,36 @@ class SyncApiSyncWorker(Thread):
                 yield created, name, entry_id
 
     def transfer(self, entry, metadata):
+        from .filetransfer.exceptions import ConnectionFailure
+
+        attempts = len(self.retry_delays) + 1
+        for attempt in range(attempts):
+            try:
+                # Reopen the media and repeat the lookup: a failed reply can
+                # follow a successful receiver commit. Never replay a used stream.
+                return self.transfer_once(entry, metadata)
+            except ConnectionFailure as exc:
+                if attempt == attempts - 1:
+                    raise ConnectionFailure('Synchronization stopped after {0:d} attempts. {1}'.format(attempts, exc)) from exc
+                delay = self.retry_delays[attempt]
+                self.progress['message'] = '{0}. Retrying in {1:d} seconds (attempt {2:d} of {3:d}).'.format(exc, delay, attempt + 2, attempts)
+                self.publish(force=True)
+                self.wait_for_retry(delay)
+                self.progress['message'] = 'Synchronization running.'
+                self.publish(force=True)
+
+    def wait_for_retry(self, delay):
+        # Poll the database cancellation flag without holding a read transaction;
+        # the event also wakes immediately when the service asks us to stop.
+        for _ in range(delay):
+            self.check_control()
+            self.stop_event.wait(1)
+        self.check_control()
+
+    def transfer_once(self, entry, metadata):
         # Keep optional transfer backends out of the web/status import path.
         from .filetransfer.requests_syncapi_v1 import requests_syncapi_v1
-        from .filetransfer.exceptions import TransferFailure
+        from .filetransfer.exceptions import ConnectionFailure, TransferFailure
 
         self.check_control()
         settings = self.config['SYNCAPI']
@@ -248,6 +276,7 @@ class SyncApiSyncWorker(Thread):
         client.timeout = float(settings.get('TIMEOUT', 60))
         if any(not math.isfinite(t) or t <= 0 for t in (client.connect_timeout, client.timeout)):
             raise ValueError('SyncAPI timeouts must be finite positive numbers.')
+        stage = 'Connection'
         try:
             client.connect(hostname=settings['BASEURL'].rstrip('/') + '/' + constants.ENDPOINT_V1[metadata['type']],
                            username=settings['USERNAME'], apikey=settings['APIKEY'],
@@ -263,6 +292,7 @@ class SyncApiSyncWorker(Thread):
                         digest.update(block)
                 lookup = dict(metadata, source_lookup=True, id=-1, expected_size=path.stat().st_size, sha256=digest.hexdigest())
                 self.check_control()
+                stage = 'Lookup'
                 response = client.put(local_file=path, metadata=lookup, empty_file=False, lookup=True)
                 if not isinstance(response, dict) or response.get('lookup_supported') is not True:
                     raise TransferFailure('Update the NAS receiver to a version supporting on-demand synchronization.')
@@ -274,6 +304,7 @@ class SyncApiSyncWorker(Thread):
                 if response.get('present') is not False:
                     raise TransferFailure('Receiver returned an invalid source lookup.')
                 self.check_control()
+            stage = 'Camera metadata upload' if metadata['type'] == constants.CAMERA else 'Upload'
             result = client.put(local_file=path, metadata=metadata, empty_file=False)
             if not isinstance(result, dict) or type(result.get('id')) is not int or result['id'] <= 0:
                 raise TransferFailure('Receiver did not return a valid transfer acknowledgement.')
@@ -281,6 +312,11 @@ class SyncApiSyncWorker(Thread):
                 self.progress['files'] += 1
                 self.progress['bytes'] += metadata.get('file_size', 0)
             return result['id']
+        except ConnectionFailure as exc:
+            target = entry.name if metadata['type'] == constants.CAMERA else path.name
+            cause = exc.__cause__ or exc
+            detail = ' '.join(str(exc).split())
+            raise ConnectionFailure('{0} failed for "{1}": {2}: {3}'.format(stage, target, type(cause).__name__, detail)) from exc
         finally:
             client.close()
 
@@ -366,8 +402,8 @@ class SyncApiSyncWorker(Thread):
             outcome, message = 'failed', 'Receiver certificate validation failed. Check the SyncAPI certificate settings.'
         except AuthenticationFailure:
             outcome, message = 'failed', 'Receiver authentication failed. Check the SyncAPI account and API key.'
-        except ConnectionFailure:
-            outcome, message = 'failed', 'NAS unavailable or connection interrupted. Press Sync now when it is available.'
+        except ConnectionFailure as exc:
+            outcome, message = 'failed', '{0} Press Sync now to continue.'.format(exc)
         except (TransferFailure, ValueError) as exc:
             outcome, message = 'failed', str(exc)
         except Exception:
