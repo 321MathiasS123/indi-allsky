@@ -59,6 +59,35 @@ def test_all_supported_media_roundtrip(sync_env, kind):
             assert stored.success
 
 
+@pytest.mark.parametrize('page_size', [1, 2, 100])
+def test_media_types_are_interleaved_oldest_first(sync_env, monkeypatch, page_size):
+    env = sync_env
+    monkeypatch.setattr(env.sync.SyncApiSyncWorker, 'page_size', page_size)
+    start = datetime.now().replace(microsecond=0) - timedelta(days=30)
+    kinds = list(env.sync.MEDIA)
+    entries = [
+        (kind, env.asset(kind, createDate=start + timedelta(hours=hour)))
+        for kind, hour in zip(kinds + ['image'] * 3, [12, 4, 7, 2, 9, 1, 8, 11, 5, 6, 0, 7, 10])
+    ]
+    thumb = env.thumbnail(entries[0][1])
+    thumb.createDate = datetime.now()  # Thumbnail date must not split its parent unit.
+    env.db.session.commit()
+
+    result = env.run(kinds)
+    assert result['state'] == 'complete', result
+    assert result['completed'] == len(entries)
+    expected = []
+    for kind, entry in sorted(entries, key=lambda pair: (pair[1].createDate, pair[0], pair[1].id)):
+        expected.append((env.sync.MEDIA[kind][1], entry.createDate.timestamp()))
+        if entry.thumbnail_uuid:
+            expected.append((env.sync.constants.THUMBNAIL, thumb.createDate.timestamp()))
+    assert [(call[2]['type'], call[2]['createDate']) for call in media_puts(env)] == expected
+
+    env.calls.clear()
+    assert env.run(kinds)['completed'] == 0
+    assert media_puts(env) == []
+
+
 def test_multiple_mini_timelapses_survive(sync_env):
     env = sync_env
     first = env.asset('minivideo')
@@ -89,9 +118,10 @@ def test_offline_one_request_one_warning(sync_env, monkeypatch, caplog):
     assert len(calls) == 1
 
 
-def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch):
+@pytest.mark.parametrize('first_kind', ['image', 'video'])
+def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, first_kind):
     env = sync_env
-    first = env.asset(age=3)
+    first = env.asset(first_kind, age=3)
     second = env.asset(age=2)
     original = env.transport.requests.put
     def fail_second(url, **kwargs):
@@ -100,11 +130,11 @@ def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch):
             raise env.transport.requests.exceptions.ConnectionError('offline')
         return original(url, **kwargs)
     monkeypatch.setattr(env.transport.requests, 'put', fail_second)
-    assert env.run()['state'] == 'failed'
+    assert env.run(['image', 'video'])['state'] == 'failed'
     assert first.sync_id and second.sync_id is None
     monkeypatch.setattr(env.transport.requests, 'put', original)
     env.calls.clear()
-    assert env.run()['state'] == 'complete'
+    assert env.run(['image', 'video'])['state'] == 'complete'
     assert len(media_puts(env)) == 1
 
 
