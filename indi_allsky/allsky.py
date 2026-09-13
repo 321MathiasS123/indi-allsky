@@ -4,6 +4,7 @@ import locale
 import fcntl
 #import errno
 import os
+import math
 import time
 import io
 import re
@@ -303,7 +304,7 @@ class IndiAllSky(object):
 
         # set flag for program to stop processes
         self._shutdown = True
-        self._terminate = True
+        self._beginShutdown()
 
 
     def sigint_handler_main(self, signum, frame):
@@ -311,6 +312,30 @@ class IndiAllSky(object):
 
         # set flag for program to stop processes
         self._shutdown = True
+        self._beginShutdown()
+
+
+    def _beginShutdown(self):
+        if hasattr(self, '_shutdown_deadline'):
+            return
+        # The service manager retains a slightly longer, absolute fallback.
+        try:
+            grace = float(os.environ.get('INDI_ALLSKY_SHUTDOWN_GRACE', '180'))
+            if not math.isfinite(grace) or grace <= 0:
+                grace = 180
+        except ValueError:
+            grace = 180
+        self._shutdown_deadline = time.monotonic() + grace
+        self._shutdown_clean = True
+
+
+    def _joinWorker(self, worker):
+        from .shutdown import join_worker
+        if self._shutdown:
+            self._beginShutdown()
+        clean = join_worker(worker, getattr(self, '_shutdown_deadline', None))
+        if not clean:
+            self._shutdown_clean = False
 
 
     def sigalarm_handler_main(self, signum, frame):
@@ -358,10 +383,11 @@ class IndiAllSky(object):
 
 
         if last_state not in (constants.STATUS_STOPPED, constants.STATUS_NOCAMERA, constants.STATUS_NOINDISERVER):
+            from .automation import shutdown_notice
             self._miscDb.addNotification(
                 NotificationCategory.STATE,
                 'indi-allsky',
-                'indi-allsky was abnormally shutdown',
+                shutdown_notice(app.config),
                 expire=timedelta(hours=24),
             )
 
@@ -501,7 +527,7 @@ class IndiAllSky(object):
         logger.info('Stopping Capture worker')
 
         self._requestCaptureWorkerStop()
-        self.capture_worker.join()
+        self._joinWorker(self.capture_worker)
         self._capture_worker_stop_requested = False
 
 
@@ -631,7 +657,7 @@ class IndiAllSky(object):
         logger.info('Stopping Image worker')
 
         self.image_q.put({'stop' : True})
-        self.image_worker.join()
+        self._joinWorker(self.image_worker)
 
 
     def _startVideoWorker(self, planned_restart=False):
@@ -688,7 +714,7 @@ class IndiAllSky(object):
         logger.info('Stopping Video worker')
 
         self.video_q.put({'stop' : True})
-        self.video_worker.join()
+        self._joinWorker(self.video_worker)
 
 
     def _startSensorWorker(self, planned_restart=False):
@@ -742,7 +768,7 @@ class IndiAllSky(object):
         logger.info('Stopping Sensor worker')
 
         self.sensor_q.put({'stop' : True})
-        self.sensor_worker.join()
+        self._joinWorker(self.sensor_worker)
 
 
     def _startFileUploadWorkers(self, planned_restart=False):
@@ -815,7 +841,7 @@ class IndiAllSky(object):
     def _fileUploadWorkerStop(self, uw_dict):
         logger.info('Stopping Upload worker')
 
-        uw_dict['worker'].join()
+        self._joinWorker(uw_dict['worker'])
 
 
     def run(self):
@@ -869,7 +895,10 @@ class IndiAllSky(object):
 
 
                 with app.app_context():
-                    self._miscDb.setState('STATUS', constants.STATUS_STOPPED)
+                    if getattr(self, '_shutdown_clean', True):
+                        self._miscDb.setState('STATUS', constants.STATUS_STOPPED)
+                    else:
+                        logger.warning('Shutdown required forced worker termination; retaining incomplete shutdown status')
 
 
                 if self.pid_lock:
