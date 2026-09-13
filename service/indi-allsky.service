@@ -7,7 +7,11 @@ EnvironmentFile=%ALLSKY_ETC%/indi-allsky.env
 WorkingDirectory=%ALLSKY_DIRECTORY%
 ExecStart=%ALLSKY_DIRECTORY%/virtualenv/indi-allsky/bin/python3 allsky.py --log syslog run
 ExecReload=/bin/kill -HUP $MAINPID
-ExecStop=/bin/kill -TERM $MAINPID
+# Signal the parent first so it can stop capture, then drain dependent workers.
+KillSignal=SIGINT
+KillMode=mixed
+Environment=INDI_ALLSKY_SHUTDOWN_GRACE=180
+TimeoutStopSec=240
 RestartSec=5
 PrivateTmp=true
 UMask=0022
