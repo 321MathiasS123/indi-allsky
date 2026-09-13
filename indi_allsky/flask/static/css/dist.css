@@ -6714,6 +6714,9 @@
   .tw\:whitespace-nowrap {
     white-space: nowrap;
   }
+  .tw\:whitespace-pre-line {
+    white-space: pre-line;
+  }
   .tw\:whitespace-pre-wrap {
     white-space: pre-wrap;
   }

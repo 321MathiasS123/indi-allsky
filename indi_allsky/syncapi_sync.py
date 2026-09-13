@@ -53,15 +53,16 @@ def get_state(key, default=None):
     return json.loads(row.value) if row else default
 
 
-def set_state(key, value):
-    """Persist a local control/progress value, committing the current session."""
+def set_state(key, value, commit=True):
+    """Save local state; configuration saves may include it in their transaction."""
     row = db.session.get(models.IndiAllSkyDbStateTable, key)
     if row is None:
         row = models.IndiAllSkyDbStateTable(key=key)
         db.session.add(row)
     row.value = json.dumps(value)
     row.createDate = datetime.now()
-    db.session.commit()
+    if commit:
+        db.session.commit()
 
 
 def validate_destination(config, previous=None):

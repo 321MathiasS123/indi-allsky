@@ -92,7 +92,7 @@ def test_schedule_is_saved_without_network_and_cancel_pauses_it(sync_endpoint):
     assert client.get('/ajax/syncapi/run').get_json()['schedule']['settings'] == saved
     response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image']}, headers=headers)
     task_id = response.get_json()['task_id']
-    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 400
+    assert client.post('/ajax/syncapi/run', json=dict(payload, interval=6), headers=headers).status_code == 400
     # An outdated Cancel must not pause the schedule or cancel a newer run.
     response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id - 1}, headers=headers)
     assert response.get_json()['schedule']['settings']['enabled']
