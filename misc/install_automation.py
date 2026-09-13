@@ -47,9 +47,9 @@ def install(config_path, ha_address, enable_recovery=False, restart_indiserver=F
     user_units = Path.home() / '.config/systemd/user'
     user_units.mkdir(parents=True, exist_ok=True)
     helper = (source / 'service/indi-allsky-automation.service').read_text()
-    helper = helper.replace('%ALLSKY_DIRECTORY%', str(source)).replace('%ALLSKY_ETC%', str(config_path.parent))
     # A non-default flask.json must be identical in Gunicorn and this helper.
-    helper = helper.replace('WorkingDirectory=', 'Environment="INDI_ALLSKY_FLASK_CONFIG=' + str(config_path) + '"\nWorkingDirectory=')
+    helper = helper.replace('%ALLSKY_ETC%/flask.json', str(config_path))
+    helper = helper.replace('%ALLSKY_DIRECTORY%', str(source)).replace('%ALLSKY_ETC%', str(config_path.parent))
     (user_units / 'indi-allsky-automation.service').write_text(helper)
     dropin = user_units / (unit + '.d')
     dropin.mkdir(exist_ok=True)

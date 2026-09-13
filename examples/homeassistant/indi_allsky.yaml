@@ -123,9 +123,28 @@ automation:
           {{ state in ['idle', 'interrupted']
              or (state == 'complete' and age >= 21600)
              or (state == 'failed' and sync.get('reason') == 'connection' and age >= 1800) }}
+      - variables:
+          start_reply: {}
       - action: rest_command.allsky_sync_start
         data:
           request_id: 'ha-sync-{{ as_timestamp(now()) | int }}'
+        response_variable: start_reply
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: >-
+              {{ start_reply.get('status') in [400, 401, 403, 404, 501, 503]
+                 or (start_reply.get('content') is mapping and
+                     start_reply['content'].get('error') == 'configuration_not_applied') }}
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.allsky_automatic_sync
+          - action: persistent_notification.create
+            data:
+              notification_id: allsky_sync_attention
+              title: Allsky NAS sync could not start
+              message: Check the Pi's saved/applied SyncAPI configuration and automation credentials before enabling automatic sync again.
 
   - id: allsky_coordinated_capture_recovery
     alias: Allsky - recover stalled capture gracefully
@@ -155,7 +174,7 @@ automation:
              and status_reply['content'].get('capture', {}).get('stale', false) }}
       - variables:
           before: '{{ status_reply["content"]["capture"]["last_capture"] | float }}'
-          incident: '{{ status_reply["content"]["capture"]["last_capture"] | string }}'
+          incident: 'capture-{{ status_reply["content"]["capture"]["last_capture"] | float }}'
           original_boot: '{{ status_reply["content"]["boot_id"] }}'
       - condition: template
         value_template: '{{ incident != states("input_text.allsky_last_recovery_capture") }}'

@@ -217,10 +217,12 @@ def execute_recovery(store, services, current_boot, now=time.time):
             data['requests'][operation['action']] = dict(data['recovery'])
             store.write(data)
 
+    capture_stopped = False
     try:
         # systemctl waits for the stop job. The capture unit gives its parent a
         # bounded grace period before killing stuck processes in the cgroup.
         services.service('stop', services.capture)
+        capture_stopped = True
         if operation['action'] == 'recover':
             if services.restart_driver:
                 services.service('restart', services.driver, timeout=90)
@@ -232,5 +234,12 @@ def execute_recovery(store, services, current_boot, now=time.time):
             update(state='rebooting')
             services.reboot()
     except Exception:
+        # A rejected reboot or failed driver restart must not deliberately leave
+        # capture stopped. A failed restoration is still reported as a failed job.
+        if capture_stopped:
+            try:
+                services.service('start', services.capture, timeout=90)
+            except Exception:
+                pass
         update(state='failed', error='service_control_failed', finished=now())
         raise

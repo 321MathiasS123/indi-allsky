@@ -4,6 +4,7 @@ Description=Indi AllSky coordinated recovery
 [Service]
 Type=oneshot
 EnvironmentFile=%ALLSKY_ETC%/indi-allsky.env
+Environment="INDI_ALLSKY_FLASK_CONFIG=%ALLSKY_ETC%/flask.json"
 WorkingDirectory=%ALLSKY_DIRECTORY%
 ExecStart=%ALLSKY_DIRECTORY%/virtualenv/indi-allsky/bin/python3 misc/automation_recovery.py
 TimeoutStartSec=10min

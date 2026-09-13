@@ -113,6 +113,19 @@ def test_failed_stop_does_not_reboot_and_is_reported(store):
     assert store.read()['recovery']['error'] == 'service_control_failed'
 
 
+def test_denied_reboot_attempts_to_restore_capture(store):
+    automation.queue_recovery(store, 'reboot', 'incident', 'boot', 1000)
+    system = services()
+    def denied():
+        system.calls.append(('reboot',))
+        raise PermissionError('reboot denied')
+    system.reboot = denied
+    with pytest.raises(PermissionError):
+        automation.execute_recovery(store, system, 'boot', now=lambda: 1001)
+    assert system.calls == [('stop', 'capture.service'), ('reboot',), ('start', 'capture.service')]
+    assert store.read()['recovery']['state'] == 'failed'
+
+
 def test_dispatch_failure_releases_maintenance_but_remembers_request(store, monkeypatch):
     monkeypatch.setattr(automation, 'start_helper', lambda: (_ for _ in ()).throw(RuntimeError()))
     with pytest.raises(automation.ControlError, match='helper_unavailable'):
