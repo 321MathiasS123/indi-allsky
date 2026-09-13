@@ -182,13 +182,14 @@
                         </div>
                     </div>
                     <button id="syncapi-run-schedule-save" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:h-auto tw:py-3 tw:w-full tw:sm:w-auto tw:self-start" disabled>Save schedule and selection</button>
+                    <p id="syncapi-run-schedule-feedback" class="tw:text-xs tw:text-base-content/70" role="status" aria-live="polite"></p>
                 </fieldset>
+                <p id="syncapi-run-error" class="tw:text-error tw:text-xs tw:break-words" role="alert"></p>
                 <p class="tw:text-xs tw:text-base-content/60">Uses the connection settings above. Save the schedule and selected content here, separately from the page configuration. The schedule continues after this page closes or the Pi restarts. Cancel also pauses it; enable and save it to resume.</p>
                 <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
                     <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Schedule status</p>
                     <p id="syncapi-run-schedule-status" class="tw:text-xs tw:leading-relaxed tw:break-words" role="status" aria-live="polite">Loading schedule status…</p>
                 </div>
-                <p id="syncapi-run-error" class="tw:text-error tw:text-xs tw:break-words" role="alert"></p>
             </div>
         </div>
     </div>
