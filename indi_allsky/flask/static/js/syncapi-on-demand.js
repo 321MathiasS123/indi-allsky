@@ -25,7 +25,8 @@
         const save = document.getElementById('syncapi-run-schedule-save');
         const scheduleOutput = document.getElementById('syncapi-run-schedule-status');
         let state = {};
-        let busy = false;
+        let commandPending = false;
+        let requestRevision = 0;
         let initialized = false;
         let settingsRevision;
 
@@ -36,7 +37,9 @@
                 value.types.forEach(function (type) {
                     const label = document.createElement('label');
                     const input = document.createElement('input');
+                    label.className = 'tw:flex tw:items-center tw:gap-3 tw:p-3 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-field)] tw:text-xs tw:cursor-pointer';
                     input.type = 'checkbox';
+                    input.className = 'tw:checkbox tw:checkbox-primary tw:checkbox-sm tw:shrink-0';
                     input.value = type.id;
                     input.checked = type.selected;
                     label.appendChild(input);
@@ -61,10 +64,10 @@
                     scheduleOutput.textContent += ' Next action: ' + value.schedule.next_action.replace('T', ' ') + '.';
                 }
             }
-            start.disabled = busy || !value.enabled || value.active;
-            cancel.disabled = busy || !value.active || value.cancel_requested;
-            choices.disabled = busy || value.active;
-            controls.disabled = busy || !value.enabled || value.active;
+            start.disabled = commandPending || !value.enabled || value.active;
+            cancel.disabled = commandPending || !value.active || value.cancel_requested;
+            choices.disabled = commandPending || value.active;
+            controls.disabled = commandPending || !value.enabled || value.active;
             save.disabled = controls.disabled || !value.schedule;
             output.textContent = formatStatus(value);
         }
@@ -83,19 +86,26 @@
         }
 
         async function refresh(payload) {
-            // Serialize requests so an older poll cannot overwrite a command's
-            // response. Only a new command clears the previous action error.
-            if (busy) return;
-            busy = true;
-            render(state);
-            if (payload) error.textContent = '';
-            try {
-                state = await request(payload);
-            } catch (exception) {
-                error.textContent = exception.message;
-            } finally {
-                busy = false;
+            // Polls leave the controls usable. A command can overtake an older
+            // poll; its revision prevents that poll from restoring stale state
+            // or errors. Only commands lock controls and clear action errors.
+            if (commandPending) return;
+            const revision = ++requestRevision;
+            if (payload) {
+                commandPending = true;
                 render(state);
+                error.textContent = '';
+            }
+            try {
+                const value = await request(payload);
+                if (revision === requestRevision) state = value;
+            } catch (exception) {
+                if (revision === requestRevision) error.textContent = exception.message;
+            } finally {
+                if (revision === requestRevision) {
+                    commandPending = false;
+                    render(state);
+                }
             }
         }
 
