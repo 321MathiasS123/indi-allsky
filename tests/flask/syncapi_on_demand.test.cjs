@@ -99,3 +99,78 @@ test('schedule saves explicitly, preserves edits during polls, and reflects canc
     assert.equal(requests.filter(r => r.options.method === 'POST').length, 1);
     assert.ok(requests.every(r => r.url === panel.dataset.url));
 });
+
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return {promise, resolve};
+}
+
+for (const active of [false, true]) {
+    test(`slow polling preserves controls and edits while ${active ? 'running' : 'idle'}`, async () => {
+        const {nodes, document, panel} = harness();
+        const polls = [], pending = deferred();
+        const state = {enabled: true, active, task_id: 42, cancel_requested: false,
+            types: [{id: 'image', label: 'Images', selected: true}],
+            schedule: {settings: {enabled: true, interval: 10, delay: 3, types: ['image'], revision: 'saved'}}};
+        const response = {ok: true, json: async () => state};
+        let reads = 0;
+        await mount(panel, document, async () => ++reads === 1 ? response : pending.promise, fn => polls.push(fn));
+        const controls = ['start', 'cancel', 'types', 'schedule-controls', 'schedule-save'];
+        const disabled = controls.map(key => nodes[key].disabled);
+        nodes['schedule-interval'].value = '7';
+        nodes.types.querySelectorAll('input')[0].checked = false;
+        const poll = polls.shift()();
+        assert.deepEqual(controls.map(key => nodes[key].disabled), disabled);
+        assert.equal(nodes[active ? 'cancel' : 'start'].disabled, false);
+        pending.resolve(response);
+        await poll;
+        assert.deepEqual(controls.map(key => nodes[key].disabled), disabled);
+        assert.equal(nodes['schedule-interval'].value, '7');
+        assert.equal(nodes.types.querySelectorAll('input')[0].checked, false);
+    });
+}
+
+for (const staleFails of [false, true]) {
+    for (const pollFinishesFirst of [false, true]) {
+        test(`cancel overtakes a poll (${staleFails ? 'failed' : 'successful'}, finishes ${pollFinishesFirst ? 'before' : 'after'} command)`, async () => {
+            const {nodes, document, panel} = harness();
+            const polls = [], requests = [], pendingPoll = deferred(), pendingCommand = deferred();
+            const running = {enabled: true, active: true, task_id: 42,
+                types: [{id: 'image', label: 'Images', selected: true}],
+                schedule: {settings: {enabled: true, interval: 10, delay: 3, types: ['image'], revision: 'old'}}};
+            const response = value => ({ok: true, json: async () => value});
+            const fetcher = async (url, options) => {
+                requests.push(options);
+                if (options.body) return pendingCommand.promise;
+                return requests.length === 1 ? response(running) : pendingPoll.promise;
+            };
+            await mount(panel, document, fetcher, fn => polls.push(fn));
+            const poll = polls.shift()();
+            const command = nodes.cancel.handlers.click();
+            assert.equal(requests.length, 3, 'Cancel is sent without waiting for the poll');
+            assert.deepEqual(JSON.parse(requests[2].body), {action: 'cancel', task_id: 42});
+            assert.equal(nodes.cancel.disabled, true);
+            await nodes.cancel.handlers.click();
+            assert.equal(requests.length, 3, 'A pending command cannot be submitted twice');
+            const settlePoll = async () => {
+                pendingPoll.resolve(staleFails ? {ok: false, json: async () => ({error: 'Old poll failed'})} : response(running));
+                await poll;
+            };
+            if (pollFinishesFirst) {
+                await settlePoll();
+                assert.equal(nodes.cancel.disabled, true, 'A stale poll cannot release the command lock');
+                await polls.shift()();
+                assert.equal(requests.length, 3, 'Polling waits while a command is pending');
+            }
+            pendingCommand.resolve(response({...running, cancel_requested: true,
+                schedule: {settings: {...running.schedule.settings, enabled: false, revision: 'cancelled'}}}));
+            await command;
+            if (!pollFinishesFirst) await settlePoll();
+            assert.equal(nodes.cancel.disabled, true, 'A stale poll cannot undo cancellation');
+            assert.equal(nodes['schedule-enabled'].checked, false);
+            assert.equal(nodes.error.textContent, '');
+            assert.match(nodes.status.textContent, /Cancellation requested/);
+        });
+    }
+}

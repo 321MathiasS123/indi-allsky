@@ -3,46 +3,48 @@
 
         <!-- SyncAPI Main Settings Card -->
         <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
-            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
-                <div class="tw:flex tw:items-center tw:justify-between">
+            <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4">
+                <div class="tw:flex tw:flex-wrap tw:items-center tw:justify-between tw:gap-2">
                     <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Remote SyncAPI Configuration</span>
                     <a href="https://github.com/aaronwmorris/indi-allsky/wiki/SyncAPI-Setup" class="tw:link tw:link-info tw:text-xs tw:no-underline" target="_blank">SyncAPI Wiki</a>
                 </div>
 
                 <!-- Enable SyncAPI -->
-                <div class="tw:flex tw:flex-col sm:tw:flex-row sm:tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:sm:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__ENABLE.label.text }}</span>
                         <span class="tw:text-[0.625rem] tw:text-base-content/50">Enable synchronization with a remote indi-allsky instance.</span>
                     </div>
-                    <div class="tw:flex tw:flex-col tw:items-start sm:tw:items-end">
+                    <div class="tw:flex tw:flex-col tw:items-start tw:sm:items-end">
                         {{ form_config.SYNCAPI__ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
                         <div id="SYNCAPI__ENABLE-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                 </div>
 
                 <!-- Synchronization mode -->
-                <div class="tw:flex tw:flex-col tw:gap-2">
-                    <label for="SYNCAPI__MODE">{{ form_config.SYNCAPI__MODE.label.text }}</label>
-                    {{ form_config.SYNCAPI__MODE(class='tw:select tw:select-bordered tw:w-full') }}
-                    <div id="SYNCAPI__MODE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
-                    <p class="tw:text-xs">Turn Enable Sync API off to disable synchronization. In On demand mode, press Sync now or explicitly enable an availability schedule below. Saving a mode change reloads the service.</p>
+                <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-4 tw:gap-2 tw:md:gap-4 tw:items-center tw:py-3 tw:border-b tw:border-base-300/60">
+                    <label for="SYNCAPI__MODE" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__MODE.label.text }}</label>
+                    <div class="tw:md:col-span-3 tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
+                        {{ form_config.SYNCAPI__MODE(class='tw:select tw:select-bordered tw:select-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                        <div id="SYNCAPI__MODE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                        <p class="tw:text-xs tw:text-base-content/60">In On demand mode, use Sync now or enable the availability schedule below. Save and apply a mode change first. Turn Enable Sync API off to disable all synchronization.</p>
+                    </div>
                 </div>
 
                 <!-- Base URL -->
-                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-2 md:tw:gap-4 tw:items-center tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-4 tw:gap-2 tw:md:gap-4 tw:items-center tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__BASEURL.label.text }}</span>
                         <span class="tw:text-[0.625rem] tw:text-base-content/40">Base URL for remote instance</span>
                     </div>
-                    <div class="md:tw:col-span-3 tw:flex tw:flex-col">
+                    <div class="tw:md:col-span-3 tw:flex tw:flex-col">
                         {{ form_config.SYNCAPI__BASEURL(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
                         <div id="SYNCAPI__BASEURL-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                 </div>
 
                 <!-- Credentials (Username & API Key) -->
-                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__USERNAME.label.text }}</span>
                         {{ form_config.SYNCAPI__USERNAME(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
@@ -56,12 +58,12 @@
                 </div>
 
                 <!-- Cert Bypass -->
-                <div class="tw:flex tw:flex-col sm:tw:flex-row sm:tw:items-center tw:justify-between tw:gap-4 tw:py-3">
+                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:sm:items-center tw:justify-between tw:gap-4 tw:py-3">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__CERT_BYPASS.label.text }}</span>
                         <span class="tw:text-[0.625rem] tw:text-base-content/50">Bypass SSL certificate validation for self-signed certificates</span>
                     </div>
-                    <div class="tw:flex tw:flex-col tw:items-start sm:tw:items-end">
+                    <div class="tw:flex tw:flex-col tw:items-start tw:sm:items-end">
                         {{ form_config.SYNCAPI__CERT_BYPASS(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
                         <div id="SYNCAPI__CERT_BYPASS-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
@@ -72,11 +74,11 @@
 
         <!-- Sync Policy & Transfers Card -->
         <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
-            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
+            <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4">
                 <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Automatic Upload Frequency & Shared Timeouts</span>
 
                 <!-- Upload Image & Upload Panorama -->
-                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__UPLOAD_IMAGE.label.text }}</span>
                         {{ form_config.SYNCAPI__UPLOAD_IMAGE(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
@@ -92,7 +94,7 @@
                 </div>
 
                 <!-- Connect Timeout & Transfer Timeout -->
-                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__CONNECT_TIMEOUT.label.text }}</span>
                         {{ form_config.SYNCAPI__CONNECT_TIMEOUT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
@@ -107,19 +109,19 @@
                 </div>
 
                 <!-- Upload Video Toggle -->
-                <div class="tw:flex tw:flex-col sm:tw:flex-row sm:tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
+                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:sm:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__UPLOAD_VIDEO.label.text }}</span>
                         <span class="tw:text-[0.625rem] tw:text-base-content/50">Timelapses, star trails, and keograms are always synced when enabled</span>
                     </div>
-                    <div class="tw:flex tw:flex-col tw:items-start sm:tw:items-end">
+                    <div class="tw:flex tw:flex-col tw:items-start tw:sm:items-end">
                         {{ form_config.SYNCAPI__UPLOAD_VIDEO(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
                         <div id="SYNCAPI__UPLOAD_VIDEO-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                 </div>
 
                 <!-- Post S3 & Empty File -->
-                <div class="tw:grid tw:grid-cols-1 sm:tw:grid-cols-2 tw:gap-4 tw:pt-2">
+                <div class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:gap-4 tw:pt-2">
                     <div class="tw:flex tw:items-center tw:justify-between tw:p-3 tw:bg-base-100 tw:rounded-[var(--radius-box)] tw:border tw:border-base-300">
                         <div class="tw:flex tw:flex-col">
                             <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.SYNCAPI__POST_S3.label.text }}</span>
@@ -141,39 +143,52 @@
             </div>
         </div>
 
-        <div id="syncapi-run-panel" class="tw:card tw:bg-base-200 tw:border tw:border-base-300"
+        <div id="syncapi-run-panel" class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm"
              data-url="{{ url_for('indi_allsky.ajax_syncapi_run_view') }}" data-csrf="{{ csrf_token() }}">
-            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
-                <h3>On-demand synchronization</h3>
-                <p>Save and apply On demand mode first. Sync now sends pending local files, including data older than 30 days, and skips recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
-                <p class="tw:text-xs">This archive run sends actual files of the selected types, without automatic image sampling or waiting for S3. Capture continues and you can close this page. An enabled schedule starts another run after a connection interruption.</p>
-                <fieldset id="syncapi-run-types" class="tw:flex tw:flex-wrap tw:gap-4">
-                    <legend>Include in manual runs and saved schedule</legend>
+            <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4">
+                <h3 class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">On-demand synchronization</h3>
+                <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run.</p>
+                <p class="tw:text-xs tw:text-base-content/60">The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page.</p>
+                <fieldset id="syncapi-run-types" class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-3 tw:gap-2 tw:min-w-0">
+                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Content for manual runs and the saved schedule</legend>
                 </fieldset>
-                <div class="tw:flex tw:gap-2">
-                    <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary" disabled>Sync now</button>
-                    <button id="syncapi-run-cancel" type="button" class="tw:btn" disabled>Cancel</button>
+                <div class="tw:flex tw:flex-col tw:sm:flex-row tw:gap-2">
+                    <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Sync now</button>
+                    <button id="syncapi-run-cancel" type="button" class="tw:btn tw:btn-outline tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Cancel</button>
                 </div>
-                <p id="syncapi-run-status" role="status" aria-live="polite">Loading synchronization status…</p>
-                <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4" disabled>
-                    <legend>Sync when the receiver is available</legend>
-                    <label class="tw:flex tw:items-center tw:gap-2">
-                        <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:checkbox tw:checkbox-primary">
-                        Automatically sync when available
+                <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
+                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Transfer status</p>
+                    <p id="syncapi-run-status" class="tw:text-xs tw:leading-relaxed tw:break-words" role="status" aria-live="polite">Loading synchronization status…</p>
+                </div>
+                <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2" disabled>
+                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Availability schedule</legend>
+                    <label for="syncapi-run-schedule-enabled" class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-y tw:border-base-300/60 tw:cursor-pointer">
+                        <span class="tw:flex tw:flex-col tw:gap-1">
+                            <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Automatically sync when available</span>
+                            <span class="tw:text-xs tw:text-base-content/60">Check the receiver quietly and start a run when it is ready.</span>
+                        </span>
+                        <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm tw:shrink-0">
                     </label>
-                    <div class="tw:flex tw:flex-wrap tw:gap-4">
-                        <label>Check every (minutes)
-                            <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="10" required class="tw:input tw:input-bordered tw:w-full">
-                        </label>
-                        <label>Wait after availability (minutes)
-                            <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="3" required class="tw:input tw:input-bordered tw:w-full">
-                        </label>
+                    <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4">
+                        <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
+                            <label for="syncapi-run-schedule-interval" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Check every (minutes)</label>
+                            <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="10" required aria-describedby="syncapi-run-interval-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
+                            <p id="syncapi-run-interval-help" class="tw:text-xs tw:text-base-content/60">Time between receiver checks, and before checking again after a run ends.</p>
+                        </div>
+                        <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
+                            <label for="syncapi-run-schedule-delay" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Wait after availability (minutes)</label>
+                            <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="3" required aria-describedby="syncapi-run-delay-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
+                            <p id="syncapi-run-delay-help" class="tw:text-xs tw:text-base-content/60">Extra startup time before checking again and sending files. Use 0 to start immediately.</p>
+                        </div>
                     </div>
-                    <button id="syncapi-run-schedule-save" type="button" class="tw:btn" disabled>Save schedule and selection</button>
+                    <button id="syncapi-run-schedule-save" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:h-auto tw:py-3 tw:w-full tw:sm:w-auto tw:self-start" disabled>Save schedule and selection</button>
                 </fieldset>
-                <p class="tw:text-xs">Checks use the SyncAPI URL, account, API key and certificate setting above. The schedule is saved separately with the selected content types and continues after this page closes or the Pi restarts. Cancel also pauses the schedule; enable and save it to resume.</p>
-                <p id="syncapi-run-schedule-status" role="status" aria-live="polite"></p>
-                <p id="syncapi-run-error" class="tw:text-error" role="alert"></p>
+                <p class="tw:text-xs tw:text-base-content/60">Uses the connection settings above. Save the schedule and selected content here, separately from the page configuration. The schedule continues after this page closes or the Pi restarts. Cancel also pauses it; enable and save it to resume.</p>
+                <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
+                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Schedule status</p>
+                    <p id="syncapi-run-schedule-status" class="tw:text-xs tw:leading-relaxed tw:break-words" role="status" aria-live="polite">Loading schedule status…</p>
+                </div>
+                <p id="syncapi-run-error" class="tw:text-error tw:text-xs tw:break-words" role="alert"></p>
             </div>
         </div>
     </div>
