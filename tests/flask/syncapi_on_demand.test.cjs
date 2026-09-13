@@ -15,7 +15,9 @@ function harness() {
     nodes['schedule-enabled'].checked = false;
     nodes['schedule-interval'].value = '10';
     nodes['schedule-delay'].value = '3';
-    const document = {getElementById: id => nodes[id.replace('syncapi-run-', '')],
+    const document = {handlers: {}, addEventListener(event, handler) { this.handlers[event] = handler; },
+        dispatchEvent(event) { return this.handlers[event.type](event); },
+        getElementById: id => nodes[id.replace('syncapi-run-', '')],
         createElement: element, createTextNode: text => ({textContent: text})};
     const panel = {dataset: {url: '/indi-allsky/ajax/syncapi/run', csrf: 'token'}};
     return {nodes, document, panel};
@@ -29,6 +31,55 @@ test('progress describes saved results, cutoff and pending cancellation', () => 
     assert.match(text, /2026-09-13 12:00:00/);
     assert.doesNotMatch(text, /157618/);
     assert.match(text, /Cancellation requested/);
+});
+
+for (const runState of ['cancelled', 'interrupted', 'failed', 'complete']) {
+    test(`an enabled schedule takes priority over the previous ${runState} run`, () => {
+        const state = {enabled: true, active: false, state: runState,
+            message: 'Synchronization stopped. Press Sync now to continue.', completed: 1832, total: 115977,
+            skipped: 0, files: 2749, bytes: 1666711552,
+            schedule: {settings: {enabled: true}, message: 'Waiting for the next availability check.',
+                next_action: '2026-09-13T22:17:20+02:00'}};
+        const text = formatStatus(state);
+        assert.match(text, /^Waiting for the next availability check\.\nNext check:/);
+        assert.match(text, /Previous run: Synchronization stopped\./);
+        assert.match(text, /1832 of 115977/);
+        assert.doesNotMatch(text, /Press Sync now/);
+        state.schedule.settings.enabled = false;
+        assert.match(formatStatus(state), /^Synchronization stopped\. Press Sync now/);
+        assert.doesNotMatch(formatStatus(state), /Previous run/);
+    });
+}
+
+test('a successful configuration save immediately refreshes status and overtakes an older poll', async () => {
+    const {nodes, document, panel} = harness();
+    const polls = [], oldPoll = deferred();
+    let reads = 0;
+    const cancelled = {enabled: true, active: false, state: 'cancelled',
+        message: 'Synchronization cancelled. Press Sync now to continue.',
+        schedule: {settings: {enabled: false}, message: 'Paused by Cancel.'}};
+    const applying = {...cancelled, schedule: {settings: {enabled: true}, state: 'applying',
+        message: 'Schedule saved. Waiting for indi-allsky to apply the configuration.'}};
+    const response = state => ({ok: true, json: async () => state});
+    const fetcher = async () => {
+        reads++;
+        if (reads === 2) return oldPoll.promise;
+        return response(reads === 1 ? cancelled : applying);
+    };
+    await mount(panel, document, fetcher, fn => polls.push(fn));
+    const pending = polls.shift()();
+    nodes['schedule-enabled'].checked = true;
+    nodes['schedule-interval'].value = '7';
+    await document.dispatchEvent({type: 'indi-allsky:config-saved'});
+    assert.equal(reads, 3, 'Saving refreshes immediately without waiting five seconds');
+    assert.match(nodes.status.textContent, /^Schedule saved\./);
+    assert.doesNotMatch(nodes.status.textContent, /Press Sync now/);
+    oldPoll.resolve(response(cancelled));
+    await pending;
+    assert.match(nodes.status.textContent, /^Schedule saved\./);
+    assert.equal(nodes['schedule-enabled'].checked, true);
+    assert.equal(nodes['schedule-interval'].value, '7');
+    assert.equal(polls.length, 1, 'Saving does not create an extra polling loop');
 });
 
 test('polling only reads local status; start and cancel are explicit CSRF-protected requests', async () => {

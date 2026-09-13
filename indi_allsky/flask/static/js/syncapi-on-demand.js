@@ -2,17 +2,27 @@
     'use strict';
 
     function formatStatus(state) {
-        const parts = [state.message || state.state || 'Idle'];
+        const scheduleParts = [];
+        if (state.schedule) {
+            if (state.schedule.message) scheduleParts.push(state.schedule.message);
+            if (state.schedule.next_action) scheduleParts.push('Next check: ' + state.schedule.next_action.replace('T', ' ') + '.');
+        }
+        const scheduled = !state.active && state.enabled && state.schedule && state.schedule.settings && state.schedule.settings.enabled;
+        let message = state.message || state.state || 'Idle';
+        if (scheduled && ['cancelled', 'interrupted', 'failed', 'complete'].includes(state.state)) {
+            // The saved run is history; the schedule now determines how to
+            // continue. Keep its result without obsolete manual-start advice.
+            message = 'Previous run: ' + message.replace(/ Press Sync now[^.]*\./g, '')
+                .replace(' The schedule will check the receiver again.', '');
+        }
+        const parts = scheduled ? scheduleParts.concat(message) : [message];
         if (typeof state.completed === 'number') {
             parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
         }
         if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
         if (state.cancel_requested) parts.push('Cancellation requested; waiting for the current transfer to finish or time out.');
         if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
-        if (state.schedule) {
-            if (state.schedule.message) parts.push(state.schedule.message);
-            if (state.schedule.next_action) parts.push('Next check: ' + state.schedule.next_action.replace('T', ' ') + '.');
-        }
+        if (!scheduled) parts.push(...scheduleParts);
         return parts.join('\n');
     }
 
@@ -106,6 +116,8 @@
         cancel.addEventListener('click', function () {
             return refresh({action: 'cancel', task_id: state.task_id});
         });
+        // A successful configuration save should not wait for the next poll.
+        document.addEventListener('indi-allsky:config-saved', function () { return refresh(); });
 
         async function poll() {
             // This endpoint reads the Pi's saved status; polling never contacts

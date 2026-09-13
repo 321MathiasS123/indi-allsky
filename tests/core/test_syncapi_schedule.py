@@ -191,9 +191,13 @@ def test_schedule_survives_restart_but_waits_for_applied_config(schedule_env):
     ctx.enable()
     ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(level='test', note='new', data=deepcopy(ctx.env.config)))
     ctx.env.db.session.commit()
-    ctx.tick(600)
+    result = ctx.tick(600)
+    assert result['state'] == 'applying'
+    assert 'Waiting for indi-allsky to apply the configuration' in result['message']
+    assert 'next_action' not in result
     assert not ctx.probes
-    ctx.tick(config_id=2)
+    result = ctx.tick(config_id=2)
+    assert result['state'] == 'waiting' and 'next_action' in result
     ctx.tick(599, config_id=2)
     assert not ctx.probes
     ctx.tick(1, config_id=2)
@@ -201,6 +205,33 @@ def test_schedule_survives_restart_but_waits_for_applied_config(schedule_env):
     restarted = ctx.module.SyncApiScheduler()
     restarted.tick(ctx.env.config, 2)
     assert ctx.module.settings()['enabled'] and ctx.module.status()['state'] == 'waiting'
+
+
+def test_reenabled_schedule_reports_applying_before_and_after_service_tick(schedule_env):
+    ctx = schedule_env
+    ctx.enable()
+    ctx.module.pause('Paused by Cancel.')
+    ctx.tick()
+    ctx.module.save_settings(ctx.env.config, dict(enabled=True, interval=5, delay=3, types=['image']))
+    ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(level='test', note='reenabled', data=deepcopy(ctx.env.config)))
+    ctx.env.db.session.commit()
+    result = ctx.module.status()
+    assert result['state'] == 'applying'
+    assert 'Waiting for indi-allsky to apply the configuration' in result['message']
+    assert 'next_action' not in result
+    assert ctx.tick()['message'] == result['message']
+    assert ctx.tick(config_id=2)['state'] == 'waiting'
+    assert ctx.probes == [] and ctx.env.sync.active_task() is None
+
+
+def test_applied_automatic_mode_still_explains_why_schedule_cannot_run(schedule_env):
+    ctx = schedule_env
+    ctx.env.config['SYNCAPI']['MODE'] = 'automatic'
+    ctx.enable()
+    result = ctx.module.status()
+    assert result['state'] == 'disabled'
+    assert result['message'] == 'Save and apply On demand mode to use the schedule.'
+    assert ctx.probes == []
 
 
 def test_stuck_probe_does_not_accumulate_threads(schedule_env):
