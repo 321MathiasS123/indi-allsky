@@ -1,6 +1,7 @@
 """Availability scheduling against real source/receiver databases, with a fake clock."""
 
 from copy import deepcopy
+from datetime import timedelta
 import importlib
 import logging
 from types import SimpleNamespace
@@ -209,6 +210,21 @@ def test_stuck_probe_does_not_accumulate_threads(schedule_env):
     for _ in range(20):
         ctx.tick(600)
     assert len(ctx.probes) == 1 and ctx.env.sync.active_task() is None
+
+
+def test_configuration_selection_matches_service_after_clock_adjustment(schedule_env):
+    ctx = schedule_env
+    ctx.env.asset()
+    ctx.enable()
+    current = ctx.env.db.session.get(ctx.env.models.IndiAllSkyDbConfigTable, 1)
+    # The service chooses by timestamp, which need not match insertion order
+    # after a clock correction. Its applied configuration must remain usable.
+    ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(
+        level='test', note='older timestamp', data=deepcopy(ctx.env.config),
+        createDate=current.createDate - timedelta(days=1)))
+    ctx.env.db.session.commit()
+    ctx.tick(600, config_id=1)
+    assert len(ctx.probes) == 1
 
 
 def test_probe_error_is_reported_once_and_pauses(schedule_env, caplog):
