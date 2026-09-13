@@ -886,12 +886,16 @@ class IndiAllSky(object):
 
 
                 logger.warning('Shutting down')
-                self._stopSyncWorker()
+                # Let the in-flight transfer finish while capture and the other
+                # workers drain. A slow NAS must not delay the camera stop request.
+                if self.sync_worker and self.sync_worker.is_alive():
+                    self.sync_worker.stop()
                 self._stopCaptureWorker()  # stop this first so image queue is cleared out
                 self._stopImageWorker()
                 self._stopVideoWorker()
                 self._stopSensorWorker()
                 self._stopFileUploadWorkers()
+                self._stopSyncWorker()
 
 
                 with app.app_context():
