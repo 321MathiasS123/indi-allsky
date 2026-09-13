@@ -52,3 +52,22 @@ def test_invalid_ha_address_does_not_modify_config(installer):
     with pytest.raises(ValueError):
         module.install(config, '192.168.1.0/24')
     assert config.read_bytes() == before and calls == []
+
+
+def test_helper_uses_installed_config_even_if_environment_differs(tmp_path, monkeypatch):
+    import runpy
+    import sys
+    from indi_allsky import automation
+    config = tmp_path / 'custom.json'
+    config.write_text(json.dumps({'AUTOMATION_STATE_DIR': str(tmp_path / 'journal'),
+                                 'ALLSKY_SERVICE_NAME': 'custom-camera.service'}))
+    source = Path(__file__).resolve().parents[2] / 'misc/automation_recovery.py'
+    monkeypatch.setattr(sys, 'argv', [str(source), '--config', str(config)])
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setenv('INDI_ALLSKY_FLASK_CONFIG', str(tmp_path / 'wrong.json'))
+    monkeypatch.setattr(automation, 'boot_id', lambda: 'boot')
+    calls = []
+    monkeypatch.setattr(automation, 'execute_recovery', lambda store, services, boot:
+        calls.append((store.folder, services.capture, boot)))
+    runpy.run_path(str(source), run_name='__main__')
+    assert calls == [(tmp_path / 'journal', 'custom-camera.service', 'boot')]
