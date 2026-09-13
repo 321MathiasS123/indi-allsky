@@ -147,12 +147,14 @@ class requests_syncapi_v1(GenericFileTransfer):
         try:
             # put allows overwrites
             request_method = self.client.get if kwargs.get('lookup') else self.client.put
+            request_options = {'allow_redirects': False} if kwargs.get('availability_probe') else {}
             r = request_method(
                 self.url,
                 data=mp_enc,
                 headers=headers,
                 verify=self.verify,
-                timeout=(self.connect_timeout, self.timeout)
+                timeout=(self.connect_timeout, self.timeout),
+                **request_options,
             )
         except socket.gaierror as e:
             raise ConnectionFailure(str(e)) from e
@@ -172,6 +174,24 @@ class requests_syncapi_v1(GenericFileTransfer):
             f_metadata.close()
             f_media.close()
 
+
+        if kwargs.get('availability_probe'):
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise ConnectionFailure('Receiver is still starting or temporarily unavailable.')
+            try:
+                response = r.json()
+            except ValueError:
+                response = None
+            if r.status_code in (401, 403):
+                raise AuthenticationFailure('Receiver authentication failed')
+            if isinstance(response, dict):
+                if r.status_code == 200 and type(response.get('id')) is int and response['id'] > 0:
+                    return response
+                if r.status_code == 400 and response.get('error') == 'camera_missing':
+                    return response
+                if response.get('error') == 'authentication failed':
+                    raise AuthenticationFailure('Receiver authentication failed')
+            raise TransferFailure('Unexpected receiver readiness response (HTTP {0:d}).'.format(r.status_code))
 
         if r.status_code >= 400:
             if self.quiet:

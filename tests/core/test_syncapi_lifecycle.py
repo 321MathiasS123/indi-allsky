@@ -12,7 +12,7 @@ def main_service(env):
     source = Path(__file__).resolve().parents[2] / 'indi_allsky/allsky.py'
     tree = ast.parse(source.read_text(encoding='utf-8'))
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'IndiAllSky')
-    methods = {'_queueManualTasks', '_flushOldTasks', '_startSyncWorker', '_stopSyncWorker', '_expireOrphanedTasks'}
+    methods = {'_queueManualTasks', '_flushOldTasks', '_startSyncWorker', '_stopSyncWorker', '_expireOrphanedTasks', '_scheduleSync'}
     cls.body = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in methods]
     namespace = dict(__name__='indi_allsky.allsky', __package__='indi_allsky', db=env.db, app=env.app,
                      datetime=datetime, timedelta=timedelta, or_=or_, logger=logging.getLogger('indi_allsky'),
@@ -21,6 +21,9 @@ def main_service(env):
     exec(compile(ast.Module(body=[cls], type_ignores=[]), str(source), 'exec'), namespace)
     main = namespace['IndiAllSky']()
     main.sync_worker = main.sync_task_id = None
+    main.sync_scheduler = None
+    main.config = env.config
+    main._config_obj = SimpleNamespace(config_id=1)
     return main
 
 
@@ -56,9 +59,38 @@ def test_dead_worker_reports_failure_without_restart(sync_env):
     task = env.sync.request_sync(env.config, ['image'])
     task.setRunning()
     main.sync_worker = SimpleNamespace(task_id=task.id, is_alive=lambda: False)
+    env.sync.set_state(env.sync.STATUS_KEY, {'reason': 'connection'})
     main._startSyncWorker()
     env.db.session.refresh(task)
     assert task.state == env.models.TaskQueueState.FAILED
     assert env.sync.status()['state'] == 'failed'
+    assert env.sync.status()['reason'] == 'unexpected'
     assert main.sync_worker is None
     assert env.calls == []
+
+
+def test_main_service_admits_scheduled_task_through_existing_queue(sync_env, monkeypatch):
+    import importlib
+    env = sync_env
+    schedule = importlib.import_module('indi_allsky.syncapi_schedule')
+    main = main_service(env)
+    env.asset()
+    schedule.save_settings(env.config, dict(enabled=True, interval=1, delay=0, types=['image']))
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(schedule, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(schedule, 'ReceiverProbe', lambda *args: SimpleNamespace(
+        start=lambda: None, is_alive=lambda: False, result=('ready', 'Ready')))
+    main._scheduleSync()
+    clock.now = 60
+    main._scheduleSync()
+    main._scheduleSync()
+    task = env.sync.active_task()
+    main._queueManualTasks()
+    assert main.sync_task_id == task.id and task.state == env.models.TaskQueueState.QUEUED
+    starts = []
+    monkeypatch.setattr(env.sync, 'SyncApiSyncWorker', lambda app, task_id: SimpleNamespace(
+        start=lambda: starts.append(task_id), is_alive=lambda: True))
+    main._startSyncWorker()
+    main._scheduleSync()
+    main._startSyncWorker()
+    assert starts == [task.id] and env.calls == []

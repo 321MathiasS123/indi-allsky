@@ -78,3 +78,38 @@ def test_waits_for_configuration_reload(sync_endpoint):
     assert response.status_code == 400
     assert 'reload' in response.get_json()['error']
     assert env.calls == []
+
+
+def test_schedule_is_saved_without_network_and_cancel_pauses_it(sync_endpoint):
+    env, client, _, headers = sync_endpoint
+    payload = dict(action='schedule', enabled=True, interval=5, delay=2, types=['image', 'rawimage'])
+    response = client.post('/ajax/syncapi/run', json=payload, headers=headers)
+    assert response.status_code == 200
+    saved = response.get_json()['schedule']['settings']
+    assert saved['enabled'] and saved['interval'] == 5 and saved['delay'] == 2
+    assert saved['types'] == ['image', 'rawimage']
+    assert env.calls == [] and env.sync.active_task() is None
+    assert client.get('/ajax/syncapi/run').get_json()['schedule']['settings'] == saved
+    response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image']}, headers=headers)
+    task_id = response.get_json()['task_id']
+    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 400
+    # An outdated Cancel must not pause the schedule or cancel a newer run.
+    response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id - 1}, headers=headers)
+    assert response.get_json()['schedule']['settings']['enabled']
+    response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id}, headers=headers)
+    result = response.get_json()
+    assert result['cancel_requested'] and not result['schedule']['settings']['enabled']
+    assert result['schedule']['state'] == 'paused' and env.calls == []
+
+
+def test_schedule_requires_csrf_admin_and_applied_config(sync_endpoint):
+    env, client, user, headers = sync_endpoint
+    payload = dict(action='schedule', enabled=True, interval=10, delay=3, types=['image'])
+    assert client.post('/ajax/syncapi/run', json=payload).status_code == 400
+    env.sync.set_state('CONFIG_ID', 0)
+    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 400
+    env.sync.set_state('CONFIG_ID', 1)
+    user.admin = False
+    env.db.session.commit()
+    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 403
+    assert env.calls == []

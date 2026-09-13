@@ -6,9 +6,10 @@ function harness() {
     function element() {
         return {children: [], handlers: {}, appendChild(child) { this.children.push(child); },
             addEventListener(event, handler) { this.handlers[event] = handler; },
-            querySelectorAll() { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && node.checked); }};
+            querySelectorAll(selector) { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
-    const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error'].map(key => [key, element()]));
+    const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error', 'schedule-controls',
+        'schedule-enabled', 'schedule-interval', 'schedule-delay', 'schedule-save', 'schedule-status'].map(key => [key, element()]));
     const document = {getElementById: id => nodes[id.replace('syncapi-run-', '')],
         createElement: element, createTextNode: text => ({textContent: text})};
     const panel = {dataset: {url: '/indi-allsky/ajax/syncapi/run', csrf: 'token'}};
@@ -65,4 +66,36 @@ test('failed start remains visible and does not trigger automatic retry', async 
     assert.equal(requests[2].method, undefined);
     assert.equal(nodes.error.textContent, 'Apply configuration first');
     assert.equal(nodes.start.disabled, false);
+});
+
+test('schedule saves explicitly, preserves edits during polls, and reflects cancellation', async () => {
+    const {nodes, document, panel} = harness();
+    const requests = [], polls = [];
+    let saved = {enabled: false, interval: 10, delay: 3, types: ['image'], revision: ''};
+    const fetcher = async (url, options) => {
+        requests.push({url, options});
+        if (options.body) saved = {...JSON.parse(options.body), revision: 'saved'};
+        return {ok: true, json: async () => ({enabled: true, active: false,
+            schedule: {settings: saved, message: 'Waiting', next_action: '2026-09-13T20:15:00+02:00'},
+            types: [{id: 'image', label: 'Images', selected: true}, {id: 'rawimage', label: 'RAW', selected: false}]})};
+    };
+    await mount(panel, document, fetcher, fn => polls.push(fn));
+    assert.equal(nodes['schedule-interval'].value, '10');
+    nodes['schedule-enabled'].checked = true;
+    nodes['schedule-interval'].value = '5';
+    nodes['schedule-delay'].value = '0';
+    nodes.types.querySelectorAll('input')[1].checked = true;
+    await polls.shift()();
+    assert.equal(nodes['schedule-interval'].value, '5');
+    assert.equal(nodes.types.querySelectorAll('input')[1].checked, true);
+    await nodes['schedule-save'].handlers.click();
+    assert.deepEqual(JSON.parse(requests[2].options.body), {action: 'schedule', enabled: true,
+        interval: 5, delay: 0, types: ['image', 'rawimage']});
+    assert.equal(requests[2].options.headers['X-CSRFToken'], 'token');
+    assert.match(nodes['schedule-status'].textContent, /2026-09-13 20:15:00/);
+    saved = {...saved, enabled: false, revision: 'cancelled'};
+    await polls.shift()();
+    assert.equal(nodes['schedule-enabled'].checked, false);
+    assert.equal(requests.filter(r => r.options.method === 'POST').length, 1);
+    assert.ok(requests.every(r => r.url === panel.dataset.url));
 });

@@ -18,9 +18,16 @@
         const choices = document.getElementById('syncapi-run-types');
         const output = document.getElementById('syncapi-run-status');
         const error = document.getElementById('syncapi-run-error');
+        const controls = document.getElementById('syncapi-run-schedule-controls');
+        const enabled = document.getElementById('syncapi-run-schedule-enabled');
+        const interval = document.getElementById('syncapi-run-schedule-interval');
+        const delay = document.getElementById('syncapi-run-schedule-delay');
+        const save = document.getElementById('syncapi-run-schedule-save');
+        const scheduleOutput = document.getElementById('syncapi-run-schedule-status');
         let state = {};
         let busy = false;
         let initialized = false;
+        let settingsRevision;
 
         function render(value) {
             state = value;
@@ -38,9 +45,27 @@
                 });
                 initialized = true;
             }
+            if (value.schedule) {
+                const settings = value.schedule.settings;
+                // Preserve edits during polls; a saved revision also reflects
+                // cancellation or schedule changes made in another browser.
+                if (settings.revision !== settingsRevision) {
+                    enabled.checked = settings.enabled;
+                    interval.value = String(settings.interval);
+                    delay.value = String(settings.delay);
+                    choices.querySelectorAll('input').forEach(input => { input.checked = settings.types.includes(input.value); });
+                    settingsRevision = settings.revision;
+                }
+                scheduleOutput.textContent = value.schedule.message || '';
+                if (value.schedule.next_action) {
+                    scheduleOutput.textContent += ' Next action: ' + value.schedule.next_action.replace('T', ' ') + '.';
+                }
+            }
             start.disabled = busy || !value.enabled || value.active;
             cancel.disabled = busy || !value.active || value.cancel_requested;
             choices.disabled = busy || value.active;
+            controls.disabled = busy || !value.enabled || value.active;
+            save.disabled = controls.disabled || !value.schedule;
             output.textContent = formatStatus(value);
         }
 
@@ -85,10 +110,19 @@
         cancel.addEventListener('click', function () {
             return refresh({action: 'cancel', task_id: state.task_id});
         });
+        save.addEventListener('click', function () {
+            const types = Array.from(choices.querySelectorAll('input:checked'), input => input.value);
+            if (!types.length || !interval.value.trim() || !delay.value.trim()) {
+                error.textContent = 'Select content types and enter both timing values.';
+                return;
+            }
+            return refresh({action: 'schedule', enabled: enabled.checked,
+                interval: Number(interval.value), delay: Number(delay.value), types: types});
+        });
 
         async function poll() {
             // This endpoint reads the Pi's saved status; polling never contacts
-            // the NAS. Only the explicit start/cancel handlers send commands.
+            // the NAS. Only explicit button handlers send commands.
             await refresh();
             schedule(poll, 5000);
         }

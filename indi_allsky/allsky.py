@@ -233,6 +233,7 @@ class IndiAllSky(object):
         self.upload_worker_idx = 0
         self.sync_worker = None
         self.sync_task_id = None
+        self.sync_scheduler = None
 
         for x in range(self.config.get('UPLOAD_WORKERS', 1)):
             self.upload_worker_list.append({
@@ -785,6 +786,7 @@ class IndiAllSky(object):
 
             # Queue externally defined tasks
             with app.app_context():
+                self._scheduleSync()
                 self._queueManualTasks()
                 self._periodic_tasks()
 
@@ -819,6 +821,14 @@ class IndiAllSky(object):
         self._miscDb.setState('CONFIG_ID', self._config_obj.config_id)
 
 
+    def _scheduleSync(self):
+        from .syncapi_schedule import SyncApiScheduler
+        if self.sync_scheduler is None:
+            self.sync_scheduler = SyncApiScheduler()
+        self.sync_scheduler.tick(self.config, self._config_obj.config_id,
+                                 busy=self.sync_task_id is not None or bool(self.sync_worker and self.sync_worker.is_alive()))
+
+
     def _startSyncWorker(self):
         # Unlike capture workers, manual sync is never restarted automatically.
         if self.sync_worker and self.sync_worker.is_alive():
@@ -831,7 +841,7 @@ class IndiAllSky(object):
                     message = 'Synchronization worker stopped unexpectedly. Press Sync now to continue.'
                     task.setFailed(message)
                     result = get_state(STATUS_KEY, {})
-                    result.update(task_id=task.id, state='failed', message=message)
+                    result.update(task_id=task.id, state='failed', reason='unexpected', message=message)
                     set_state(STATUS_KEY, result)
                     logger.warning(message)
             self.sync_worker = None

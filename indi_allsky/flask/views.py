@@ -4501,6 +4501,7 @@ class AjaxSyncApiRunView(BaseView):
 
     def dispatch_request(self):
         from ..syncapi_sync import request_sync, cancel_sync, status, MEDIA, DEFAULT_TYPES
+        from ..syncapi_schedule import save_settings, pause, status as schedule_status
         from ..syncapi import on_demand_enabled
         if not app.config.get('LOGIN_DISABLED') and not current_user.is_admin:
             return jsonify({'error': 'Administrator access required.'}), 403
@@ -4509,11 +4510,17 @@ class AjaxSyncApiRunView(BaseView):
             if not isinstance(payload, dict):
                 return jsonify({'error': 'Invalid synchronization request.'}), 400
             try:
-                if payload.get('action') == 'start':
+                if payload.get('action') in ('start', 'schedule'):
                     if str(self._miscDb.getState('CONFIG_ID')) != str(self.indi_allsky_config_id):
                         raise ValueError('Apply the saved configuration and wait for the service reload before syncing.')
-                    request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES))
+                    if payload['action'] == 'schedule':
+                        save_settings(self.indi_allsky_config, payload)
+                    else:
+                        request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES))
                 elif payload.get('action') == 'cancel' and type(payload.get('task_id')) is int:
+                    current = status()
+                    if current.get('active') and current.get('task_id') == payload['task_id']:
+                        pause('Automatic synchronization paused by Cancel. Enable and save the schedule to resume.')
                     cancel_sync(payload['task_id'])
                 else:
                     raise ValueError('Invalid synchronization action.')
@@ -4521,7 +4528,9 @@ class AjaxSyncApiRunView(BaseView):
                 return jsonify({'error': str(exc) if isinstance(exc, ValueError) else 'The indi-allsky service has not started yet.'}), 400
         result = status()
         result['enabled'] = on_demand_enabled(self.indi_allsky_config)
-        result['types'] = [{'id': key, 'label': value[2], 'selected': key in DEFAULT_TYPES} for key, value in MEDIA.items()]
+        result['schedule'] = schedule_status()
+        selected = result['schedule']['settings']['types']
+        result['types'] = [{'id': key, 'label': value[2], 'selected': key in selected} for key, value in MEDIA.items()]
         return jsonify(result)
 
 
