@@ -13,6 +13,13 @@ def media_puts(env):
     return [call for call in env.calls if call[0] == 'PUT' and not call[1].endswith('/camera')]
 
 
+@pytest.fixture
+def retry_waits(sync_env, monkeypatch):
+    waits = []
+    monkeypatch.setattr(sync_env.sync.SyncApiSyncWorker, 'wait_for_retry', lambda worker, delay: waits.append(delay))
+    return waits
+
+
 def test_mode_defaults_and_fingerprint():
     assert automatic_sync_enabled({'SYNCAPI': {'ENABLE': True}})
     assert not automatic_sync_enabled({'SYNCAPI': {'ENABLE': True, 'MODE': 'on_demand'}})
@@ -98,7 +105,7 @@ def test_multiple_mini_timelapses_survive(sync_env):
         assert all(entry.getFilesystemPath().exists() for entry in entries)
 
 
-def test_offline_one_request_one_warning(sync_env, monkeypatch, caplog):
+def test_offline_bounded_retries_one_warning(sync_env, monkeypatch, caplog, retry_waits):
     env = sync_env
     for _ in range(20):
         env.asset()
@@ -110,15 +117,18 @@ def test_offline_one_request_one_warning(sync_env, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger='indi_allsky'):
         result = env.run()
     assert result['state'] == 'failed'
-    assert len(calls) == 1
+    assert len(calls) == 3
+    assert retry_waits == [5, 15]
+    assert 'Camera metadata upload failed for "Local camera"' in result['message']
+    assert 'ConnectionError: offline' in result['message']
     assert len([record for record in caplog.records if record.name == 'indi_allsky']) == 1
     for _ in range(10):
         env.sync.status()
-    assert len(calls) == 1
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize('first_kind', ['image', 'video'])
-def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, first_kind):
+def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, first_kind, retry_waits):
     env = sync_env
     first = env.asset(first_kind, age=3)
     second = env.asset(age=2)
@@ -130,6 +140,7 @@ def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, firs
         return original(url, **kwargs)
     monkeypatch.setattr(env.transport.requests, 'put', fail_second)
     assert env.run(['image', 'video'])['state'] == 'failed'
+    assert retry_waits == [5, 15]
     assert first.sync_id and second.sync_id is None
     monkeypatch.setattr(env.transport.requests, 'put', original)
     env.calls.clear()
@@ -138,7 +149,7 @@ def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, firs
 
 
 @pytest.mark.parametrize('fail_after', ['image', 'thumbnail'])
-def test_lost_acknowledgement_recovers_without_copy(sync_env, monkeypatch, fail_after):
+def test_lost_acknowledgement_retry_recovers_without_copy(sync_env, monkeypatch, fail_after, retry_waits):
     env = sync_env
     image = env.asset()
     thumb = env.thumbnail(image)
@@ -152,16 +163,135 @@ def test_lost_acknowledgement_recovers_without_copy(sync_env, monkeypatch, fail_
             raise env.transport.requests.exceptions.ConnectionError('response lost after commit')
         return response
     monkeypatch.setattr(env.transport.requests, 'put', lose_response)
-    assert env.run()['state'] == 'failed'
-    assert image.sync_id is None and thumb.sync_id is None
-    env.calls.clear()
     assert env.run()['state'] == 'complete'
+    assert retry_waits == [5]
+    assert image.sync_id and thumb.sync_id
     puts = media_puts(env)
-    assert [call[1].split('/')[-1] for call in puts] == (['thumbnail'] if fail_after == 'image' else [])
+    assert [call[1].split('/')[-1] for call in puts] == ['image', 'thumbnail']
     with env.nas.app_context():
         remote = env.models.IndiAllSkyDbImageTable.query.one()
         assert remote.thumbnail_uuid == thumb.uuid
         assert env.models.IndiAllSkyDbThumbnailTable.query.one().getFilesystemPath().exists()
+    env.calls.clear()
+    assert env.run()['completed'] == 0
+    assert media_puts(env) == []
+
+
+@pytest.mark.parametrize('stage', ['camera', 'lookup', 'upload'])
+def test_temporary_failure_recovers_quietly(sync_env, monkeypatch, caplog, retry_waits, stage):
+    env = sync_env
+    entry = env.asset()
+    method = 'get' if stage == 'lookup' else 'put'
+    original = getattr(env.transport.requests, method)
+    failures = []
+
+    def temporary_failure(url, **kwargs):
+        target = '/camera' if stage == 'camera' else '/image'
+        if url.endswith(target) and len(failures) < 2:
+            failures.append(1)
+            raise env.transport.requests.exceptions.ConnectTimeout('connection timed out')
+        return original(url, **kwargs)
+
+    monkeypatch.setattr(env.transport.requests, method, temporary_failure)
+    with caplog.at_level(logging.WARNING, logger='indi_allsky'):
+        result = env.run()
+    assert result['state'] == 'complete', result
+    assert result['files'] == 1 and entry.sync_id
+    assert retry_waits == [5, 15]
+    assert len(media_puts(env)) == 1
+    assert not [record for record in caplog.records if record.name == 'indi_allsky']
+
+
+@pytest.mark.parametrize('stage, failure', [('lookup', 'ReadTimeout'), ('upload', 'ConnectionError')])
+def test_exhausted_retries_report_file_stage_and_cause(sync_env, monkeypatch, caplog, retry_waits, stage, failure):
+    env = sync_env
+    entry = env.asset('video')
+    method = 'get' if stage == 'lookup' else 'put'
+    original = getattr(env.transport.requests, method)
+    failures = []
+
+    def fail(url, **kwargs):
+        if url.endswith('/video'):
+            failures.append(1)
+            raise getattr(env.transport.requests.exceptions, failure)('test network failure')
+        return original(url, **kwargs)
+
+    monkeypatch.setattr(env.transport.requests, method, fail)
+    with caplog.at_level(logging.WARNING, logger='indi_allsky'):
+        result = env.run(['video'])
+    assert result['state'] == 'failed' and entry.sync_id is None
+    assert 'after 3 attempts' in result['message']
+    assert '{0} failed for "{1}"'.format(stage.capitalize(), entry.getFilesystemPath().name) in result['message']
+    assert failure + ': test network failure' in result['message']
+    assert len(failures) == 3 and retry_waits == [5, 15]
+    warnings = [record for record in caplog.records if record.name == 'indi_allsky']
+    assert len(warnings) == 1
+    assert result['message'] in warnings[0].getMessage()
+
+
+def test_lost_acknowledgement_then_offline_resumes_without_copy(sync_env, monkeypatch, retry_waits):
+    env = sync_env
+    entry = env.asset()
+    thumb = env.thumbnail(entry)
+    original_put, original_get = env.transport.requests.put, env.transport.requests.get
+    offline = False
+
+    def lose_response(url, **kwargs):
+        nonlocal offline
+        response = original_put(url, **kwargs)
+        if url.endswith('/image'):
+            offline = True
+            raise env.transport.requests.exceptions.ConnectionError('response lost after commit')
+        return response
+
+    def unavailable_lookup(url, **kwargs):
+        if offline:
+            raise env.transport.requests.exceptions.ConnectionError('still offline')
+        return original_get(url, **kwargs)
+
+    monkeypatch.setattr(env.transport.requests, 'put', lose_response)
+    monkeypatch.setattr(env.transport.requests, 'get', unavailable_lookup)
+    assert env.run()['state'] == 'failed'
+    assert entry.sync_id is None and thumb.sync_id is None
+    assert retry_waits == [5, 15]
+    monkeypatch.setattr(env.transport.requests, 'put', original_put)
+    monkeypatch.setattr(env.transport.requests, 'get', original_get)
+    env.calls.clear()
+    assert env.run()['state'] == 'complete'
+    assert [call[1].split('/')[-1] for call in media_puts(env)] == ['thumbnail']
+
+
+@pytest.mark.parametrize('control', ['cancel', 'shutdown', 'config'])
+def test_retry_wait_honors_control_before_next_request(sync_env, monkeypatch, control):
+    env = sync_env
+    env.asset()
+    task = env.sync.request_sync(env.config, ['image'])
+    worker = env.sync.SyncApiSyncWorker(env.app, task.id)
+    calls, waits = [], []
+
+    def offline(*args, **kwargs):
+        calls.append(1)
+        raise env.transport.requests.exceptions.ConnectionError('offline')
+
+    def interrupt_wait(delay):
+        waits.append(delay)
+        assert 'Retrying in 5 seconds (attempt 2 of 3)' in env.sync.status()['message']
+        if control == 'cancel':
+            env.sync.cancel_sync(task.id)
+        elif control == 'shutdown':
+            worker.stop()
+        else:
+            config = deepcopy(env.config)
+            config['SYNCAPI']['MODE'] = 'automatic'
+            row = env.models.IndiAllSkyDbConfigTable.query.one()
+            row.data = config
+            env.db.session.commit()
+
+    monkeypatch.setattr(env.transport.requests, 'put', offline)
+    monkeypatch.setattr(worker.stop_event, 'wait', interrupt_wait)
+    worker.execute()
+    assert env.sync.status()['state'] == 'cancelled'
+    assert calls == [1] and waits == [1]
 
 
 def test_corrupt_unacknowledged_file_is_replaced(sync_env):

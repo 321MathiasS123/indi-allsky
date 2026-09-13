@@ -6,7 +6,7 @@
         if (typeof state.completed === 'number') {
             parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
         }
-        if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ')}.`);
+        if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
         if (state.cancel_requested) parts.push('Cancellation requested; waiting for the current transfer to finish or time out.');
         if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
         return parts.join(' ');

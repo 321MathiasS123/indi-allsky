@@ -17,10 +17,11 @@ function harness() {
 
 test('progress describes saved results, cutoff and pending cancellation', () => {
     const text = formatStatus({enabled: true, message: 'Interrupted', completed: 2, total: 4,
-        skipped: 1, files: 3, bytes: 1048576, cutoff: '2026-09-13T12:00:00', cancel_requested: true});
+        skipped: 1, files: 3, bytes: 1048576, cutoff: '2026-09-13T12:00:00.157618', cancel_requested: true});
     assert.match(text, /2 of 4/);
     assert.match(text, /1.0 MiB/);
     assert.match(text, /2026-09-13 12:00:00/);
+    assert.doesNotMatch(text, /157618/);
     assert.match(text, /Cancellation requested/);
 });
 
