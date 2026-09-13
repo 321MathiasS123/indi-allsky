@@ -148,7 +148,8 @@ class SyncApiScheduler:
 
     def tick(self, config, config_id, busy=False):
         options = settings()
-        latest = sync.models.IndiAllSkyDbConfigTable.query.order_by(sync.models.IndiAllSkyDbConfigTable.id.desc()).first()
+        # Match IndiAllSkyConfig's ordering, including after clock corrections.
+        latest = sync.models.IndiAllSkyDbConfigTable.query.order_by(sync.models.IndiAllSkyDbConfigTable.createDate.desc()).first()
         applied = latest is not None and latest.id == config_id
         enabled = options['enabled'] and on_demand_enabled(config) and applied
         signature = options['revision'], config_id, enabled
