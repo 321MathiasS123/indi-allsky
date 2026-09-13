@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta
 import json
 import hashlib
+import heapq
 import logging
 import math
 from threading import Event, Thread
@@ -203,6 +204,22 @@ class SyncApiSyncWorker(Thread):
             query = query.filter(model.success.is_(True))
         return query
 
+    def candidate_entries(self, name, maximum, cutoff):
+        """Yield a bounded page at a time for merging media types by date."""
+        model = MEDIA[name][0]
+        cursor = None
+        while True:
+            self.check_control()
+            query = self.candidate_query(model, maximum, cutoff)
+            if cursor:
+                query = query.filter(or_(model.createDate > cursor[0], and_(model.createDate == cursor[0], model.id > cursor[1])))
+            ids = query.with_entities(model.id, model.createDate).order_by(model.createDate, model.id).limit(self.page_size).all()
+            if not ids:
+                return
+            for entry_id, created in ids:
+                cursor = (created, entry_id)
+                yield created, name, entry_id
+
     def transfer(self, entry, metadata):
         from .filetransfer.requests_syncapi_v1 import requests_syncapi_v1
         from .filetransfer.exceptions import TransferFailure
@@ -302,32 +319,22 @@ class SyncApiSyncWorker(Thread):
                 camera.sync_id = self.transfer(camera, metadata_for(camera, constants.CAMERA))
                 db.session.commit()
             last_log = time.monotonic()
-            for name in types:
+            candidates = heapq.merge(*(self.candidate_entries(name, bounds[name], cutoff) for name in types))
+            for created, name, entry_id in candidates:
+                self.check_control()
                 model, media_type, label = MEDIA[name]
-                cursor = None
-                while True:
-                    self.check_control()
-                    query = self.candidate_query(model, bounds[name], cutoff)
-                    if cursor:
-                        query = query.filter(or_(model.createDate > cursor[0], and_(model.createDate == cursor[0], model.id > cursor[1])))
-                    ids = query.with_entities(model.id, model.createDate).order_by(model.createDate, model.id).limit(self.page_size).all()
-                    if not ids:
-                        break
-                    for entry_id, created in ids:
-                        self.check_control()
-                        cursor = (created, entry_id)
-                        entry = db.session.get(model, entry_id, populate_existing=True)
-                        self.progress['current'] = label
-                        try:
-                            complete = entry is not None and self.transfer_unit(entry, media_type)
-                        except FileNotFoundError:
-                            db.session.rollback()
-                            complete = False
-                        self.progress['completed' if complete else 'skipped'] += 1
-                        self.publish()
-                        if time.monotonic() - last_log >= 30:
-                            logger.info('Manual SyncAPI run %d: %d completed, %d skipped', self.task_id, self.progress['completed'], self.progress['skipped'])
-                            last_log = time.monotonic()
+                entry = db.session.get(model, entry_id, populate_existing=True)
+                self.progress['current'] = label
+                try:
+                    complete = entry is not None and self.transfer_unit(entry, media_type)
+                except FileNotFoundError:
+                    db.session.rollback()
+                    complete = False
+                self.progress['completed' if complete else 'skipped'] += 1
+                self.publish()
+                if time.monotonic() - last_log >= 30:
+                    logger.info('Manual SyncAPI run %d: %d completed, %d skipped', self.task_id, self.progress['completed'], self.progress['skipped'])
+                    last_log = time.monotonic()
             message = 'Synchronization finished.' if not self.progress['skipped'] else 'Finished with missing local files; skipped items remain unsynchronized.'
         except SyncStopped as exc:
             outcome, message = 'cancelled', str(exc)

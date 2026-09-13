@@ -10,6 +10,8 @@ When the NAS is available, select the desired media types in **On-demand synchro
 
 The run covers retained local-camera data, including images older than thirty days. Completed files from the last ten minutes are deferred. A fixed upper bound prevents ongoing capture from extending the run indefinitely. Hidden cameras and unfinished generated media are excluded. Automatic image sampling, waiting for S3, and empty-file uploads do not apply to the manual archive operation.
 
+Pending media are transferred oldest first by creation time across all selected media types. Each parent file is followed by its associated thumbnail before the next media item is processed.
+
 Successfully acknowledged items are skipped. If a previous upload arrived but its acknowledgement was lost, the Pi checks its identity, thumbnail reference, size and SHA-256 digest on the receiver and records the result without resending the media. Image/thumbnail completion is recorded together. Missing local files are reported as skipped and are never marked synchronized.
 
 An unavailable receiver or a failed transfer stops the run and produces one failure summary. There are no automatic retries, availability probes, or per-image SyncAPI attempts between manual runs. Press **Sync now** again to continue. **Cancel** stops further requests after the current request finishes or times out. Service restarts do not automatically resume a run.
