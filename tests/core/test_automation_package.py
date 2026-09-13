@@ -78,6 +78,14 @@ def test_recovery_requires_new_capture_and_new_boot(package):
     assert template.render(**variables, status_reply={}) is False
 
 
+def test_incident_remains_text_after_native_template_rendering(package):
+    variables = next(action['variables'] for action in package['automation'][1]['actions']
+                     if 'incident' in action.get('variables', {}))
+    value = environment().from_string(variables['incident']).render(
+        status_reply=dict(content=dict(capture=dict(last_capture=12345.25))))
+    assert value == 'capture-12345.25'
+
+
 @pytest.mark.parametrize('online', [True, False])
 def test_nas_probe_treats_offline_as_normal_data(package, monkeypatch, capsys, online):
     command = package['command_line'][0]['binary_sensor']['command']
