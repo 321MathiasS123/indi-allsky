@@ -145,7 +145,7 @@
 
         <div id="syncapi-run-panel" class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm"
              data-url="{{ url_for('indi_allsky.ajax_syncapi_run_view') }}" data-csrf="{{ csrf_token() }}">
-            <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4">
+            <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4 tw:@container">
                 <h3 class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">On-demand synchronization</h3>
                 <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run. The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page. Save Configuration stores the availability settings and checked content. Sync now uses the current checkboxes for this run, including changes you have not saved.</p>
                 <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2">
@@ -172,10 +172,10 @@
                 </fieldset>
                 <div id="syncapi-run-schedule-controls-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
                 <p class="tw:text-xs tw:text-base-content/60">Uses the connection settings above and continues with the page closed. Cancel also pauses the schedule; enable it and save the configuration to resume.</p>
-                <fieldset id="syncapi-run-types" class="tw:grid tw:grid-cols-1 tw:sm:grid-cols-2 tw:lg:grid-cols-3 tw:gap-2 tw:min-w-0">
+                <fieldset id="syncapi-run-types" class="tw:grid tw:grid-cols-1 tw:@min-[20rem]:grid-cols-2 tw:@min-[44rem]:grid-cols-5 tw:@min-[88rem]:grid-cols-10 tw:gap-x-4 tw:gap-y-2 tw:min-w-0">
                     <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Content to synchronize</legend>
                     {% for type_id, type_label in syncapi_types %}
-                    <label class="tw:flex tw:items-center tw:gap-3 tw:p-3 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-field)] tw:text-xs tw:cursor-pointer">
+                    <label class="tw:inline-flex tw:items-center tw:gap-2 tw:py-1 tw:text-xs tw:cursor-pointer tw:whitespace-nowrap">
                         <input type="checkbox" value="{{ type_id }}" class="tw:checkbox tw:checkbox-primary tw:checkbox-sm tw:shrink-0" {% if type_id in syncapi_schedule.types %}checked{% endif %}>
                         {{ type_label }}
                     </label>
