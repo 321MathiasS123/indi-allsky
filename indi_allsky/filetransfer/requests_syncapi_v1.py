@@ -7,7 +7,7 @@ from .exceptions import TransferFailure
 
 from pathlib import Path
 import requests
-from requests_toolbelt import MultipartEncoder
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 import io
 import time
 import math
@@ -150,6 +150,29 @@ class requests_syncapi_v1(GenericFileTransfer):
         start = time.time()
 
         try:
+            # Archive runs opt into pacing/progress. Leave camera updates,
+            # lookups and the original automatic-upload path unchanged.
+            if metadata['file_size'] and (kwargs.get('upload_limit') or kwargs.get('progress_callback')):
+                rate = kwargs.get('upload_limit', 0) * 1024
+                if rate and mp_enc.len / rate > self.time_skew * 4:
+                    raise TransferFailure('The upload speed limit would make "{0}" take more than 20 minutes, '
+                                          'exceeding the receiver authentication window. Increase the speed limit '
+                                          'and start synchronization again.'.format(local_file_p.name))
+                previous_read = 0
+
+                def monitor_upload(monitor):
+                    nonlocal previous_read
+                    # Pace each block before requests writes it to the socket.
+                    # Charging all multipart bytes prevents short files or slow
+                    # socket writes from accumulating credit for a later burst.
+                    count = monitor.bytes_read - previous_read
+                    previous_read = monitor.bytes_read
+                    if rate and count:
+                        kwargs.get('upload_wait', time.sleep)(count / rate)
+                    if kwargs.get('progress_callback'):
+                        kwargs['progress_callback'](f_media.tell(), metadata['file_size'])
+
+                mp_enc = MultipartEncoderMonitor(mp_enc, monitor_upload)
             # put allows overwrites
             request_method = self.client.get if kwargs.get('lookup') else self.client.put
             request_options = {'allow_redirects': False} if kwargs.get('availability_probe') else {}

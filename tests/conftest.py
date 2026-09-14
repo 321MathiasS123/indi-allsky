@@ -113,9 +113,12 @@ def sync_env(tmp_path, monkeypatch, request):
     receiver_client = receiver_app.test_client()
 
     def send(method, url, **kwargs):
-        metadata = json.loads(kwargs['data'].fields['metadata'][1].getvalue())
+        stream = kwargs['data']
+        encoder = getattr(stream, 'encoder', stream)
+        metadata = json.loads(encoder.fields['metadata'][1].getvalue())
         calls.append((method, urlsplit(url).path, metadata))
-        response = receiver_client.open(urlsplit(url).path, method=method, headers=kwargs['headers'], data=kwargs['data'].to_string())
+        body = b''.join(iter(lambda: stream.read(8192), b''))
+        response = receiver_client.open(urlsplit(url).path, method=method, headers=kwargs['headers'], data=body)
         return types.SimpleNamespace(status_code=response.status_code, text=response.get_data(as_text=True), json=response.get_json)
 
     monkeypatch.setattr(transport.requests, 'put', lambda url, **kwargs: send('PUT', url, **kwargs))

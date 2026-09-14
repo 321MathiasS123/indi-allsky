@@ -147,9 +147,9 @@
              data-url="{{ url_for('indi_allsky.ajax_syncapi_run_view') }}" data-csrf="{{ csrf_token() }}">
             <div class="tw:card-body tw:p-4 tw:sm:p-6 tw:flex tw:flex-col tw:gap-4 tw:@container">
                 <h3 class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">On-demand synchronization</h3>
-                <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run. The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page. Save Configuration stores the availability settings and checked content. Sync now uses the current checkboxes for this run, including changes you have not saved.</p>
+                <p class="tw:text-xs tw:text-base-content/70">Send pending local files, including data older than 30 days, and skip recorded successful transfers. Files from the last 10 minutes wait for the next run. The selected content is sent as actual files, without image sampling or waiting for S3. Capture continues and you can close this page. Save Configuration stores the availability settings, upload speed and checked content. Sync now uses the current speed and checkboxes for this run, including changes you have not saved.</p>
                 <fieldset id="syncapi-run-schedule-controls" class="tw:flex tw:flex-col tw:gap-4 tw:min-w-0 tw:mt-2">
-                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Availability schedule</legend>
+                    <legend class="tw:mb-3 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Availability schedule & upload speed</legend>
                     <label for="syncapi-run-schedule-enabled" class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:py-3 tw:border-y tw:border-base-300/60 tw:cursor-pointer">
                         <span class="tw:flex tw:flex-col tw:gap-1">
                             <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Automatically sync when available</span>
@@ -157,7 +157,7 @@
                         </span>
                         <input id="syncapi-run-schedule-enabled" type="checkbox" class="tw:toggle tw:toggle-primary tw:toggle-sm tw:shrink-0" {% if syncapi_schedule.enabled %}checked{% endif %}>
                     </label>
-                    <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-2 tw:gap-4">
+                    <div class="tw:grid tw:grid-cols-1 tw:md:grid-cols-3 tw:gap-4">
                         <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
                             <label for="syncapi-run-schedule-interval" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Check every (minutes)</label>
                             <input id="syncapi-run-schedule-interval" type="number" min="1" max="1440" step="1" value="{{ syncapi_schedule.interval }}" required aria-describedby="syncapi-run-interval-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
@@ -167,6 +167,15 @@
                             <label for="syncapi-run-schedule-delay" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Wait after availability (minutes)</label>
                             <input id="syncapi-run-schedule-delay" type="number" min="0" max="1440" step="1" value="{{ syncapi_schedule.delay }}" required aria-describedby="syncapi-run-delay-help" class="tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
                             <p id="syncapi-run-delay-help" class="tw:text-xs tw:text-base-content/60">Extra startup time before checking again and sending files. Use 0 to start immediately.</p>
+                        </div>
+                        <div class="tw:flex tw:flex-col tw:gap-1 tw:min-w-0">
+                            <label for="syncapi-run-upload-limit" class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">Upload speed limit</label>
+                            <select id="syncapi-run-upload-limit" aria-describedby="syncapi-run-upload-limit-help" class="tw:select tw:select-bordered tw:select-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full">
+                                {% for limit, label in [(0, 'Unlimited'), (128, '128 KiB/s'), (256, '256 KiB/s'), (512, '512 KiB/s'), (1024, '1 MiB/s'), (2048, '2 MiB/s'), (5120, '5 MiB/s'), (10240, '10 MiB/s')] %}
+                                <option value="{{ limit }}" {% if syncapi_schedule.upload_limit == limit %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                            <p id="syncapi-run-upload-limit-help" class="tw:text-xs tw:text-base-content/60">Leave bandwidth for browsing and capture. Applies to manual and scheduled archive runs.</p>
                         </div>
                     </div>
                 </fieldset>

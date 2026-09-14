@@ -12,9 +12,15 @@ The run covers retained local-camera data, including images older than thirty da
 
 Pending media are transferred oldest first by creation time across all selected media types. Each parent file is followed by its associated thumbnail before the next media item is processed.
 
+**Upload speed limit**, beside the two minute fields, caps archive uploads so they leave bandwidth for browsing and capture. Choose Unlimited (the existing default), 128/256/512 KiB/s, or 1/2/5/10 MiB/s. Save Configuration stores the limit for manual and scheduled runs; Sync now uses the currently selected speed and content even before saving. Cancel an active run before changing its speed. Automatic live uploads are unaffected. The cap includes multipart request bytes; actual throughput can be lower when the network or receiver is slower.
+
+Large files show their current upload progress approximately every five seconds. These bytes have been read into the outgoing request; the completed file/byte totals increase only after the receiver acknowledges the file. The current-file counter resets on retry. Cancel is checked during uploads as well as between files; a blocked network operation still has to finish or time out.
+
+The existing receiver authentication window allows about 20 minutes for an upload. If the selected cap alone would take longer for a file, the run stops with an explicit instruction to increase the speed limit, before uploading it. This preserves authentication checks and existing transfer records. A slower-than-expected connection can still exceed that window.
+
 Successfully acknowledged items are skipped. If a previous upload arrived but its acknowledgement was lost, the Pi checks its identity, thumbnail reference, size and SHA-256 digest on the receiver and records the result without resending the media. Image/thumbnail completion is recorded together. Missing local files are reported as skipped and are never marked synchronized.
 
-During a run, connection failures and timeouts are retried twice, after 5 and 15 seconds. Each retry checks whether the receiver already saved the file before sending it again. The panel shows the retry status; exhausted retries produce one failure summary with the file or camera, lookup/upload stage, and underlying error. Authentication, certificate and receiver rejection errors stop immediately. With the availability schedule disabled, there are no probes or per-image SyncAPI attempts between manual runs. Press **Sync now** again to continue a stopped run. **Cancel** interrupts retry waits and stops further requests after the current request finishes or times out.
+During a run, connection failures and timeouts are retried twice, after 5 and 15 seconds. Each retry checks whether the receiver already saved the file before sending it again. The panel shows the retry status; exhausted retries produce one failure summary with the file or camera, lookup/upload stage, and underlying error. Authentication, certificate and receiver rejection errors stop immediately. With the availability schedule disabled, there are no probes or per-image SyncAPI attempts between manual runs. Press **Sync now** again to continue a stopped run. **Cancel** interrupts retry waits and outgoing uploads; a blocked network operation must finish or time out first.
 
 ## Optional availability schedule
 

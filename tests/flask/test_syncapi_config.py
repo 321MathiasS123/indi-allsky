@@ -81,7 +81,7 @@ def config_endpoint(sync_env):
 
 
 def options():
-    return dict(enabled=True, interval=5, delay=0, types=['image', 'rawimage'])
+    return dict(enabled=True, interval=5, delay=0, upload_limit=256, types=['image', 'rawimage'])
 
 
 def test_config_save_commits_schedule_and_requests_reload(config_endpoint):
@@ -109,7 +109,9 @@ def test_failed_config_save_rolls_back_staged_schedule(config_endpoint):
 
 
 @pytest.mark.parametrize('payload', [None, [], dict(options(), enabled='true'), dict(options(), interval=0),
-    dict(options(), delay=None), dict(options(), delay=1.5), dict(options(), types=[])])
+    dict(options(), delay=None), dict(options(), delay=1.5), dict(options(), types=[]),
+    dict(options(), upload_limit=-1), dict(options(), upload_limit=True), dict(options(), upload_limit=123),
+    dict(options(), upload_limit='256'), dict(options(), upload_limit=None)])
 def test_invalid_schedule_rejects_whole_configuration(config_endpoint, payload):
     ctx = config_endpoint
     response = ctx.client.post('/ajax/config', json={'SYNCAPI_SCHEDULE': payload}, headers=ctx.headers)

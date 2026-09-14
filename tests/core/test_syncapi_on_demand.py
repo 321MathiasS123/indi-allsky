@@ -134,7 +134,8 @@ def test_failure_then_resume_does_not_resend_success(sync_env, monkeypatch, firs
     second = env.asset(age=2)
     original = env.transport.requests.put
     def fail_second(url, **kwargs):
-        metadata = kwargs['data'].fields['metadata'][1].getvalue()
+        stream = kwargs['data']
+        metadata = getattr(stream, 'encoder', stream).fields['metadata'][1].getvalue()
         if url.endswith('/image') and str(second.createDate.timestamp()) in metadata:
             raise env.transport.requests.exceptions.ConnectionError('offline')
         return original(url, **kwargs)

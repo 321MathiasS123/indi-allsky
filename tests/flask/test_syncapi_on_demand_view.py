@@ -63,7 +63,17 @@ def test_requires_csrf_and_admin(sync_endpoint):
     assert env.sync.active_task() is None
 
 
-@pytest.mark.parametrize('payload', [[], None, {'action': 'start', 'types': []}, {'action': 'start', 'types': ['invalid']}, {'action': 'cancel', 'task_id': True}])
+def test_start_uses_unsaved_speed_without_changing_saved_settings(sync_endpoint):
+    from indi_allsky.syncapi_schedule import settings
+    env, client, _, headers = sync_endpoint
+    response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image'], 'upload_limit': 256}, headers=headers)
+    assert response.status_code == 200
+    assert env.sync.active_task().data['upload_limit'] == 256
+    assert settings()['upload_limit'] == 0 and env.calls == []
+
+
+@pytest.mark.parametrize('payload', [[], None, {'action': 'start', 'types': []}, {'action': 'start', 'types': ['invalid']}, {'action': 'cancel', 'task_id': True},
+    {'action': 'start', 'upload_limit': -1}, {'action': 'start', 'upload_limit': True}])
 def test_rejects_invalid_requests(sync_endpoint, payload):
     env, client, _, headers = sync_endpoint
     response = client.post('/ajax/syncapi/run', data=flask.json.dumps(payload), content_type='application/json', headers=headers)
