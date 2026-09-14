@@ -9,12 +9,13 @@ function harness() {
             querySelectorAll(selector) { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
     const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error', 'schedule-controls',
-        'schedule-enabled', 'schedule-interval', 'schedule-delay'].map(key => [key, element()]));
+        'schedule-enabled', 'schedule-interval', 'schedule-delay', 'upload-limit'].map(key => [key, element()]));
     nodes.types.children = [{children: [{type: 'checkbox', value: 'image', checked: true}]},
         {children: [{type: 'checkbox', value: 'rawimage', checked: false}]}];
     nodes['schedule-enabled'].checked = false;
     nodes['schedule-interval'].value = '10';
     nodes['schedule-delay'].value = '3';
+    nodes['upload-limit'].value = '0';
     const document = {handlers: {}, addEventListener(event, handler) { this.handlers[event] = handler; },
         dispatchEvent(event) { return this.handlers[event.type](event); },
         getElementById: id => nodes[id.replace('syncapi-run-', '')],
@@ -96,7 +97,7 @@ test('polling only reads local status; start and cancel are explicit CSRF-protec
     assert.equal(requests[0].options.method, undefined);
     assert.equal(nodes.start.disabled, false);
     await nodes.start.handlers.click();
-    assert.deepEqual(JSON.parse(requests[1].options.body), {action: 'start', types: ['image']});
+    assert.deepEqual(JSON.parse(requests[1].options.body), {action: 'start', types: ['image'], upload_limit: 0});
     assert.equal(requests[1].options.headers['X-CSRFToken'], 'token');
     assert.equal(nodes.start.disabled, true);
     await nodes.cancel.handlers.click();
@@ -129,8 +130,9 @@ test('configuration payload includes current switch, timings and checkboxes with
     nodes['schedule-enabled'].checked = true;
     nodes['schedule-interval'].value = '5';
     nodes['schedule-delay'].value = '0';
+    nodes['upload-limit'].value = '256';
     nodes.types.querySelectorAll('input')[1].checked = true;
-    assert.deepEqual(schedulePayload(document), {enabled: true, interval: 5, delay: 0, types: ['image', 'rawimage']});
+    assert.deepEqual(schedulePayload(document), {enabled: true, interval: 5, delay: 0, upload_limit: 256, types: ['image', 'rawimage']});
     nodes['schedule-delay'].value = '';
     assert.equal(schedulePayload(document).delay, null, 'An empty delay must not silently become zero');
 });
@@ -149,12 +151,13 @@ test('Sync now uses unsaved checkboxes without changing scheduled content, even 
     nodes.types.querySelectorAll('input')[0].checked = false;
     nodes.types.querySelectorAll('input')[1].checked = true;
     nodes['schedule-interval'].value = '7';
+    nodes['upload-limit'].value = '512';
     await mount(panel, document, fetcher, fn => polls.push(fn));
     revision = 'changed elsewhere';
     await polls.shift()();
     assert.equal(nodes['schedule-interval'].value, '7');
     await nodes.start.handlers.click();
-    assert.deepEqual(JSON.parse(requests[2].body), {action: 'start', types: ['rawimage']});
+    assert.deepEqual(JSON.parse(requests[2].body), {action: 'start', types: ['rawimage'], upload_limit: 512});
     assert.equal(requests.filter(options => options.method === 'POST').length, 1);
     assert.match(nodes.status.textContent, /Waiting for receiver/);
     assert.match(nodes.status.textContent, /Next check: 2026-09-13 20:15:00/);
@@ -169,6 +172,18 @@ function deferred() {
     const promise = new Promise(done => { resolve = done; });
     return {promise, resolve};
 }
+
+test('current file progress is separate from acknowledged totals and hidden after a run', () => {
+    const state = {enabled: true, active: true, completed: 1, total: 2, skipped: 0, files: 1, bytes: 1048576,
+        upload: {name: 'night.mp4', bytes: 1048576, total: 2097152}};
+    assert.match(formatStatus(state), /1 files, 1.0 MiB sent/);
+    assert.match(formatStatus(state), /Uploading night.mp4: 1.0 of 2.0 MiB \(50%\)/);
+    assert.doesNotMatch(formatStatus(state), /Waiting for the receiver/);
+    state.upload.bytes = state.upload.total;
+    assert.match(formatStatus(state), /Waiting for the receiver to acknowledge/);
+    state.active = false;
+    assert.doesNotMatch(formatStatus(state), /Uploading|Waiting for the receiver/);
+});
 
 test('Sync now stays disabled through scheduler handoff and unlocks between runs', async () => {
     const {nodes, document, panel} = harness();

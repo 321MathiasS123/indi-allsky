@@ -19,8 +19,14 @@
         if (typeof state.completed === 'number') {
             parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
         }
+        if (state.active && state.upload && state.upload.total > 0) {
+            const upload = state.upload;
+            const percent = Math.min(100, Math.floor(upload.bytes / upload.total * 100));
+            parts.push(`Uploading ${upload.name}: ${(upload.bytes / 1048576).toFixed(1)} of ${(upload.total / 1048576).toFixed(1)} MiB (${percent}%).`);
+            if (upload.bytes >= upload.total) parts.push('Waiting for the receiver to acknowledge this file.');
+        }
         if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
-        if (state.cancel_requested) parts.push('Cancellation requested; waiting for the current transfer to finish or time out.');
+        if (state.cancel_requested) parts.push('Cancellation requested; waiting for the upload or current network operation to stop.');
         if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
         if (!scheduled) parts.push(...scheduleParts);
         return parts.join('\n');
@@ -37,6 +43,7 @@
         };
         return {enabled: document.getElementById('syncapi-run-schedule-enabled').checked,
             interval: minutes('syncapi-run-schedule-interval'), delay: minutes('syncapi-run-schedule-delay'),
+            upload_limit: Number(document.getElementById('syncapi-run-upload-limit').value),
             types: selectedTypes(document)};
     }
 
@@ -114,7 +121,8 @@
                 error.textContent = 'Select at least one media type.';
                 return;
             }
-            return refresh({action: 'start', types: types});
+            return refresh({action: 'start', types: types,
+                upload_limit: Number(document.getElementById('syncapi-run-upload-limit').value)});
         });
         cancel.addEventListener('click', function () {
             return refresh({action: 'cancel', task_id: state.task_id});

@@ -23,8 +23,9 @@ APPLYING_MESSAGE = 'Schedule saved. Waiting for indi-allsky to apply the configu
 
 
 def settings():
-    return sync.get_state(SETTINGS_KEY, dict(enabled=False, interval=10, delay=3,
-                                           types=list(sync.DEFAULT_TYPES), revision=''))
+    defaults = dict(enabled=False, interval=10, delay=3, upload_limit=0,
+                    types=list(sync.DEFAULT_TYPES), revision='')
+    return dict(defaults, **sync.get_state(SETTINGS_KEY, {}))
 
 
 def save_settings(config, payload, commit=True):
@@ -40,8 +41,11 @@ def save_settings(config, payload, commit=True):
         raise ValueError('Startup delay must be between 0 and 1440 minutes.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in sync.MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
-    options = dict(enabled=enabled, interval=interval, delay=delay, types=list(dict.fromkeys(types)))
     current = settings()
+    # Older open pages omit this field; preserve the saved limit on their saves.
+    upload_limit = sync.validate_upload_limit(payload.get('upload_limit', current['upload_limit']))
+    options = dict(enabled=enabled, interval=interval, delay=delay, upload_limit=upload_limit,
+                   types=list(dict.fromkeys(types)))
     # General configuration saves also submit unchanged schedule fields. Do not
     # restart the timer or invalidate an active worker for an unrelated edit.
     if all(current[key] == value for key, value in options.items()):
@@ -243,7 +247,8 @@ class SyncApiScheduler:
             self.wait(options, 'No eligible files are pending. Waiting for the next check.')
             return
         try:
-            task = sync.request_sync(config, options['types'], schedule_revision=options['revision'])
+            task = sync.request_sync(config, options['types'], schedule_revision=options['revision'],
+                                     upload_limit=options['upload_limit'])
         except ValueError as exc:
             self.block(str(exc))
             return

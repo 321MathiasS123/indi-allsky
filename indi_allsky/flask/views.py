@@ -4532,7 +4532,8 @@ class AjaxSyncApiRunView(BaseView):
                     if payload['action'] == 'schedule':
                         save_settings(self.indi_allsky_config, payload)
                     else:
-                        request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES))
+                        request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES),
+                                     upload_limit=payload.get('upload_limit'))
                 elif payload.get('action') == 'cancel' and type(payload.get('task_id')) is int:
                     current = status()
                     if current.get('active') and current.get('task_id') == payload['task_id']:

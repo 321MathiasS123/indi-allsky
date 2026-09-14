@@ -89,7 +89,8 @@ def test_offline_checks_are_quiet_and_restart_the_interval(schedule_env, caplog)
 def test_wait_recheck_run_and_repeat_with_incremental_checkpoints(schedule_env):
     ctx = schedule_env
     image = ctx.env.asset()
-    ctx.enable()
+    ctx.module.save_settings(ctx.env.config, dict(enabled=True, interval=10, delay=3, upload_limit=256, types=['image']))
+    ctx.tick()
     ctx.tick(600)
     ctx.probes[-1].finish()
     assert ctx.tick()['state'] == 'settling'
@@ -100,6 +101,7 @@ def test_wait_recheck_run_and_repeat_with_incremental_checkpoints(schedule_env):
     ctx.tick()
     task = ctx.env.sync.active_task()
     assert task.data['types'] == ['image']
+    assert task.data['upload_limit'] == 256
     assert task.data['schedule_revision'] == ctx.module.settings()['revision']
     ctx.env.sync.SyncApiSyncWorker(ctx.env.app, task.id).execute()
     assert image.sync_id
@@ -110,6 +112,19 @@ def test_wait_recheck_run_and_repeat_with_incremental_checkpoints(schedule_env):
     task = ctx.queue_run()
     ctx.env.sync.SyncApiSyncWorker(ctx.env.app, task.id).execute()
     assert ctx.env.sync.status()['completed'] == 1 and next_image.sync_id
+
+
+def test_old_settings_default_to_unlimited_and_old_pages_preserve_saved_limit(schedule_env):
+    ctx = schedule_env
+    old = dict(enabled=False, interval=10, delay=3, types=['image'], revision='old')
+    ctx.env.sync.set_state(ctx.module.SETTINGS_KEY, old)
+    assert ctx.module.settings()['upload_limit'] == 0
+    assert not ctx.module.save_settings(ctx.env.config, old)
+    ctx.module.save_settings(ctx.env.config, dict(old, upload_limit=512))
+    ctx.module.save_settings(ctx.env.config, dict(old, interval=5))
+    assert ctx.module.settings()['upload_limit'] == 512
+    task = ctx.env.sync.request_sync(ctx.env.config, ['image'])
+    assert task.data['upload_limit'] == 512
 
 
 def test_receiver_disappearing_during_startup_delay_restarts_cycle(schedule_env):

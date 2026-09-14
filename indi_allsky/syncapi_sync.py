@@ -94,11 +94,21 @@ def status():
     return result
 
 
-def request_sync(config, types, schedule_revision=None):
+def validate_upload_limit(value):
+    if type(value) is not int or value not in (0, 128, 256, 512, 1024, 2048, 5120, 10240):
+        raise ValueError('Choose a supported upload speed limit.')
+    return value
+
+
+def request_sync(config, types, schedule_revision=None, upload_limit=None):
     if not on_demand_enabled(config):
         raise ValueError('Save and apply On demand mode before starting a synchronization.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
+    if upload_limit is None:
+        from .syncapi_schedule import settings
+        upload_limit = settings()['upload_limit']
+    upload_limit = validate_upload_limit(upload_limit)
     fingerprint = validate_destination(config)
     task = active_task()
     if task:
@@ -106,7 +116,8 @@ def request_sync(config, types, schedule_revision=None):
     set_state(DESTINATION_KEY, fingerprint)
     task = models.IndiAllSkyDbTaskQueueTable(
         queue=models.TaskQueueQueue.MAIN, state=models.TaskQueueState.MANUAL, priority=100,
-        data={'action': TASK_ACTION, 'types': list(dict.fromkeys(types)), 'destination': fingerprint},
+        data={'action': TASK_ACTION, 'types': list(dict.fromkeys(types)), 'destination': fingerprint,
+              'upload_limit': upload_limit},
     )
     if schedule_revision is not None:
         task.data['schedule_revision'] = schedule_revision
@@ -180,6 +191,7 @@ class SyncApiSyncWorker(Thread):
         self.stop_event = Event()
         self.progress = {}
         self.last_progress = 0
+        self.upload_limit = 0
 
     def stop(self):
         self.stop_event.set()
@@ -274,6 +286,14 @@ class SyncApiSyncWorker(Thread):
             self.stop_event.wait(1)
         self.check_control()
 
+    def upload_progress(self, transferred, total):
+        # These bytes have been read for the request, not acknowledged by the
+        # receiver. Keep them separate from completed totals and reset per try.
+        self.progress['upload'].update(bytes=transferred, total=total)
+        if self.stop_event.is_set() or time.monotonic() - self.last_progress >= 5:
+            self.check_control()
+            self.publish()
+
     def transfer_once(self, entry, metadata):
         # Keep optional transfer backends out of the web/status import path.
         from .filetransfer.requests_syncapi_v1 import requests_syncapi_v1
@@ -316,7 +336,12 @@ class SyncApiSyncWorker(Thread):
                     raise TransferFailure('Receiver returned an invalid source lookup.')
                 self.check_control()
             stage = 'Camera metadata upload' if metadata['type'] == constants.CAMERA else 'Upload'
-            result = client.put(local_file=path, metadata=metadata, empty_file=False)
+            upload_options = {}
+            if metadata['type'] != constants.CAMERA:
+                self.progress['upload'] = dict(name=path.name, bytes=0, total=path.stat().st_size)
+                upload_options = dict(upload_limit=self.upload_limit, progress_callback=self.upload_progress,
+                                      upload_wait=self.stop_event.wait)
+            result = client.put(local_file=path, metadata=metadata, empty_file=False, **upload_options)
             if not isinstance(result, dict) or type(result.get('id')) is not int or result['id'] <= 0:
                 raise TransferFailure('Receiver did not return a valid transfer acknowledgement.')
             if metadata['type'] != constants.CAMERA:
@@ -329,6 +354,7 @@ class SyncApiSyncWorker(Thread):
             detail = ' '.join(str(exc).split())
             raise ConnectionFailure('{0} failed for "{1}": {2}: {3}'.format(stage, target, type(cause).__name__, detail)) from exc
         finally:
+            self.progress.pop('upload', None)
             client.close()
 
     def transfer_unit(self, entry, media_type):
@@ -367,6 +393,8 @@ class SyncApiSyncWorker(Thread):
         outcome = 'complete'
         reason = None
         try:
+            # Queued tasks from before speed limits were introduced stay valid.
+            self.upload_limit = validate_upload_limit(task.data.get('upload_limit', 0))
             self.config = IndiAllSkyConfig().config
             self.destination = validate_destination(self.config)
             if task.data.get('destination') != self.destination:
