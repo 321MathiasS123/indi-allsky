@@ -1,6 +1,7 @@
 """Stream archive uploads through the real encoder/receiver with a fake clock."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,9 @@ def test_upload_paces_wire_bytes_preserves_media_and_reports_progress(sync_env, 
         progress = [state for state in snapshots if 'upload' in state]
         assert progress and all(0 < state['upload']['bytes'] < len(media) for state in progress)
         assert all(state['bytes'] == 0 and state['files'] == 0 for state in progress)
+        assert all(250000 < state['rates']['bytes'] <= 256 * 1024 for state in progress)
+        assert all(state['rates']['items'] == state['rates']['files'] == 0 for state in progress)
+    assert 'rates' not in result
     with env.nas.app_context():
         remote = env.models.IndiAllSkyDbImageTable.query.one()
         assert remote.getFilesystemPath().read_bytes() == media
@@ -95,6 +99,7 @@ def test_retry_resets_partial_progress_and_only_counts_acknowledged_bytes(sync_e
                 for _ in range(180):
                     kwargs['data'].read(8192)
                 assert env.sync.status()['upload']['bytes'] > 0
+                assert env.sync.status()['rates']['bytes'] > 0
                 raise env.transport.requests.exceptions.ConnectionError('interrupted upload')
         return original(url, **kwargs)
 
@@ -110,6 +115,53 @@ def test_retry_resets_partial_progress_and_only_counts_acknowledged_bytes(sync_e
     assert result['state'] == 'complete', result
     assert len(uploads) == 2 and all(upload['bytes'] == 0 for upload in uploads)
     assert result['files'] == 1 and result['bytes'] == len(media) and entry.sync_id
+    assert worker.transferred_bytes > len(media)  # Retransmission is traffic, not another completed file.
+
+
+def test_recent_rates_use_elapsed_intervals_and_handle_forced_updates(sync_env, monkeypatch):
+    env = sync_env
+    _, _, worker, clock = upload_worker(env, monkeypatch)
+    worker.progress = dict(task_id=worker.task_id, state='running', completed=0, files=0, bytes=0,
+                           upload=dict(bytes=0, total=2000000))
+    worker.publish(force=True)
+    assert 'rates' not in env.sync.status()
+    clock.now += 2
+    worker.upload_progress(1000000, 2000000)
+    worker.progress.update(completed=3, files=5)
+    clock.now += 3
+    worker.publish()
+    expected = dict(bytes=200000, items=0.6, files=1)
+    assert env.sync.status()['rates'] == expected
+
+    clock.now += 0.2
+    worker.upload_progress(1100000, 2000000)
+    worker.publish(force=True)
+    assert env.sync.status()['rates'] == expected  # No spike from an immediate status update.
+    clock.now += 4.8
+    worker.publish(force=True)
+    assert env.sync.status()['rates'] == dict(bytes=20000, items=0, files=0)
+    # Lookup recovery can complete items without uploading another file.
+    worker.progress['completed'] += 2
+    clock.now += 5
+    worker.publish()
+    assert env.sync.status()['rates'] == dict(bytes=0, items=0.4, files=0)
+    clock.now += 5
+    worker.publish()
+    assert env.sync.status()['rates'] == dict(bytes=0, items=0, files=0)
+    worker.progress['state'] = 'cancelled'
+    worker.publish(force=True)
+    assert 'rates' not in env.sync.status()
+
+
+def test_status_hides_stale_rates_without_changing_saved_progress(sync_env):
+    env = sync_env
+    task = env.sync.request_sync(env.config, ['image'])
+    saved = dict(task_id=task.id, state='running', updated=(datetime.now() - timedelta(seconds=16)).isoformat(),
+                 rates=dict(bytes=250000, items=0.5, files=1), completed=3)
+    env.sync.set_state(env.sync.STATUS_KEY, saved)
+    assert 'rates' not in env.sync.status()
+    assert env.sync.status()['completed'] == 3
+    assert env.sync.get_state(env.sync.STATUS_KEY) == saved
 
 
 def test_limit_exceeding_authentication_window_fails_before_sending(sync_env, monkeypatch):

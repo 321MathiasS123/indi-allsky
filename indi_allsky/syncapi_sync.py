@@ -91,6 +91,10 @@ def status():
         result = {'task_id': task.id, 'state': 'queued', 'message': 'Waiting for the indi-allsky service.'}
     result['active'] = task is not None
     result['cancel_requested'] = bool(task and get_state(CANCEL_KEY, 0) >= task.id)
+    # A blocked socket may prevent worker updates. Do not present an old
+    # transfer rate as current speed while waiting for the next update.
+    if result.get('rates') and datetime.now() - datetime.fromisoformat(result['updated']) > timedelta(seconds=15):
+        result.pop('rates')
     return result
 
 
@@ -192,6 +196,8 @@ class SyncApiSyncWorker(Thread):
         self.progress = {}
         self.last_progress = 0
         self.upload_limit = 0
+        self.transferred_bytes = 0
+        self.rate_sample = None
 
     def stop(self):
         self.stop_event.set()
@@ -219,6 +225,18 @@ class SyncApiSyncWorker(Thread):
     def publish(self, force=False):
         now = time.monotonic()
         if force or now - self.last_progress >= 5:
+            sample = (now, self.transferred_bytes, self.progress['completed'], self.progress['files'])
+            if self.rate_sample is None:
+                self.rate_sample = sample
+            elif now - self.rate_sample[0] >= 1:
+                # Use the elapsed sampling interval, including lookup/retry
+                # waits. Ignore sub-second forced updates to avoid spikes.
+                elapsed = now - self.rate_sample[0]
+                self.progress['rates'] = {key: (sample[i] - self.rate_sample[i]) / elapsed
+                                          for i, key in enumerate(('bytes', 'items', 'files'), 1)}
+                self.rate_sample = sample
+            if self.progress['state'] != 'running':
+                self.progress.pop('rates', None)
             self.progress['updated'] = datetime.now().isoformat()
             set_state(STATUS_KEY, self.progress)
             self.last_progress = now
@@ -289,6 +307,9 @@ class SyncApiSyncWorker(Thread):
     def upload_progress(self, transferred, total):
         # These bytes have been read for the request, not acknowledged by the
         # receiver. Keep them separate from completed totals and reset per try.
+        # The speed counter spans attempts, so retries count as traffic without
+        # adding them to the acknowledged file/byte totals.
+        self.transferred_bytes += transferred - self.progress['upload']['bytes']
         self.progress['upload'].update(bytes=transferred, total=total)
         if self.stop_event.is_set() or time.monotonic() - self.last_progress >= 5:
             self.check_control()
