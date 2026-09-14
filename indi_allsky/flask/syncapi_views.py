@@ -105,7 +105,10 @@ class SyncApiBaseView(BaseView):
         media_file_size = tmp_media_file_p.stat().st_size
         if media_file_size != metadata.get('file_size', -1):
             tmp_media_file_p.unlink()
-            raise AuthenticationFailure('Media file size does not match')
+            # Authentication already succeeded. Reject damaged media without
+            # misreporting a valid account/API key as an authentication failure.
+            app.logger.error('Media file size does not match: expected %s bytes, received %d bytes', metadata.get('file_size'), media_file_size)
+            return jsonify({'error': 'media_size_mismatch'}), 400
 
 
         try:
