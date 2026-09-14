@@ -117,6 +117,11 @@ class requests_syncapi_v1(GenericFileTransfer):
                 f_media,
                 'application/octet-stream',
             ),
+            # Werkzeug 3.1.6-3.1.8 can append a CR to the last part when the
+            # closing delimiter crosses a parser read boundary. Keep both
+            # signed metadata and media before an unused final form field.
+            # This avoids relying on a particular boundary or read size.
+            'syncapi_end': '',
         }
 
 
@@ -194,11 +199,13 @@ class requests_syncapi_v1(GenericFileTransfer):
             raise TransferFailure('Unexpected receiver readiness response (HTTP {0:d}).'.format(r.status_code))
 
         if r.status_code >= 400:
+            try:
+                error = r.json().get('error')
+            except (ValueError, AttributeError):
+                error = None
+            if r.status_code == 400 and error == 'media_size_mismatch':
+                raise TransferFailure('Receiver rejected "{0}": media size does not match the signed metadata. Check the receiver logs.'.format(local_file_p.name))
             if self.quiet:
-                try:
-                    error = r.json().get('error')
-                except (ValueError, AttributeError):
-                    error = None
                 if r.status_code in (401, 403) or error == 'authentication failed':
                     raise AuthenticationFailure('Receiver authentication failed')
                 if kwargs.get('lookup'):
