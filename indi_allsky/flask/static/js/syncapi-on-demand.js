@@ -19,6 +19,10 @@
         if (typeof state.completed === 'number') {
             parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
         }
+        if (state.active && state.state === 'running') {
+            parts.push(state.rates ? `Recent speed: ${(state.rates.bytes / 1000000).toFixed(2)} MB/s · ${state.rates.items.toFixed(2)} items/s · ${state.rates.files.toFixed(2)} files/s.`
+                : 'Speed: waiting for a progress update.');
+        }
         if (state.active && state.upload && state.upload.total > 0) {
             const upload = state.upload;
             const percent = Math.min(100, Math.floor(upload.bytes / upload.total * 100));

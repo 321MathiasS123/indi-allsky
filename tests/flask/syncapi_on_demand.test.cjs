@@ -185,6 +185,20 @@ test('current file progress is separate from acknowledged totals and hidden afte
     assert.doesNotMatch(formatStatus(state), /Uploading|Waiting for the receiver/);
 });
 
+test('recent speed uses decimal MB and only appears during a running task', () => {
+    const state = {enabled: true, active: true, state: 'running', rates: {bytes: 250000, items: 0.5, files: 1.25}};
+    assert.match(formatStatus(state), /Recent speed: 0.25 MB\/s · 0.50 items\/s · 1.25 files\/s/);
+    delete state.rates;
+    assert.match(formatStatus(state), /Speed: waiting for a progress update/);
+    state.rates = {bytes: 0, items: 0, files: 0};
+    assert.match(formatStatus(state), /0.00 MB\/s · 0.00 items\/s · 0.00 files\/s/);
+    state.state = 'queued';
+    assert.doesNotMatch(formatStatus(state), /speed:|Speed:/);
+    state.state = 'complete';
+    state.active = false;
+    assert.doesNotMatch(formatStatus(state), /speed:|Speed:/);
+});
+
 test('Sync now stays disabled through scheduler handoff and unlocks between runs', async () => {
     const {nodes, document, panel} = harness();
     const polls = [];

@@ -16,6 +16,8 @@ Pending media are transferred oldest first by creation time across all selected 
 
 Large files show their current upload progress approximately every five seconds. These bytes have been read into the outgoing request; the completed file/byte totals increase only after the receiver acknowledges the file. The current-file counter resets on retry. Cancel is checked during uploads as well as between files; a blocked network operation still has to finish or time out.
 
+The status also shows recent transfer speed in MB/s (1 MB = 1,000,000 bytes), completed items/s and acknowledged uploaded files/s, calculated between progress updates. Transfer speed includes the current file and retransmitted media; completed totals do not count retries twice. Items recovered through a successful lookup can complete without uploading files. Rates include time spent on lookups and retry waits, disappear when a run ends, and show a waiting message if progress has not updated for 15 seconds.
+
 The existing receiver authentication window allows about 20 minutes for an upload. If the selected cap alone would take longer for a file, the run stops with an explicit instruction to increase the speed limit, before uploading it. This preserves authentication checks and existing transfer records. A slower-than-expected connection can still exceed that window.
 
 Successfully acknowledged items are skipped. If a previous upload arrived but its acknowledgement was lost, the Pi checks its identity, thumbnail reference, size and SHA-256 digest on the receiver and records the result without resending the media. Image/thumbnail completion is recorded together. Missing local files are reported as skipped and are never marked synchronized.
