@@ -16,6 +16,9 @@
                 .replace(' The schedule will check the receiver again.', '');
         }
         const parts = scheduled ? scheduleParts.concat(message) : [message];
+        if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
+        if (!scheduled) parts.push(...scheduleParts);
+        if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
         if (typeof state.completed === 'number') {
             parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
         }
@@ -23,16 +26,14 @@
             parts.push(state.rates ? `Recent speed: ${(state.rates.bytes / 1000000).toFixed(2)} MB/s · ${state.rates.items.toFixed(2)} items/s · ${state.rates.files.toFixed(2)} files/s.`
                 : 'Speed: waiting for a progress update.');
         }
+        // File details appear and disappear; keep them below the stable summary.
         if (state.active && state.upload && state.upload.total > 0) {
             const upload = state.upload;
             const percent = Math.min(100, Math.floor(upload.bytes / upload.total * 100));
             parts.push(`Uploading ${upload.name}: ${(upload.bytes / 1048576).toFixed(1)} of ${(upload.total / 1048576).toFixed(1)} MiB (${percent}%).`);
             if (upload.bytes >= upload.total) parts.push('Waiting for the receiver to acknowledge this file.');
         }
-        if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
         if (state.cancel_requested) parts.push('Cancellation requested; waiting for the upload or current network operation to stop.');
-        if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
-        if (!scheduled) parts.push(...scheduleParts);
         return parts.join('\n');
     }
 
