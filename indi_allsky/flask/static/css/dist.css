@@ -5442,6 +5442,9 @@
   .tw\:h-44 {
     height: calc(var(--tw-spacing) * 44);
   }
+  .tw\:h-64 {
+    height: calc(var(--tw-spacing) * 64);
+  }
   .tw\:h-\[18px\] {
     height: 18px;
   }
@@ -5683,6 +5686,9 @@
   }
   .tw\:resize-none {
     resize: none;
+  }
+  .tw\:\[scrollbar-gutter\:stable\] {
+    scrollbar-gutter: stable;
   }
   .tw\:list-inside {
     list-style-position: inside;

@@ -194,10 +194,10 @@
                     <button id="syncapi-run-start" type="button" class="tw:btn tw:btn-primary tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Sync now</button>
                     <button id="syncapi-run-cancel" type="button" class="tw:btn tw:btn-outline tw:min-h-11 tw:w-full tw:sm:w-auto" disabled>Cancel</button>
                 </div>
-                <p id="syncapi-run-error" class="tw:text-error tw:text-xs tw:break-words" role="alert"></p>
-                <div class="tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]">
-                    <p class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Synchronization status</p>
+                <div class="tw:h-64 tw:overflow-y-auto tw:[scrollbar-gutter:stable] tw:p-4 tw:bg-base-100 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)]" role="region" aria-labelledby="syncapi-run-status-heading" tabindex="0">
+                    <p id="syncapi-run-status-heading" class="tw:mb-2 tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/50">Synchronization status</p>
                     <p id="syncapi-run-status" class="tw:text-xs tw:leading-relaxed tw:break-words tw:whitespace-pre-line" role="status" aria-live="polite">Loading synchronization status…</p>
+                    <p id="syncapi-run-error" class="tw:mt-2 tw:text-error tw:text-xs tw:break-words" role="alert"></p>
                 </div>
             </div>
         </div>

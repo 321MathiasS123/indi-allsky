@@ -125,6 +125,68 @@ test('failed start remains visible and does not trigger automatic retry', async 
     assert.equal(nodes.start.disabled, false);
 });
 
+function htmlResponse(status) {
+    return {ok: status < 400, status, json: async () => JSON.parse('<!DOCTYPE html><title>Server response</title>')};
+}
+
+for (const [name, failure, message] of [
+    ['server error page', () => htmlResponse(502), /HTTP 502.*unreadable response/],
+    ['unexpected HTML', () => htmlResponse(200), /HTTP 200.*unreadable response/],
+    ['invalid status', () => ({ok: true, status: 200, json: async () => null}), /invalid status/],
+    ['expired sign-in', () => ({status: 401}), /HTTP 401.*sign in/],
+    ['redirected sign-in', () => ({redirected: true}), /redirected.*sign in/],
+    ['connection loss', () => { throw new TypeError('Failed to fetch'); }, /connection interrupted/],
+]) {
+    test(`${name} preserves the last status and clears its polling error after recovery`, async () => {
+        const {nodes, document, panel} = harness();
+        const polls = [], requests = [];
+        const fetcher = async (url, options) => {
+            requests.push(options);
+            if (requests.length === 2) return failure();
+            return {ok: true, status: 200, json: async () => ({enabled: true, active: true, state: 'running',
+                cancel_requested: false, completed: requests.length, total: 10, skipped: 0, files: 1, bytes: 1048576})};
+        };
+        await mount(panel, document, fetcher, fn => polls.push(fn));
+        const previous = nodes.status.textContent;
+        nodes['schedule-delay'].value = '7';
+        await polls.shift()();
+        assert.match(nodes.error.textContent, message);
+        assert.doesNotMatch(nodes.error.textContent, /Unexpected token|DOCTYPE|Failed to fetch/);
+        assert.equal(nodes.status.textContent, previous);
+        assert.equal(nodes.cancel.disabled, false);
+        await polls.shift()();
+        assert.equal(nodes.error.textContent, '');
+        assert.match(nodes.status.textContent, /3 of 10 items completed/);
+        assert.equal(nodes['schedule-delay'].value, '7');
+        assert.ok(requests.every(options => !options.method), 'Recovery only polls; it never starts or cancels a run');
+    });
+}
+
+for (const action of ['start', 'cancel']) {
+    for (const failure of ['HTML', 'network']) {
+        test(`an unconfirmed ${action} after ${failure} is never automatically repeated`, async () => {
+            const {nodes, document, panel} = harness();
+            const polls = [], requests = [];
+            const fetcher = async (url, options) => {
+                requests.push(options);
+                if (options.body) {
+                    if (failure === 'network') throw new TypeError('Failed to fetch');
+                    return htmlResponse(502);
+                }
+                return {ok: true, json: async () => ({enabled: true, active: action === 'cancel', task_id: 42})};
+            };
+            await mount(panel, document, fetcher, fn => polls.push(fn));
+            await nodes[action].handlers.click();
+            assert.match(nodes.error.textContent, /Could not confirm.*Check the refreshed status/);
+            assert.doesNotMatch(nodes.error.textContent, /Unexpected token|Failed to fetch|retrying automatically/);
+            const message = nodes.error.textContent;
+            await polls.shift()();
+            assert.equal(nodes.error.textContent, message);
+            assert.equal(requests.filter(options => options.body).length, 1);
+        });
+    }
+}
+
 test('configuration payload includes current switch, timings and checkboxes without uploading', () => {
     const {nodes, document} = harness();
     nodes['schedule-enabled'].checked = true;
