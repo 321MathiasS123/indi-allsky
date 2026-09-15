@@ -63,6 +63,8 @@
         let state = {};
         let commandPending = false;
         let requestRevision = 0;
+        let commandError = '';
+        let pollError = '';
 
         function render(value) {
             state = value;
@@ -76,42 +78,72 @@
             choices.disabled = commandPending || value.active;
             controls.disabled = commandPending || value.active;
             output.textContent = formatStatus(value);
+            error.textContent = commandError || pollError;
         }
 
         async function request(payload) {
+            const unavailable = (reason, response) => new Error(
+                (payload ? 'Could not confirm the synchronization request' : 'Could not refresh synchronization status') +
+                (response && response.status ? ` (HTTP ${response.status})` : '') + `: ${reason}. ` +
+                (payload ? 'Check the refreshed status before trying again.' : 'Showing the last known status; retrying automatically.'));
             const options = {credentials: 'same-origin', cache: 'no-store'};
             if (payload) {
                 options.method = 'POST';
                 options.headers = {'Content-Type': 'application/json', 'X-CSRFToken': panel.dataset.csrf};
                 options.body = JSON.stringify(payload);
             }
-            const response = await fetcher(panel.dataset.url, options);
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Unable to read synchronization status.');
+            let response;
+            try {
+                response = await fetcher(panel.dataset.url, options);
+            } catch (exception) {
+                throw unavailable('connection interrupted');
+            }
+            if (response.redirected) throw new Error('The synchronization request was redirected. Reload this page and sign in if prompted.');
+            if (response.status === 401 || response.status === 403) {
+                throw new Error(`Access to synchronization controls was denied (HTTP ${response.status}). Reload this page and sign in with an administrator account.`);
+            }
+            let data;
+            try {
+                data = await response.json();
+            } catch (exception) {
+                throw unavailable('the server returned an unreadable response', response);
+            }
+            if (!response.ok) {
+                throw typeof (data && data.error) === 'string' ? new Error(data.error) : unavailable('request rejected', response);
+            }
+            if (!data || typeof data.active !== 'boolean' || typeof data.enabled !== 'boolean') {
+                throw unavailable('the server returned an invalid status', response);
+            }
             return data;
         }
 
         async function refresh(payload) {
             // Polls leave the controls usable. A command can overtake an older
             // poll; its revision prevents that poll from restoring stale state
-            // or errors. Only commands lock controls and clear action errors.
+            // or errors. A good poll clears only polling errors; rejected user
+            // actions stay visible until the next command.
             if (commandPending) return;
             const revision = ++requestRevision;
             if (payload) {
                 commandPending = true;
+                commandError = '';
+                pollError = '';
                 render(state);
-                error.textContent = '';
             }
             try {
                 const value = await request(payload);
                 if (revision === requestRevision) {
                     state = value;
+                    pollError = '';
                     if (payload && payload.action === 'cancel' && value.schedule) {
                         enabled.checked = value.schedule.settings.enabled;
                     }
                 }
             } catch (exception) {
-                if (revision === requestRevision) error.textContent = exception.message;
+                if (revision === requestRevision) {
+                    if (payload) commandError = exception.message;
+                    else pollError = exception.message;
+                }
             } finally {
                 if (revision === requestRevision) {
                     commandPending = false;
@@ -123,7 +155,8 @@
         start.addEventListener('click', function () {
             const types = selectedTypes(document);
             if (!types.length) {
-                error.textContent = 'Select at least one media type.';
+                commandError = 'Select at least one media type.';
+                error.textContent = commandError;
                 return;
             }
             return refresh({action: 'start', types: types,
