@@ -226,3 +226,22 @@ def test_page_uses_camera_altitude_with_legacy_fallback(altitude, expected):
     assert context['camera_altitude'] == expected
     assert context['form_virtualsky']['POINTING_AZIMUTH'] == 0
     assert context['form_virtualsky']['AZIMUTH_ANGLE'] == 200
+
+
+@pytest.mark.parametrize('saved_flip', [False, True])
+def test_legacy_calibration_save_checks_preserved_orientation(endpoint, saved_flip):
+    from tests.lens_solver.test_calibration import saved_model
+
+    app, view, _, saved = endpoint
+    view.indi_allsky_config['VIRTUALSKY']['FLIP_H'] = saved_flip
+    payload = dict(VALUES, action='save', LENS_ALTITUDE=90,
+                   CALIBRATION_ENABLED=True, CALIBRATION=saved_model())
+    with app.test_request_context(json=payload):
+        response = view.dispatch_request()
+    if saved_flip:
+        assert response[1] == 400
+        assert 'Orientation changed' in response[0].get_json()['message']
+        assert saved == []
+    else:
+        assert response.get_json()['success']
+        assert saved[0]['VIRTUALSKY']['FLIP_H'] is False
