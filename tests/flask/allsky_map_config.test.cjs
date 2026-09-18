@@ -28,7 +28,10 @@ for (const [latitude, longitude] of [['50.12678', '8.07654'], ['0', '0'], ['', '
             css() {}, hide() {}, remove() {}, removeClass() {}, attr() {}, html() {},
         });
         $.ajax = (request) => requests.push(request);
-        vm.runInNewContext(script, { $, successMessage: $('success') });
+        vm.runInNewContext(script, {
+            $, successMessage: $('success'), document: {},
+            window: { indiAllskySync: { schedulePayload: () => [] } },
+        });
         handlers.get('#form_config:submit')();
         assert.equal(requests.length, 1);
         const payload = JSON.parse(requests[0].data);
