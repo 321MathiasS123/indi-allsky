@@ -594,6 +594,8 @@ class IndiAllSkyConfigBase(object):
             "CAMERA_NAME"            : "",
             "CAMERA_OWNER"           : "",
             "WEBSITE_URL"            : "",
+            "MAP_LATITUDE"           : "",
+            "MAP_LONGITUDE"          : "",
             "UPLOAD_IMAGE"           : True,
             "INTERVAL"               : 10,
         },
@@ -1542,9 +1544,9 @@ class IndiAllSkyConfigUtil(IndiAllSkyConfig):
         try:
             self._getConfigEntry()
 
-            logger.warning('Configuration already initialized')
+            logger.info('Configuration already initialized')
 
-            sys.exit(1)
+            sys.exit(0)
         except NoResultFound:
             pass
 

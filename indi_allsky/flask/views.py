@@ -691,12 +691,13 @@ class VirtualSkyView(TemplateView):
             # The image mask is applied after rotation/flipping/cropping, before
             # scaling and borders. Detection masks/ROIs are not display masks.
             focus_mode = self.indi_allsky_config.get('FOCUS_MODE', False)
-            context['overlay_image_mask'] = [mask.get('DIAMETER', 3000),
+            context['overlay_image_mask'] = [
+                mask.get('DIAMETER', 3000),
                 self.indi_allsky_config.get('LENS_OFFSET_X', 0),
                 self.indi_allsky_config.get('LENS_OFFSET_Y', 0),
                 100 if focus_mode else self.indi_allsky_config.get('IMAGE_SCALE', 100),
                 *[0 if focus_mode else self.indi_allsky_config.get('IMAGE_BORDER', {}).get(k, 0)
-                  for k in ('TOP', 'RIGHT', 'BOTTOM', 'LEFT')]]
+                    for k in ('TOP', 'RIGHT', 'BOTTOM', 'LEFT')]]
         context['precession'] = self.camera.data.get('vs_precession', False)
 
 
@@ -6637,9 +6638,19 @@ class FitsImageViewerView(FormView):
         }
 
 
+        local = True  # default to local assets
+        if self.web_nonlocal_images:
+            if self.web_local_images_admin and self.verify_admin_network():
+                pass
+            else:
+                local = False
+
+
         context['form_fits_viewer'] = IndiAllskyFitsImageViewerPreload(
             data=form_data,
             camera_id=self.camera.id,
+            s3_prefix=self.s3_prefix,
+            local=local,
         )
 
         return context
@@ -6663,9 +6674,19 @@ class AjaxFitsImageViewerView(BaseView):
         self.cameraSetup(camera_id=camera_id)
 
 
+        local = True  # default to local assets
+        if self.web_nonlocal_images:
+            if self.web_local_images_admin and self.verify_admin_network():
+                pass
+            else:
+                local = False
+
+
         form_viewer = IndiAllskyFitsImageViewer(
             data=request.json,
             camera_id=camera_id,
+            s3_prefix=self.s3_prefix,
+            local=local,
         )
 
 
@@ -6808,13 +6829,24 @@ class Fits2JpegView(BaseView):
         self.cameraSetup(camera_id=fits_entry.camera_id)
 
 
-        filename_p = Path(fits_entry.getFilesystemPath())
+        try:
+            filename_p = fits_entry.getLocalOrCachedPath(s3_prefix=self.s3_prefix)
+        except Exception as e:
+            app.logger.error('Error resolving FITS file: %s', str(e))
+            filename_p = None
+
+        if not filename_p or not filename_p.is_file():
+            return 'FITS not found', 404
 
 
         p_config = self.indi_allsky_config.copy()
 
 
-        hdulist = fits.open(filename_p)
+        try:
+            hdulist = fits.open(filename_p)
+        except OSError as e:
+            app.logger.error('Failed to open FITS file %s: %s', filename_p, str(e))
+            return 'Bad FITS file', 500
 
         exposure = float(hdulist[0].header.get('EXPTIME', 0))
         exposure_av = Array(ctypes.c_int32, [int(exposure * 1000000)])
@@ -6846,8 +6878,8 @@ class Fits2JpegView(BaseView):
         processing_start = time.time()
 
 
-        # use mtime for date
-        image_date = datetime.fromtimestamp(filename_p.stat().st_mtime)
+        # use createDate for date
+        image_date = fits_entry.createDate or datetime.fromtimestamp(filename_p.stat().st_mtime)
 
 
         image_processor.update_astrometric_data(image_date)
@@ -7506,11 +7538,7 @@ class SystemInfoView(TemplateView):
         context['systemd_target'] = self.getSystemdTarget()
 
         context['indiserver_service_activestate'], context['indiserver_service_unitstate'] = self.getSystemdUnitStatus(app.config['INDISERVER_SERVICE_NAME'])
-        context['indiserver_timer_activestate'], context['indiserver_timer_unitstate'] = self.getSystemdUnitStatus(app.config['INDISERVER_TIMER_NAME'])
         context['indi_allsky_service_activestate'], context['indi_allsky_service_unitstate'] = self.getSystemdUnitStatus(app.config['ALLSKY_SERVICE_NAME'])
-        context['indi_allsky_timer_activestate'], context['indi_allsky_timer_unitstate'] = self.getSystemdUnitStatus(app.config['ALLSKY_TIMER_NAME'])
-        context['indiserver_next_trigger'] = self.getSystemdTimerTrigger(app.config['INDISERVER_TIMER_NAME'])
-        context['indi_allsky_next_trigger'] = self.getSystemdTimerTrigger(app.config['ALLSKY_TIMER_NAME'])
         context['gunicorn_indi_allsky_service_activestate'], context['gunicorn_indi_allsky_service_unitstate'] = self.getSystemdUnitStatus(app.config['GUNICORN_SERVICE_NAME'])
         context['gunicorn_indi_allsky_socket_activestate'], context['gunicorn_indi_allsky_socket_unitstate'] = self.getSystemdUnitStatus(app.config['GUNICORN_SOCKET_NAME'])
 
@@ -7978,10 +8006,10 @@ class AjaxSystemInfoView(BaseView):
                 r = self.stopSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
             elif command == 'start':
                 r = self.startSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
-            #elif command == 'disable':
-            #    r = self.disableSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
-            #elif command == 'enable':
-            #    r = self.enableSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
+            elif command == 'disable':
+                r = self.disableSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
+            elif command == 'enable':
+                r = self.enableSystemdUnit(app.config['INDISERVER_SERVICE_NAME'])
             else:
                 errors_data = {
                     'COMMAND_HIDDEN' : ['Unhandled command'],
@@ -8009,32 +8037,10 @@ class AjaxSystemInfoView(BaseView):
                 r = self.stopSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
             elif command == 'start':
                 r = self.startSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
-            #elif command == 'disable':
-            #    r = self.disableSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
-            #elif command == 'enable':
-            #    r = self.enableSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
-            else:
-                errors_data = {
-                    'COMMAND_HIDDEN' : ['Unhandled command'],
-                }
-                return jsonify(errors_data), 400
-
-        elif service == app.config['INDISERVER_TIMER_NAME']:
-            if command == 'disable':
-                r = self.disableSystemdUnit(app.config['INDISERVER_TIMER_NAME'])
+            elif command == 'disable':
+                r = self.disableSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
             elif command == 'enable':
-                r = self.enableSystemdUnit(app.config['INDISERVER_TIMER_NAME'])
-            else:
-                errors_data = {
-                    'COMMAND_HIDDEN' : ['Unhandled command'],
-                }
-                return jsonify(errors_data), 400
-
-        elif service == app.config['ALLSKY_TIMER_NAME']:
-            if command == 'disable':
-                r = self.disableSystemdUnit(app.config['ALLSKY_TIMER_NAME'])
-            elif command == 'enable':
-                r = self.enableSystemdUnit(app.config['ALLSKY_TIMER_NAME'])
+                r = self.enableSystemdUnit(app.config['ALLSKY_SERVICE_NAME'])
             else:
                 errors_data = {
                     'COMMAND_HIDDEN' : ['Unhandled command'],
@@ -8945,9 +8951,9 @@ class AjaxIndiServerChangeView(BaseView):
         return jsonify({'success-message' : success_message})
 
 
-    def reloadSystemdUnits(self, bus_type=dbus.SessionBus):
+    def reloadSystemdUnits(self, bus_type=None):
         try:
-            bus = bus_type()
+            bus = self._get_systemd_bus(bus_type)
         except dbus.exceptions.DBusException:
             # This happens in docker
             return 'D-Bus Unavailable', 'D-Bus Unavailable'
@@ -11204,11 +11210,19 @@ class JsonImageProcessingView(JsonView):
                 'processing_elapsed_s' : 0.0,
                 'message' : 'No FITS images found',
             }
-            return jsonify(json_data)
+        try:
+            filename_p = fits_entry.getLocalOrCachedPath(s3_prefix=self.s3_prefix)
+        except Exception as e:
+            app.logger.error('Error resolving FITS file: %s', str(e))
+            filename_p = None
 
-
-
-        filename_p = Path(fits_entry.getFilesystemPath())
+        if not filename_p or not filename_p.is_file():
+            json_data = {
+                'image_b64' : None,
+                'processing_elapsed_s' : 0.0,
+                'message' : 'FITS file not found',
+            }
+            return jsonify(json_data), 404
 
 
         p_config = self.indi_allsky_config.copy()
@@ -11400,7 +11414,16 @@ class JsonImageProcessingView(JsonView):
         p_config['LIGHTGRAPH_OVERLAY']['FONT_COLOR'] = [int(x) for x in lightgraph_overlay__font_color_str.split(',')]
 
 
-        hdulist = fits.open(filename_p)
+        try:
+            hdulist = fits.open(filename_p)
+        except OSError as e:
+            app.logger.error('Failed to open FITS file %s: %s', filename_p, str(e))
+            json_data = {
+                'image_b64' : None,
+                'processing_elapsed_s' : 0.0,
+                'message' : 'Bad FITS file',
+            }
+            return jsonify(json_data), 500
 
         exposure = float(hdulist[0].header.get('EXPTIME', 0))
         exposure_av = Array(ctypes.c_int32, [int(exposure * 1000000)])
@@ -11486,8 +11509,8 @@ class JsonImageProcessingView(JsonView):
         if disable_processing:
             # just return original image with no processing
 
-            # use mtime for date
-            image_date = datetime.fromtimestamp(filename_p.stat().st_mtime)
+            # use createDate for date
+            image_date = fits_entry.createDate or datetime.fromtimestamp(filename_p.stat().st_mtime)
 
             image_processor.add(
                 filename_p,
@@ -11535,12 +11558,22 @@ class JsonImageProcessingView(JsonView):
                     .limit(p_config['IMAGE_STACK_COUNT'] - 1)
 
                 for f_image in fits_image_query:
-                    f_image_p = f_image.getFilesystemPath()
+                    try:
+                        f_image_p = f_image.getLocalOrCachedPath(s3_prefix=self.s3_prefix)
+                    except Exception as e:
+                        app.logger.error('Error resolving stacked FITS file: %s', str(e))
+                        f_image_p = None
 
-                    # use mtime for date
-                    pre_image_date = datetime.fromtimestamp(f_image_p.stat().st_mtime)
+                    if not f_image_p or not f_image_p.is_file():
+                        continue
 
-                    alt_hdulist = fits.open(f_image_p)
+                    # use createDate for date
+                    pre_image_date = f_image.createDate or datetime.fromtimestamp(f_image_p.stat().st_mtime)
+
+                    try:
+                        alt_hdulist = fits.open(f_image_p)
+                    except OSError:
+                        continue
                     alt_exposure = float(alt_hdulist[0].header.get('EXPTIME', 0))
                     alt_gain = float(alt_hdulist[0].header.get('GAIN', 0))
                     alt_binning = int(alt_hdulist[0].header.get('XBINNING', 1))
@@ -11562,8 +11595,8 @@ class JsonImageProcessingView(JsonView):
                 message_list.append('Stacked {0:d} images'.format(p_config['IMAGE_STACK_COUNT']))
 
 
-            # use mtime for date
-            image_date = datetime.fromtimestamp(filename_p.stat().st_mtime)
+            # use createDate for date
+            image_date = fits_entry.createDate or datetime.fromtimestamp(filename_p.stat().st_mtime)
 
 
             image_processor.update_astrometric_data(image_date)
@@ -11771,8 +11804,9 @@ class StreamLogViewBase(BaseView):
     def __init__(self, **kwargs):
         super(StreamLogViewBase, self).__init__(**kwargs)
 
-        self.user_unit_name = 'changeme'
         self.syslog_facility = None
+        self.user_unit_name = None
+        self.unit_name = None
 
 
     def dispatch_request(self):
@@ -11787,10 +11821,13 @@ class StreamLogViewBase(BaseView):
             if not isinstance(self.syslog_facility, type(None)):
                 app.logger.info('Streaming log from facility %s', self.syslog_facility)
                 reader.add_match(SYSLOG_FACILITY=self.syslog_facility)
-            else:
-                # use unit name
+            elif not isinstance(self.user_unit_name, type(None)):
                 app.logger.info('Streaming log from user unit %s', self.user_unit_name)
                 reader.add_match(_SYSTEMD_USER_UNIT=self.user_unit_name)
+            else:
+                # use unit name
+                app.logger.info('Streaming log from system unit %s', self.unit_name)
+                reader.add_match(_SYSTEMD_UNIT=self.unit_name)
 
 
             reader.seek_tail()
@@ -11826,16 +11863,17 @@ class StreamLogView(StreamLogViewBase):
         super(StreamLogView, self).__init__(**kwargs)
 
         self.syslog_facility = '22'  # local6
-        #self.user_unit_name = app.config['ALLSKY_SERVICE_NAME']
         self.user_unit_name = None
+        self.unit_name = None
 
 
 class StreamIndiserverLogView(StreamLogViewBase):
     def __init__(self, **kwargs):
         super(StreamIndiserverLogView, self).__init__(**kwargs)
 
-        self.syslog_facility = None
-        self.user_unit_name = app.config['INDISERVER_SERVICE_NAME']
+        self.syslog_facility = '21'  # local5
+        self.user_unit_name = None
+        self.unit_name = None
 
 
 class LogDownloadView(BaseView):
@@ -15914,6 +15952,10 @@ class WsShellView(BaseView):
 
         if not current_user.is_admin:
             return 'Unauthorized', 401
+
+        if not self.verify_admin_network():
+            return 'Unauthorized', 401
+
 
         ws = simple_websocket.Server.accept(request.environ)
 
