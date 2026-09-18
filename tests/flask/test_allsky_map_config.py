@@ -9,8 +9,67 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from wtforms import Form, FloatField, StringField
+from wtforms.validators import ValidationError
 
 from indi_allsky.allsky_map import send_allsky_map_ping
+
+
+@pytest.fixture(scope='module')
+def coordinate_form():
+    path = Path(__file__).resolve().parents[2] / 'indi_allsky/flask/forms.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    names = {'LOCATION_LATITUDE', 'LOCATION_LONGITUDE',
+             'ALLSKYMAP__MAP_LATITUDE', 'ALLSKYMAP__MAP_LONGITUDE'}
+    validator_names = {name + '_validator' for name in names}
+    validators = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name in validator_names]
+    form = next(node for node in tree.body
+                if isinstance(node, ast.ClassDef) and node.name == 'IndiAllskyConfigForm')
+    fields = [node for node in form.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id in names
+                      for target in node.targets)]
+    namespace = dict(FloatField=FloatField, StringField=StringField, ValidationError=ValidationError)
+    exec(compile(ast.Module(body=validators + fields, type_ignores=[]), str(path), 'exec'), namespace)
+    return type('CoordinateForm', (Form,), {name: namespace[name] for name in names})
+
+
+@pytest.mark.parametrize('axis,camera_value', [
+    ('LATITUDE', 52), ('LONGITUDE', 11), ('LATITUDE', 0), ('LONGITUDE', 0),
+])
+@pytest.mark.parametrize('offset', [-1.0001, -1, 0, 1, 1.0001])
+def test_override_must_be_within_one_degree(coordinate_form, axis, camera_value, offset):
+    data = dict(LOCATION_LATITUDE=52, LOCATION_LONGITUDE=11,
+                ALLSKYMAP__MAP_LATITUDE='', ALLSKYMAP__MAP_LONGITUDE='')
+    field_name = 'ALLSKYMAP__MAP_' + axis
+    data['LOCATION_' + axis] = camera_value
+    data[field_name] = str(camera_value + offset)
+    form = coordinate_form(data=data)
+    assert form.validate() is (abs(offset) <= 1)
+    if abs(offset) > 1:
+        assert 'within 1 degree' in form.errors[field_name][0]
+
+
+@pytest.mark.parametrize('camera_longitude,map_longitude,valid', [
+    (179.5, -179.5, True), (179.5, -179.4, False),
+    (-179.5, 179.5, True), (-179.5, 179.4, False),
+])
+def test_longitude_distance_wraps_at_dateline(coordinate_form, camera_longitude, map_longitude, valid):
+    form = coordinate_form(data=dict(
+        LOCATION_LATITUDE=52, LOCATION_LONGITUDE=camera_longitude,
+        ALLSKYMAP__MAP_LATITUDE='', ALLSKYMAP__MAP_LONGITUDE=str(map_longitude),
+    ))
+    assert form.validate() is valid
+    if not valid:
+        assert 'within 1 degree' in form.errors['ALLSKYMAP__MAP_LONGITUDE'][0]
+
+
+def test_blank_overrides_remain_valid(coordinate_form):
+    form = coordinate_form(data=dict(
+        LOCATION_LATITUDE=52, LOCATION_LONGITUDE=11,
+        ALLSKYMAP__MAP_LATITUDE='', ALLSKYMAP__MAP_LONGITUDE='',
+    ))
+    assert form.validate()
 
 
 @pytest.fixture(scope='module')
