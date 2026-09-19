@@ -6,7 +6,7 @@ from jinja2 import DictLoader
 from jinja2 import Environment
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPOSITORY_ROOT.joinpath(
     'indi_allsky',
     'flask',
@@ -82,6 +82,7 @@ def _render_builder(
         'estimated_library_storage': '500 MiB',
         'exposure_max': 30,
         'exposure_step': 5,
+        'exposure_delay': 0.0,
         'temperature_range': 5.0,
         'temperature_range_source': 'legacy_default',
         'temperature_source': 'auto',

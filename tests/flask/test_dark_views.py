@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VIEWS_PATH = REPOSITORY_ROOT.joinpath('indi_allsky', 'flask', 'views.py')
 
 
