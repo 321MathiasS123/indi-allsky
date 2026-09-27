@@ -315,6 +315,7 @@ function populate_gallery(gallery_data) {
             ),
             'data-exclude' : item['exclude'],
             'data-image_id' : item['id'],
+            'data-panorama_id' : item['panorama_id'] || '',
             'data-ts'     : item['ts'],
             'data-asi676mc-repair-status' : repair_status || '',
             'title'       : repair_title,
@@ -353,6 +354,8 @@ function populate_gallery(gallery_data) {
         preload: [1, 1],
         preloaderDelay: 0,
         loop: false,
+        // Keep the fitted image below the 60px PhotoSwipe toolbar.
+        padding: { top: 60, bottom: 0, left: 0, right: 0 },
         // dynamic import is not supported in UMD version
         pswpModule: PhotoSwipe
     });
@@ -402,6 +405,34 @@ function populate_gallery(gallery_data) {
               pswp.on('change', () => {
                 //console.log('change');
                 el.href = "{{ url_for('indi_allsky.timelapse_image_view')}}?id=" + pswp.currSlide.data.element.getAttribute("data-image_id");
+              });
+            }
+        });
+
+        lightbox.pswp.ui.registerElement({
+            name: 'panorama-button',
+            order: 9,
+            title: 'Panorama',
+            isButton: true,
+            tagName: 'a',
+
+            html: {
+              isCustomSVG: true,
+              inner: '<path d="M1 3h14v10H1zM2 4v8h12V4z"/><path d="m2 11 3-4 3 3 2-2 4 4H2z"/>',
+            },
+
+            onInit: (el, pswp) => {
+              el.setAttribute('target', '_blank');
+              el.setAttribute('rel', 'noopener');
+
+              pswp.on('change', () => {
+                var panorama_id = pswp.currSlide.data.element.getAttribute('data-panorama_id');
+                el.style.display = panorama_id ? '' : 'none';
+                if (panorama_id) {
+                  el.href = "{{ url_for('indi_allsky.panorama_image_view') }}?id=" + panorama_id;
+                } else {
+                  el.removeAttribute('href');
+                }
               });
             }
         });
