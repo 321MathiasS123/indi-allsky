@@ -11,20 +11,17 @@
 <link rel="stylesheet" href="{{ url_for('indi_allsky.static', filename='photoswipe/dist/photoswipe.css') }}">
 <style>
 .pswp .pswp__top-bar {
+    /* Let action buttons wrap below the fixed left-hand status controls. */
+    display: flow-root;
     height: auto;
     min-height: 60px;
-    /* Fill each row from the Close button backwards before wrapping. */
-    flex-direction: row-reverse;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    align-items: flex-start;
 }
 .pswp__top-bar > * {
-    flex-shrink: 0;
+    float: right;
 }
 .gallery-toolbar-status {
     display: flex;
-    flex: 1 0 auto;
+    float: left;
 }
 /* Centre the 16-unit custom artwork like PhotoSwipe's padded 32-unit icons. */
 .pswp__top-bar .pswp__icn[viewBox="0 0 16 16"] {
@@ -716,15 +713,13 @@ function populate_gallery(gallery_data) {
 
     lightbox.on('afterInit', function() {
         const pswp = lightbox.pswp;
-        // Keep the counter and exclusion control together at the left of their row.
+        // Keep the counter and exclusion control together at the top left.
         const status = document.createElement('div');
         status.className = 'gallery-toolbar-status';
         status.append(...pswp.topBar.querySelectorAll('.pswp__counter, .pswp__button--exclude-button, .pswp__preloader'));
         pswp.topBar.prepend(status);
-        // Preserve the visual icon order while packing rows from the right.
-        Array.from(pswp.topBar.children).forEach((el, index) => {
-            el.style.order = -index;
-        });
+        // Float Close first, then fill each row leftwards with the remaining actions.
+        Array.from(pswp.topBar.children).slice(1).reverse().forEach(el => pswp.topBar.append(el));
         // Showing or hiding the switch can wrap the toolbar without a window resize.
         const toolbar_observer = new ResizeObserver(() => pswp.updateSize(true));
         toolbar_observer.observe(pswp.topBar);
