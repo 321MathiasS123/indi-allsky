@@ -10,6 +10,51 @@
 <script src="{{ url_for('indi_allsky.static', filename='photoswipe/dist/umd/photoswipe-lightbox.umd.min.js') }}"></script>
 <link rel="stylesheet" href="{{ url_for('indi_allsky.static', filename='photoswipe/dist/photoswipe.css') }}">
 <style>
+.pswp .pswp__top-bar {
+    height: auto;
+    min-height: 60px;
+    flex-wrap: wrap;
+}
+.pswp__top-bar > * {
+    flex-shrink: 0;
+}
+.pswp .pswp__button--panorama-button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: auto;
+    padding: 0 8px;
+    color: var(--pswp-icon-color);
+    font: 600 14px/1.2 sans-serif;
+}
+.pswp__button--panorama-button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -4px;
+}
+.gallery-panorama-switch {
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: #64748b;
+}
+.gallery-panorama-switch::before {
+    content: '';
+    display: block;
+    width: 14px;
+    height: 14px;
+    margin: 2px;
+    border-radius: 50%;
+    background: #fff;
+}
+[aria-checked="true"] .gallery-panorama-switch {
+    background: #0284c7;
+}
+[aria-checked="true"] .gallery-panorama-switch::before {
+    transform: translateX(14px);
+}
+
 #allsky-gallery {
     display: grid !important;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
@@ -366,8 +411,8 @@ function populate_gallery(gallery_data) {
         preload: [1, 1],
         preloaderDelay: 0,
         loop: false,
-        // Keep the fitted image below the 60px PhotoSwipe toolbar.
-        padding: { top: 60, bottom: 0, left: 0, right: 0 },
+        // Keep the fitted image below the toolbar, including any wrapped rows.
+        paddingFn: () => ({ top: lightbox.pswp?.topBar?.offsetHeight || 60, bottom: 0, left: 0, right: 0 }),
         // dynamic import is not supported in UMD version
         pswpModule: PhotoSwipe
     });
@@ -432,20 +477,18 @@ function populate_gallery(gallery_data) {
             name: 'panorama-button',
             order: 9,
             title: 'Show panoramas',
+            ariaLabel: 'Panorama',
             isButton: true,
 
-            html: {
-              isCustomSVG: true,
-              inner: '<path d="M1 3h14v10H1zM2 4v8h12V4z"/><path d="m2 11 3-4 3 3 2-2 4 4H2z"/>',
-            },
+            html: '<span>Panorama</span><span class="gallery-panorama-switch" aria-hidden="true"></span>',
 
             onInit: (el, pswp) => {
+              el.setAttribute('role', 'switch');
               pswp.on('change', () => {
                 const is_panorama = Boolean(pswp.currSlide.data.panorama);
                 el.style.display = panorama_items.some(item => item.element === pswp.currSlide.data.element) ? '' : 'none';
                 el.title = is_panorama ? 'Show normal images' : 'Show panoramas';
-                el.setAttribute('aria-label', el.title);
-                el.setAttribute('aria-pressed', String(is_panorama));
+                el.setAttribute('aria-checked', String(is_panorama));
               });
             },
 
@@ -644,6 +687,13 @@ function populate_gallery(gallery_data) {
             }
         });
 
+    });
+
+    lightbox.on('afterInit', function() {
+        const pswp = lightbox.pswp;
+        const toolbar_observer = new ResizeObserver(() => pswp.updateSize(true));
+        toolbar_observer.observe(pswp.topBar);
+        pswp.on('destroy', () => toolbar_observer.disconnect());
     });
 
     //lightbox.addFilter('uiElement', (el, data) => {
