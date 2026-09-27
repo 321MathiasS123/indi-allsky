@@ -332,11 +332,7 @@ function populate_gallery(gallery_data) {
         });
         img_tag.appendTo(a_tag);
 
-        image_items.push({
-            element: a_tag[0], src: item['url'],
-            width: item['width'], height: item['height'],
-            msrc: item['thumbnail_url'], alt: item['date'],
-        });
+        image_items.push(a_tag[0]);
         if (item['panorama_url'] && item['panorama_width'] > 0 && item['panorama_height'] > 0) {
             panorama_items.push({
                 element: a_tag[0], src: item['panorama_url'],
@@ -455,16 +451,13 @@ function populate_gallery(gallery_data) {
 
             onClick: (event, el, pswp) => {
               const items = pswp.currSlide.data.panorama ? image_items : panorama_items;
-              const index = items.findIndex(item => item.element === pswp.currSlide.data.element);
+              const index = items.findIndex(item => (item.element || item) === pswp.currSlide.data.element);
               if (index < 0) return;
 
               // Replace the slides in the open overlay; reuse the original thumbnail elements.
               // Keep the current index valid while the number of slides changes.
               if (index < pswp.getNumItems()) pswp.goTo(index);
-              const count = Math.max(pswp.getNumItems(), items.length);
-              for (let i = 0; i < count; i++) {
-                pswp.contentLoader.removeByIndex(i);
-              }
+              pswp.contentLoader.destroy();
               pswp.options.dataSource = items;
               const current_index = pswp.currIndex;
               [current_index, current_index - 1, current_index + 1].forEach(i => pswp.refreshSlideContent(i));

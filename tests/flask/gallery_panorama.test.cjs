@@ -13,13 +13,14 @@ function gallery(panoramas) {
     const anchors = [], controls = {}, listeners = {};
     const pswp = {
         options: {}, currIndex: 0,
-        contentLoader: { removeByIndex() {} },
+        contentLoader: { destroy() {} },
         on(name, callback) { (listeners[name] ||= []).push(callback); },
         dispatch(name) { (listeners[name] || []).forEach(callback => callback()); },
         getNumItems() { return this.options.dataSource.length; },
         goTo(index) {
             this.currIndex = Math.max(0, Math.min(index, this.getNumItems() - 1));
-            this.currSlide = { data: this.options.dataSource[this.currIndex] };
+            const item = this.options.dataSource[this.currIndex];
+            this.currSlide = { data: item.getAttribute ? {element: item, src: item.getAttribute('href')} : item };
             this.dispatch('change');
         },
         refreshSlideContent(index) {
@@ -107,4 +108,13 @@ test('switching between one panorama and the final normal image keeps both index
         assert.equal(pswp.currIndex, 3);
         assert.equal(pswp.currSlide.data.src, 'image4.jpg');
     }
+});
+
+test('normal images remain accessible without any panoramas', () => {
+    const { pswp, controls, toggle } = gallery([false, false]);
+    pswp.goTo(1);
+    assert.equal(controls['panorama-button'].element.style.display, 'none');
+    toggle();
+    assert.equal(pswp.getNumItems(), 2);
+    assert.equal(pswp.currSlide.data.src, 'image2.jpg');
 });
