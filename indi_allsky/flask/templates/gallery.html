@@ -273,6 +273,9 @@ function populate_gallery(gallery_data) {
 
     $('#allsky-gallery').empty();
 
+    const image_items = [];
+    const panorama_items = [];
+
     gallery_data.forEach(item => {
         const repair_status = (
             asi676mc_repair_gallery_enabled
@@ -315,6 +318,7 @@ function populate_gallery(gallery_data) {
             ),
             'data-exclude' : item['exclude'],
             'data-image_id' : item['id'],
+            'data-panorama_id' : item['panorama_id'] || '',
             'data-ts'     : item['ts'],
             'data-asi676mc-repair-status' : repair_status || '',
             'title'       : repair_title,
@@ -327,6 +331,19 @@ function populate_gallery(gallery_data) {
             'alt'       : item['date'],
         });
         img_tag.appendTo(a_tag);
+
+        image_items.push({
+            element: a_tag[0], src: item['url'],
+            width: item['width'], height: item['height'],
+            msrc: item['thumbnail_url'], alt: item['date'],
+        });
+        if (item['panorama_url'] && item['panorama_width'] > 0 && item['panorama_height'] > 0) {
+            panorama_items.push({
+                element: a_tag[0], src: item['panorama_url'],
+                width: item['panorama_width'], height: item['panorama_height'],
+                alt: item['date'], panorama: true,
+            });
+        }
 
         if (repair_applied || repair_validation_failed || repair_excluded) {
             $('<span />', {
@@ -353,6 +370,8 @@ function populate_gallery(gallery_data) {
         preload: [1, 1],
         preloaderDelay: 0,
         loop: false,
+        // Keep the fitted image below the 60px PhotoSwipe toolbar.
+        padding: { top: 60, bottom: 0, left: 0, right: 0 },
         // dynamic import is not supported in UMD version
         pswpModule: PhotoSwipe
     });
@@ -378,6 +397,9 @@ function populate_gallery(gallery_data) {
               pswp.on('change', () => {
                 //console.log('change');
                 el.href = "{{ url_for('indi_allsky.mini_generate_view') }}?image_id=" + pswp.currSlide.data.element.getAttribute("data-image_id");
+                if (pswp.currSlide.data.panorama) {
+                  el.href += '&source=panorama';
+                }
               });
             }
         });
@@ -401,8 +423,52 @@ function populate_gallery(gallery_data) {
 
               pswp.on('change', () => {
                 //console.log('change');
-                el.href = "{{ url_for('indi_allsky.timelapse_image_view')}}?id=" + pswp.currSlide.data.element.getAttribute("data-image_id");
+                el.title = pswp.currSlide.data.panorama ? 'Panorama image' : 'Image';
+                el.setAttribute('aria-label', el.title);
+                el.href = pswp.currSlide.data.panorama
+                  ? "{{ url_for('indi_allsky.panorama_image_view') }}?id=" + pswp.currSlide.data.element.getAttribute('data-panorama_id')
+                  : "{{ url_for('indi_allsky.timelapse_image_view')}}?id=" + pswp.currSlide.data.element.getAttribute("data-image_id");
               });
+            }
+        });
+
+        lightbox.pswp.ui.registerElement({
+            name: 'panorama-button',
+            order: 9,
+            title: 'Show panoramas',
+            isButton: true,
+
+            html: {
+              isCustomSVG: true,
+              inner: '<path d="M1 3h14v10H1zM2 4v8h12V4z"/><path d="m2 11 3-4 3 3 2-2 4 4H2z"/>',
+            },
+
+            onInit: (el, pswp) => {
+              pswp.on('change', () => {
+                const is_panorama = Boolean(pswp.currSlide.data.panorama);
+                el.style.display = panorama_items.some(item => item.element === pswp.currSlide.data.element) ? '' : 'none';
+                el.title = is_panorama ? 'Show normal images' : 'Show panoramas';
+                el.setAttribute('aria-label', el.title);
+                el.setAttribute('aria-pressed', String(is_panorama));
+              });
+            },
+
+            onClick: (event, el, pswp) => {
+              const items = pswp.currSlide.data.panorama ? image_items : panorama_items;
+              const index = items.findIndex(item => item.element === pswp.currSlide.data.element);
+              if (index < 0) return;
+
+              // Replace the slides in the open overlay; reuse the original thumbnail elements.
+              // Keep the current index valid while the number of slides changes.
+              if (index < pswp.getNumItems()) pswp.goTo(index);
+              const count = Math.max(pswp.getNumItems(), items.length);
+              for (let i = 0; i < count; i++) {
+                pswp.contentLoader.removeByIndex(i);
+              }
+              pswp.options.dataSource = items;
+              const current_index = pswp.currIndex;
+              [current_index, current_index - 1, current_index + 1].forEach(i => pswp.refreshSlideContent(i));
+              pswp.goTo(index);
             }
         });
 
@@ -475,7 +541,9 @@ function populate_gallery(gallery_data) {
 
               pswp.on('change', () => {
                 //console.log('change');
-                el.href = "{{ url_for('indi_allsky.image_loop_view') }}?timestamp=" + pswp.currSlide.data.element.getAttribute("data-ts");
+                el.href = (pswp.currSlide.data.panorama
+                  ? "{{ url_for('indi_allsky.panorama_loop_view') }}"
+                  : "{{ url_for('indi_allsky.image_loop_view') }}") + "?timestamp=" + pswp.currSlide.data.element.getAttribute("data-ts");
               });
             }
         });
@@ -546,7 +614,8 @@ function populate_gallery(gallery_data) {
               });
 
 
-              $(document).keydown(function(e) {
+              pswp.on('keydown', function(event) {
+                const e = event.originalEvent;
                 var key_press = {
                   "x" : 88,
                 };
@@ -571,7 +640,7 @@ function populate_gallery(gallery_data) {
               });
             },
 
-            onClick: (event, el) => {
+            onClick: (event, el, pswp) => {
                 var image_id = pswp.currSlide.data.element.getAttribute("data-image_id");
 
                 if (pswp.currSlide.data.element.getAttribute("data-exclude") == "true") {
@@ -1278,6 +1347,8 @@ $( document ).ready(function() {
 
 
     $(document).keydown(function(e) {
+        if (lightbox && lightbox.pswp) return;
+
         var key_press = {
             "up"    : 38,
             "down"  : 40,
