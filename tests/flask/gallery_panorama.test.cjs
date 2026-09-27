@@ -74,7 +74,8 @@ test('switching skips missing panoramas, preserves the capture, and adapts toolb
     assert.equal(pswp.currSlide.data.height, 800);
     assert.equal(pswp.currSlide.data.msrc, undefined, 'do not stretch normal thumbnails into panoramas');
     assert.equal(controls['panorama-button'].element.title, 'Show normal images');
-    assert.equal(controls['panorama-button'].element['aria-pressed'], 'true');
+    assert.equal(controls['panorama-button'].element.role, 'switch');
+    assert.equal(controls['panorama-button'].element['aria-checked'], 'true');
     assert.equal(controls['image-button'].element.href, '/panorama_image_view?id=23');
     assert.equal(controls['download-button'].element.href, 'panorama3.jpg');
     assert.equal(controls['loop-button'].element.href, '/panorama_loop_view?timestamp=102');
@@ -86,6 +87,7 @@ test('switching skips missing panoramas, preserves the capture, and adapts toolb
     assert.equal(pswp.getNumItems(), 4);
     assert.equal(pswp.currIndex, 3);
     assert.equal(pswp.currSlide.data.src, 'image4.jpg');
+    assert.equal(controls['panorama-button'].element['aria-checked'], 'false');
     assert.equal(controls['image-button'].element.href, '/timelapse_image_view?id=4');
     assert.equal(controls['download-button'].element.href, 'image4.jpg');
     assert.equal(controls['loop-button'].element.href, '/image_loop_view?timestamp=103');
