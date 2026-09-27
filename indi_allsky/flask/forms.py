@@ -8050,6 +8050,8 @@ class IndiAllskyGalleryViewer(FlaskForm):
 
 
     def getImages(self, year, month, day, hour):
+        # Keep panorama availability in the outer join so missing or inaccessible
+        # panoramas never filter out the corresponding normal images.
         images_query = db.session.query(
             IndiAllSkyDbImageTable,
             IndiAllSkyDbThumbnailTable,

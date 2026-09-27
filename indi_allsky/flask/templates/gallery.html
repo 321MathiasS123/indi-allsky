@@ -379,6 +379,7 @@ function populate_gallery(gallery_data) {
 
         image_items.push(a_tag[0]);
         if (item['panorama_url'] && item['panorama_width'] > 0 && item['panorama_height'] > 0) {
+            // Reuse the capture's thumbnail element for toolbar metadata and mode matching.
             panorama_items.push({
                 element: a_tag[0], src: item['panorama_url'],
                 width: item['panorama_width'], height: item['panorama_height'],
@@ -497,9 +498,9 @@ function populate_gallery(gallery_data) {
               const index = items.findIndex(item => (item.element || item) === pswp.currSlide.data.element);
               if (index < 0) return;
 
-              // Replace the slides in the open overlay; reuse the original thumbnail elements.
-              // Keep the current index valid while the number of slides changes.
+              // Move before shrinking the list; a target beyond the old list must wait until after the swap.
               if (index < pswp.getNumItems()) pswp.goTo(index);
+              // Cached slide indexes now refer to different images.
               pswp.contentLoader.destroy();
               pswp.options.dataSource = items;
               const current_index = pswp.currIndex;
@@ -691,6 +692,7 @@ function populate_gallery(gallery_data) {
 
     lightbox.on('afterInit', function() {
         const pswp = lightbox.pswp;
+        // Showing or hiding the switch can wrap the toolbar without a window resize.
         const toolbar_observer = new ResizeObserver(() => pswp.updateSize(true));
         toolbar_observer.observe(pswp.topBar);
         pswp.on('destroy', () => toolbar_observer.disconnect());
