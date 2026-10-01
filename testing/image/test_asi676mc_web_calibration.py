@@ -1134,7 +1134,7 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('Selection path: progressive ratio search', report)
         self.assertIn('Usable marked groups found: 3', report)
         self.assertIn('Initial fallback search target: 19 FITS files', report)
-        self.assertIn('FITS inspected: 19 of 19', report)
+        self.assertIn('FITS inspected in the initial selection: 19 of 19', report)
         self.assertIn('Saved ratio metadata available: 9', report)
         self.assertIn('Post-repair standard FITS excluded: 2', report)
         self.assertIn('Duplicate standard FITS excluded: 1', report)
@@ -1208,16 +1208,17 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         warning = ' '.join(result['warnings'])
         flat_report = ' '.join(report.split())
 
-        self.assertIn('Purple-frame groups staged: 23', report)
-        self.assertIn('Reserve groups staged: 3', report)
-        self.assertIn('Reserve groups promoted:', report)
+        self.assertIn('Purple-frame groups initially staged: 23', report)
+        self.assertIn('Reserve groups initially staged: 3', report)
+        self.assertIn('Additional groups selected for checking:', report)
         self.assertIn('Frame groups set aside', report)
         self.assertIn('marginal_bad.fit', report)
         self.assertIn('extra improvement from full repair 5.279%', flat_report)
         self.assertIn('minimum required 10.000%', flat_report)
-        self.assertIn('marginal_bad.fit', warning)
-        self.assertIn('5.3%', warning)
-        self.assertIn('1 reserve group replaced it', warning)
+        self.assertIn('1 frame group', warning)
+        self.assertIn('1 additional group was selected', warning)
+        self.assertIn('Download details', warning)
+        self.assertNotIn('marginal_bad.fit', warning)
         for technical_term in (
             'gain-only',
             'row-shift',
@@ -2343,7 +2344,8 @@ class TestAsi676mcWebCalibration(unittest.TestCase):
         self.assertIn('Only uncompressed .fit, .fits, and .fts', template)
         self.assertIn('Select all FITS at once', template)
         self.assertIn('up to 2 GiB in total', template)
-        self.assertIn('finds suitable purple and normal frames automatically', template)
+        self.assertIn('selects suitable purple and normal frame groups', template)
+        self.assertIn('tries additional groups when needed', template)
         self.assertIn('Leave this at 20', template)
         automatic_card = template.split(
             '<span>Use saved FITS</span>',
