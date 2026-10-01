@@ -84,12 +84,23 @@ offers a camera selector.
 
 Choose **Use saved FITS** to search the camera's retained FITS files. Leave
 the target at **20 purple-frame groups** for a first attempt. The tool finds
-suitable purple frames and nearby normal references automatically and reports
-missing or unsuitable evidence. Seven usable groups is the minimum.
+suitable purple frames and nearby normal references automatically. The target
+is the desired number of groups used in the result; the tool can check more
+groups from the retained archive to find suitable evidence. Seven usable
+groups is the minimum.
 
-Wait for analysis to finish. The progress view shows the current stage, and
-you can cancel if needed. Searching and calibration leave the original saved
-FITS files untouched.
+Missing or unsuitable groups are set aside and replaced when possible. If
+recent frames lack useful bright areas, the search can use older groups or
+combine evidence from different batches. It can continue beyond the three
+initial reserve groups. Every accepted group must still pass the same quality
+checks; unsafe overall fits and changes to normal frames still stop calibration.
+
+Wait for analysis to finish. **Progress is an estimate:** the bar may move
+backwards and stages may repeat when additional groups are checked. The
+**Checking more saved frames** stage explains whether the tool needs different
+groups or more useful bright areas. This is normal; it does not mean the run
+has restarted or its quality checks have been relaxed. You can still cancel.
+Searching and calibration leave the original saved FITS files untouched.
 
 ### Upload a FITS collection
 
@@ -105,7 +116,10 @@ remain in their original location.
 ## Understand the result
 
 Analysis does not change your settings automatically. Use **Download details**
-to keep a report of the result and any warnings.
+to keep a report of the result and any warnings. Saved-FITS reports distinguish
+the initial reserves from additional groups selected later and list the groups
+set aside with their reasons. A successful result may use fewer groups than
+requested if no further suitable groups are available, but never fewer than seven.
 
 | Result | What to do |
 | --- | --- |
@@ -164,6 +178,12 @@ Untouched diagnostic FITS are suitable. Standard FITS from successfully repaired
 frames contain the corrected image and cannot serve as purple originals.
 **Save FITS Pre-Calibration** refers to dark-frame calibration; purple-frame
 handling still runs before that save point.
+
+**Does `bad` in a diagnostic filename mean calibration should skip it?**
+
+No. It identifies an untouched purple-frame input, which calibration needs.
+Suitability is decided from its data and compatible normal references. Already
+repaired FITS remain unsuitable as purple originals.
 
 **Does each camera get its own calibration?**
 
