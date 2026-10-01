@@ -4016,31 +4016,38 @@ def format_integrated_report(payload, manifest):
         _append_report_section(lines, 'Frame groups set aside')
         _append_report_paragraph(
             lines,
-            'These groups could not supply usable evidence or pass every '
-            'repair check, so they were set aside and the remaining groups '
-            'were refitted and validated. Where comparison values are '
-            'available, lower difference values are better.',
+            'These groups were excluded because required evidence was missing '
+            'or a quality check failed. Calibration was refitted and validated '
+            'using the accepted groups. Comparison errors measure the difference '
+            'from the nearby normal reference; lower values are better.',
         )
         for item in marginal_exclusions:
-            if item.get('reason'):
-                _append_report_paragraph(
-                    lines,
-                    '{0}: {1}'.format(item.get('name', 'Unknown FITS'), item['reason']),
-                    prefix='- ',
+            # One bullet per group: keep the reason and its supporting scores
+            # together without repeating a signed "improvement" as another failure.
+            details = (item.get('reason') or '').rstrip('. ')
+            if details:
+                details += '.'
+            if 'original_error' in item:
+                details += (
+                    ' Comparison error: before repair {0:.3%}; colour-only '
+                    'correction {1:.3%}; full repair {2:.3%}.'.format(
+                        float(item.get('original_error', 0.0)),
+                        float(item.get('gain_only_error', 0.0)),
+                        float(item.get('repaired_error', 0.0)),
+                    )
                 )
-            if 'original_error' not in item:
-                continue
+                if not item.get('reason'):
+                    # Older retained results may contain scores without a reason.
+                    details += (
+                        ' Full repair must reduce the comparison error by at least '
+                        '{0:.1%} relative to colour-only correction.'.format(
+                            float(item.get('required_improvement', 0.0)),
+                        )
+                    )
             _append_report_paragraph(
                 lines,
-                '{0}: before repair {1:.3%}; colour-only correction {2:.3%}; '
-                'full repair {3:.3%}; extra improvement from full repair '
-                '{4:.3%}; minimum required {5:.3%}.'.format(
-                    item.get('name', 'Unknown FITS'),
-                    float(item.get('original_error', 0.0)),
-                    float(item.get('gain_only_error', 0.0)),
-                    float(item.get('repaired_error', 0.0)),
-                    float(item.get('improvement_vs_gain_only', 0.0)),
-                    float(item.get('required_improvement', 0.0)),
+                '{0}: {1}'.format(
+                    item.get('name', 'Unknown FITS'), details.strip(),
                 ),
                 prefix='- ',
             )

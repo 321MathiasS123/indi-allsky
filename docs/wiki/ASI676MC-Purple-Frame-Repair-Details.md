@@ -319,7 +319,10 @@ and never below the seven-group minimum. Success and failure reports record the
 candidate, selected, rejected, replacement, and remaining group counts.
 The initial staging and reserve counts are labelled separately from later
 replacement selections. Result-page notes summarize recovery; **Download
-details** retains the individual filenames and rejection reasons. Normal-frame
+details** lists each rejected group once, with its reason and any comparison
+errors together. These errors measure the difference from the nearby normal
+reference; lower values are better. A percentage reduction or increase is
+relative to the error after colour-only correction. Normal-frame
 safety failures and unsafe overall fits may still stop the run before every
 catalog candidate has been fitted.
 
@@ -630,19 +633,26 @@ warning.
 | `indi_allsky/flask/templates/asi676mc_calibration.html` | Calibration setup/progress/result transitions, population previews, cancellation, reports, reset, and browser capability checks. |
 | `indi_allsky/flask/templates/gallery.html` | Optional repair/exclusion badges, outlines, and status-specific filtering. |
 | `indi_allsky/flask/templates/imageviewer.html` | Diagnostic preceding/purple/following FITS downloads. |
-| `testing/image/test_asi676mc_repair.py` | Detection, repair, validation, metadata, and diagnostic helper coverage. |
-| `testing/image/test_asi676mc_calibration_engine.py` | FITS inspection, matching, fitting, evidence policy, and shared-runtime coverage. |
-| `testing/image/test_asi676mc_web_calibration.py` | Sessions, cleanup, discovery, guidance, reports, and web workflow coverage. |
+| `tests/image/test_asi676mc_repair.py` | Detection, repair, validation, metadata, and diagnostic helper coverage. |
+| `tests/core/test_asi676mc_calibration_engine.py` | FITS inspection, matching, fitting, evidence policy, and shared-runtime coverage. |
+| `tests/flask/views/test_asi676mc_web_calibration.py` | Sessions, cleanup, discovery, guidance, reports, and web workflow coverage. |
+| `tests/image/test_asi676mc_calibration_backlog.py` | Saved-FITS archive replacement, exhaustion, and safety checks. |
+| `tests/flask/views/test_asi676mc_calibration_progress.py` | Runs the adjacent JavaScript progress and retry tests through pytest. |
 
 Activate the project's Python environment, then run the focused tests from
 the repository root:
 
 ```text
 python -m pytest \
-    testing/image/test_asi676mc_repair.py \
-    testing/image/test_asi676mc_calibration_engine.py \
-    testing/image/test_asi676mc_web_calibration.py
+    tests/image/test_asi676mc_repair.py \
+    tests/core/test_asi676mc_calibration_engine.py \
+    tests/flask/views/test_asi676mc_web_calibration.py \
+    tests/image/test_asi676mc_calibration_backlog.py \
+    tests/flask/views/test_asi676mc_calibration_progress.py
 ```
+
+These tests are also discovered by `npm test`; the web and progress tests are
+included in `npm run test:flask`. All use the shared pytest suite.
 
 When changing correction math, update `indi_allsky/asi676mc.py` first. The
 calibration engine must continue to call that implementation for classification

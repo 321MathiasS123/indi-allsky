@@ -1943,16 +1943,18 @@ def validate_calibrated_frames(
             if repaired_error > unshifted_error * (1.0 - improvement):
                 check['failure_code'] = 'phase_improvement'
                 check['reason'] = (
-                    'full repair matched the nearby normal frame {0:.1%} better '
-                    'than colour-only correction; at least {1:.1%} is required'.format(
+                    'full repair reduced the comparison error by {0:.1%} relative '
+                    'to colour-only correction; a reduction of at least {1:.1%} '
+                    'is required'.format(
                         phase_improvement,
                         improvement,
                     )
                 )
                 if phase_improvement < 0:
                     check['reason'] = (
-                        'full repair had {0:.1%} more comparison error than '
-                        'colour-only correction; at least {1:.1%} less is required'
+                        'full repair increased the comparison error by {0:.1%} '
+                        'relative to colour-only correction; it must reduce that '
+                        'error by at least {1:.1%}'
                     ).format(-phase_improvement, improvement)
                 # Saved-FITS searches may reject this entire group and try older
                 # evidence. The accepted groups must still beat colour-only repair.

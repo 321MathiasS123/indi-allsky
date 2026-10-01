@@ -11,7 +11,7 @@ import pytest
 
 from indi_allsky import asi676mc_calibration as web
 from indi_allsky import asi676mc_calibration_engine as engine
-from testing.image import test_asi676mc_calibration_engine as frame_fixtures
+from tests.core import test_asi676mc_calibration_engine as frame_fixtures
 
 
 @pytest.fixture
@@ -142,6 +142,10 @@ def test_replaces_more_than_three_negative_groups_and_refits(
     assert hashes == {path: hashlib.sha256(path.read_bytes()).digest() for path in hashes}
     report = (root / session_id / 'asi676mc_calibration_report.txt').read_text()
     assert 'Replacement groups selected: 5' in report
+    exclusions = report.split('Frame groups set aside', 1)[1].split('Result notes', 1)[0]
+    assert sum(line.startswith('- ') for line in exclusions.splitlines()) == 5
+    assert ' '.join(exclusions.split()).count('increased the comparison error by 29.4%') == 5
+    assert all(exclusions.count(name) == 1 for name in rejected)
     assert {'phase': 'replacing_groups', 'reason': 'evidence'} in progress_updates
 
 

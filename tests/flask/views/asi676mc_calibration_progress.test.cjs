@@ -6,7 +6,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const template = fs.readFileSync(path.join(
-    __dirname, '../../indi_allsky/flask/templates/asi676mc_calibration.html'
+    __dirname, '../../../indi_allsky/flask/templates/asi676mc_calibration.html'
 ), 'utf8');
 
 function functionSource(name) {
