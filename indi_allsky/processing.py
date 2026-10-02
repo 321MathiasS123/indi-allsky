@@ -1576,6 +1576,24 @@ class ImageProcessor(object):
         logger.info('Fixed %d holes in %0.4f s', hole_count, holes_elapsed_s)
 
 
+    def measure_highlights(self):
+        from .highlight import measure
+
+        i_ref = self.getLatestImage()
+        bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
+        return measure(i_ref.opencv_data, self._adu_mask_dict[i_ref.binning], bit_depth,
+                       self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
+
+
+    def compensate_highlights(self, adu):
+        from .highlight import compensate
+
+        i_ref = self.getLatestImage()
+        target = self.config['TARGET_ADU' if self.night_av[constants.NIGHT_NIGHT] else 'TARGET_ADU_DAY']
+        self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target,
+                                self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0))
+
+
     def calculate_8bit_adu(self):
         i_ref = self.getLatestImage()
 
@@ -1620,6 +1638,10 @@ class ImageProcessor(object):
         else:
             raise Exception('Unsupported bit depth')
 
+
+        if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False):
+            # Integer ADU steps become visible when compensating dark captures.
+            adu_8 = adu if i_ref.image_bitpix == 8 else adu / (1 << (self.max_bit_depth - 8))
 
         logger.info('ADU average: %0.1f (%d)', adu, adu_8)
 

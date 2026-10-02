@@ -58,6 +58,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
 
 
     def adjust_exposure_gain(self, current_exposure, current_gain, next_exposure) -> tuple[float, float, float, float]:
+        requested_exposure = next_exposure
         if isinstance(self.gain_step, type(None)):
             self.post_init()
 
@@ -77,13 +78,13 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
             auto_gain_idx = 0
 
 
-        if next_exposure == current_exposure:
+        if requested_exposure == current_exposure:
             # no change
             #logger.warning('Auto-Gain - no changes')
             next_gain = current_gain
             exposure_delta = 0.0
             gain_delta = 0.0
-        elif next_exposure > current_exposure:
+        elif requested_exposure > current_exposure:
             # exposure/gain needs to increase
             if current_gain == self.auto_gain_step_list[-1]:
                 # already at max gain, increase exposure
@@ -102,7 +103,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
                 else:
                     # increase gain, maintain exposure
                     next_gain = self.auto_gain_step_list[auto_gain_idx + 1]
-                    next_exposure = min(current_exposure, self.auto_gain_exposure_cutoff_high)  # prevent hitting max exposure
+                    next_exposure = current_exposure
                     exposure_delta = 0.0
                     gain_delta = next_gain - current_gain
                     logger.info('Auto-Gain increasing gain to %0.3f (%+0.3f) [maintain exposure]', next_gain, gain_delta)
@@ -127,7 +128,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
                     # decrease gain, maintain exposure
                     next_gain = self.auto_gain_step_list[auto_gain_idx - 1]
                     #next_exposure = max(exposure, self.auto_gain_exposure_cutoff_low)
-                    next_exposure = max(current_exposure, self.auto_gain_exposure_cutoff_mid)
+                    next_exposure = current_exposure
                     exposure_delta = 0.0
                     gain_delta = next_gain - current_gain
                     logger.info('Auto-Gain decreasing gain to %0.3f (%+0.3f) [maintain exposure)', next_gain, gain_delta)
@@ -160,11 +161,16 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
         )
 
 
-        self.auto_gain_exposure_cutoff_high = self._expUtils.EXPOSURE_MAX - 0.5
+        self.auto_gain_exposure_cutoff_high = max(
+            self.exposure_min,
+            self._expUtils.EXPOSURE_MAX - min(0.5, self._expUtils.EXPOSURE_MAX * 0.1),
+        )
 
         self.auto_gain_exposure_cutoff_low = self._expUtils.EXPOSURE_MAX * (self.auto_gain_exposure_cutoff_level_low / 100)
         if self._expUtils.EXPOSURE_MAX - self.auto_gain_exposure_cutoff_low > 10.0:
             self.auto_gain_exposure_cutoff_low = self._expUtils.EXPOSURE_MAX - 10.0
+
+        self.auto_gain_exposure_cutoff_low = max(self.exposure_min, self.auto_gain_exposure_cutoff_low)
 
         self.auto_gain_exposure_cutoff_mid = self.auto_gain_exposure_cutoff_high - ((self.auto_gain_exposure_cutoff_high - self.auto_gain_exposure_cutoff_low) / 2)
 

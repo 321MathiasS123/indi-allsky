@@ -731,6 +731,20 @@ def TARGET_ADU_DEV_DAY_validator(form, field):
         raise ValidationError('Target ADU must be less than 100')
 
 
+def HIGHLIGHT_NUMBER_validator(form, field):
+    if field.data is None or not math.isfinite(field.data):
+        raise ValidationError('Please enter a finite number')
+
+
+def HIGHLIGHT_DEVIATION_validator(form, field):
+    HIGHLIGHT_NUMBER_validator(form, field)
+    target = getattr(form, field.name.replace('_DEV', '_TARGET')).data
+    if target is None or not math.isfinite(target):
+        return
+    if field.data < 0 or field.data >= target or target + field.data > 100:
+        raise ValidationError('Target minus deviation must be above 0%; target plus deviation must not exceed 100%')
+
+
 def ADU_ROI_validator(form, field):
     if not isinstance(field.data, int):
         raise ValidationError('Please enter valid number')
@@ -4638,6 +4652,13 @@ class IndiAllskyConfigForm(FlaskForm):
     TARGET_ADU_DAY                   = IntegerField('Target ADU (day)', validators=[DataRequired(), TARGET_ADU_DAY_validator])
     TARGET_ADU_DEV                   = IntegerField('Target ADU Deviation (night)', validators=[DataRequired(), TARGET_ADU_DEV_validator])
     TARGET_ADU_DEV_DAY               = IntegerField('Target ADU Deviation (day)', validators=[DataRequired(), TARGET_ADU_DEV_DAY_validator])
+    HIGHLIGHT_PROTECTION__ENABLE     = BooleanField('Highlight protection (experimental)')
+    HIGHLIGHT_PROTECTION__FULL_TARGET = FloatField('All-channel target (%)', default=0.8, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__FULL_DEV    = FloatField('All-channel deviation (percentage points)', default=0.2, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__ANY_TARGET  = FloatField('Any-channel target (%)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__ANY_DEV     = FloatField('Any-channel deviation (percentage points)', default=0.4, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__THRESHOLD   = FloatField('Clipping threshold (% of full scale)', default=99.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=90, max=100)], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__MAX_BOOST   = FloatField('Maximum shadow lift (stops)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0, max=4)], widget=NumberInput(step=0.1))
     ADU_ROI_X1                       = IntegerField('ADU ROI x1', validators=[ADU_ROI_validator])
     ADU_ROI_Y1                       = IntegerField('ADU ROI y1', validators=[ADU_ROI_validator])
     ADU_ROI_X2                       = IntegerField('ADU ROI x2', validators=[ADU_ROI_validator])
