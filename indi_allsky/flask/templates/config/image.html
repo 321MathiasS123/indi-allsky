@@ -121,6 +121,26 @@
                     </div>
                 </div>
 
+                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">
+                    <div>
+                        <span class="tw:text-sm tw:font-bold">{{ form_config.HIGHLIGHT_PROTECTION__ENABLE.label.text }}</span>
+                        <p class="tw:text-xs tw:text-base-content/70">Limit the largest connected bright patches and lift darker areas using your existing image settings. Applies to day, night and moon mode. Disable and reload to restore normal ADU control and processing.</p>
+                    </div>
+                    {{ form_config.HIGHLIGHT_PROTECTION__ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                </div>
+                <div id="HIGHLIGHT_PROTECTION__ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <div class="tw:grid tw:grid-cols-1 sm:tw:grid-cols-2 tw:gap-4">
+                    {% for field in [form_config.HIGHLIGHT_PROTECTION__FULL_TARGET, form_config.HIGHLIGHT_PROTECTION__FULL_DEV, form_config.HIGHLIGHT_PROTECTION__ANY_TARGET, form_config.HIGHLIGHT_PROTECTION__ANY_DEV, form_config.HIGHLIGHT_PROTECTION__THRESHOLD, form_config.HIGHLIGHT_PROTECTION__MAX_BOOST] %}
+                    <div class="tw:flex tw:flex-col tw:gap-1">
+                        <label for="{{ field.id }}" class="tw:text-xs tw:font-bold">{{ field.label.text }}</label>
+                        {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                        <div id="{{ field.id }}-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <p class="tw:text-xs tw:text-base-content/70">Areas are percentages of the Detection Mask, or the ADU ROI/FoV when no mask is set. All-channel counts white clipping; any-channel includes it and coloured clipping. Each measures its largest connected patch. For monochrome images both measure the same patch. Target 0.8 with deviation 0.2 holds between 0.6% and 1.0%. Either upper limit reduces exposure; both lower limits allow recovery toward the ordinary ADU target. Requests use the selected exposure/gain mode.</p>
+                <p class="tw:text-xs tw:text-base-content/70">The clipping threshold is measured before dark calibration and stretching, as a percentage of the configured image bit depth's full scale. Start at 99%. Maximum shadow lift uses calibrated brightness and limits how far it may fall below the ordinary ADU target; 2 stops permits up to 4× compensation. Exposure/gain limits or this lift limit can prevent meeting the highlight targets. Adjustments normally stay within 10%; sustained clipping above 1.5× either upper limit can progressively increase reductions to 15–20%. Purple-frame repair is not required. When enabled, detected purple frames hold exposure/gain; repaired images still receive shadow compensation. Existing save and reload behavior is unchanged.</p>
+
                 <!-- ADU FOV Div & ROI Coordinates -->
                 <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-2 md:tw:gap-4 tw:items-center tw:pt-2">
                     <div class="tw:flex tw:flex-col">
