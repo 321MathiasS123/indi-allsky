@@ -581,8 +581,19 @@ class ImageWorker(Process):
         adu = self.image_processor.calculate_8bit_adu()
         # adu value may be updated below
 
+        highlights = None
+        if (
+            self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+            and not self.image_processor.focus_mode
+            and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result)
+        ):
+            highlights = self.image_processor.measure_highlights()
+
 
         self.image_processor.denoise()
+
+        if highlights is not None:
+            self.image_processor.compensate_highlights(adu)
 
         self.image_processor.stretch()
 
@@ -627,6 +638,8 @@ class ImageWorker(Process):
             logger.warning(
                 'Ignoring excluded ASI676MC frame for exposure control'
             )
+        elif highlights is not None:
+            adu, adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
         else:
             adu, adu_average = self.exposure_o.compare_exposure(
                 adu,
