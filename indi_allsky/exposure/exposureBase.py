@@ -146,8 +146,8 @@ class IndiAllSky_Exposure_Base(object):
         self.hist_adu = []
         self._current_adu_target = measurement.adu
         self.target_adu_found = scale == 1.0
-        logger.info('Highlight patches: full %.3f%%, any %.3f%%; exposure request %.3fx',
-                    measurement.full, measurement.any, scale)
+        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx',
+                    measurement.full, measurement.any, measurement.adu, scale)
         if scale != 1.0:
             self._set_exposure(exposure, gain, exposure * scale)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:

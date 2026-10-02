@@ -20,9 +20,10 @@ class HighlightMeasurement(NamedTuple):
 def measure(data, mask, bit_depth, threshold=99.0):
     """Largest 8-connected patches, as percentages of the metering mask.
 
-    Measure calibrated, linear pixels before stretching, white balance or
-    stacking. The near-full-scale threshold tolerates small calibration offsets;
-    it is a clipping proxy, not a claim about the sensor's exact saturation level.
+    Measure linear pixels before dark/black-level subtraction, stretching,
+    white balance or stacking. Replace the returned ADU with calibrated
+    brightness before controlling exposure. The threshold is a clipping proxy,
+    not a claim about the sensor's exact saturation level.
     """
     if mask is None or mask.shape != data.shape[:2]:
         return None

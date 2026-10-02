@@ -6,6 +6,34 @@ from indi_allsky.highlight import HighlightMeasurement, exposure_scale, measure
 from test_highlight_exposure import MODE_NAMES, controller
 
 
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_pre_dark_clipping_reduces_signal_when_calibration_hides_the_plateau(name, caplog):
+    raw = np.full((100, 100), 70 * 256 + 3000, dtype=np.uint16)
+    raw[20:30, 20:40] = 65535
+    calibrated = raw - 3000
+    mask = np.ones(raw.shape, dtype=np.uint8)
+    old = measure(calibrated, mask, 16)
+    corrected = measure(raw, mask, 16)._replace(adu=old.adu)
+    assert old.full == old.any == 0
+    assert corrected.full == corrected.any == 2
+    assert exposure_scale(old, 70, 10, {}) == 1
+    instance = controller(name)
+    gain = instance.gain_min if name != 'exposure_basic' else instance.gain_max
+    with caplog.at_level('INFO', logger='indi_allsky'):
+        instance.compare_highlights(corrected, 0.1, gain)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.09)
+    assert instance._expUtils.GAIN_NEXT == gain
+    assert 'Highlight patches (pre-dark): full 2.000%, any 2.000%; calibrated ADU' in caplog.text
+
+
+def test_pre_dark_clipping_can_lower_gain_at_the_live_moon_exposure_limit():
+    instance = controller('exposure_autogain_exp_prio_db_1_10')
+    instance._expUtils.GAIN_MAX_NIGHT = 300
+    instance.compare_highlights(HighlightMeasurement(1.2, 2.0, 70), 30, 254.935)
+    assert instance._expUtils.EXPOSURE_NEXT == 30
+    assert instance._expUtils.GAIN_NEXT < 254.935
+
+
 @pytest.mark.parametrize('name,minimum', [
     ('exposure_autogain_exp_prio_db_1_10', 100),
     ('exposure_autogain_exp_prio_db', 6),

@@ -445,6 +445,24 @@ class ImageWorker(Process):
             libcamera_black_level = i_ref.libcamera_black_level
 
 
+        # Meter clipping before dark/black-level subtraction hides saturation.
+        highlight_enabled = (
+            self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+            and not self.image_processor.focus_mode
+        )
+        highlight_repaired = (
+            highlight_enabled
+            and (i_ref.asi676mc_repair_result or {}).get('status') == 'repaired'
+        )
+        highlights = None
+        if (
+            highlight_enabled
+            and not highlight_repaired
+            and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result)
+        ):
+            highlights = self.image_processor.measure_highlights()
+
+
         self.image_processor.calibrate(libcamera_black_level=libcamera_black_level)
 
 
@@ -581,18 +599,13 @@ class ImageWorker(Process):
         adu = self.image_processor.calculate_8bit_adu()
         # adu value may be updated below
 
-        highlights = None
-        if (
-            self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
-            and not self.image_processor.focus_mode
-            and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result)
-        ):
-            highlights = self.image_processor.measure_highlights()
+        if highlights is not None:
+            highlights = self.image_processor.calibrate_highlights(highlights)
 
 
         self.image_processor.denoise()
 
-        if highlights is not None:
+        if highlights is not None or highlight_repaired:
             self.image_processor.compensate_highlights(adu)
 
         self.image_processor.stretch()
@@ -626,7 +639,7 @@ class ImageWorker(Process):
         exclude_from_exposure = (
             asi676mc.excluded_from_downstream_measurements(repair_result)
         )
-        if exclude_from_exposure:
+        if exclude_from_exposure or highlight_repaired:
             exposure_history = list(
                 getattr(self.exposure_o, 'hist_adu', ())
             )
@@ -635,9 +648,12 @@ class ImageWorker(Process):
                 if exposure_history
                 else 0.0
             )
-            logger.warning(
-                'Ignoring excluded ASI676MC frame for exposure control'
-            )
+            if highlight_repaired:
+                logger.info('Highlight exposure/gain held: repaired ASI676MC frame has reconstructed highlights')
+            else:
+                logger.warning(
+                    'Ignoring excluded ASI676MC frame for exposure control'
+                )
         elif highlights is not None:
             adu, adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
         else:

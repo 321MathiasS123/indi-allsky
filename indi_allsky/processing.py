@@ -1580,9 +1580,35 @@ class ImageProcessor(object):
         from .highlight import measure
 
         i_ref = self.getLatestImage()
-        bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
-        return measure(i_ref.opencv_data, self._adu_mask_dict[i_ref.binning], bit_depth,
+        data = i_ref.hdulist[0].data
+        # Build a metering view without changing the mosaic, FITS header or
+        # eventual image format. Colour cameras still meter all three channels
+        # when the rendered image is configured as grayscale.
+        if i_ref.image_bitpix in (-32, 32):
+            data = numpy.clip(data, 0, 65535).astype(numpy.uint16)
+        if data.ndim == 3:
+            data = cv2.cvtColor(numpy.moveaxis(data, 0, -1), cv2.COLOR_RGB2BGR)
+        else:
+            bayer_pattern = self.config.get('CFA_PATTERN') or i_ref.image_bayerpat
+            if bayer_pattern:
+                data = cv2.cvtColor(data, self.__cfa_bgr_map[bayer_pattern])
+        if self._adu_mask_dict[i_ref.binning] is None:
+            self._generateAduMask(data, i_ref.binning)
+        bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
+        return measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
                        self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
+
+
+    def calibrate_highlights(self, measurement):
+        # Keep pre-dark clipping areas, but use the current calibrated capture
+        # for the exposure controller's ADU target and shadow-lift limit.
+        i_ref = self.getLatestImage()
+        data = i_ref.opencv_data
+        if data.ndim == 3:
+            data = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+        bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
+        adu = cv2.mean(data, mask=self._adu_mask_dict[i_ref.binning])[0] / (1 << (bit_depth - 8))
+        return measurement._replace(adu=adu)
 
 
     def compensate_highlights(self, adu):
