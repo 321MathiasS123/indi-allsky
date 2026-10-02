@@ -4,6 +4,7 @@ import logging
 
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..highlight import exposure_decision
 
 
 logger = logging.getLogger('indi_allsky')
@@ -24,6 +25,7 @@ class IndiAllSky_Exposure_Base(object):
         self._target_adu_found = False
         self._current_adu_target = 0
         self.hist_adu = []
+        self.reset_highlights()
 
 
     @property
@@ -41,6 +43,7 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def compare_exposure(self, adu, exposure, gain):
+        self.reset_highlights()
         if adu <= 0.0:
             # ensure we do not divide by zero
             logger.warning('Zero average, setting a default of 0.1')
@@ -133,6 +136,53 @@ class IndiAllSky_Exposure_Base(object):
             next_exposure = current_exposure
 
 
+        self._set_exposure(current_exposure, current_gain, next_exposure)
+
+
+    def reset_highlights(self):
+        self._highlight_reduction = 0.0
+        self._highlight_previous_reduction = 0.0
+        self._highlight_sample = None
+        self._highlight_mode = None
+
+
+    def compare_highlights(self, measurement, exposure, gain):
+        night = self.night_av[constants.NIGHT_NIGHT]
+        target = self.config['TARGET_ADU' if night else 'TARGET_ADU_DAY']
+        deviation = (self.config.get('TARGET_ADU_DEV_DAY', 20) if exposure < 0.001
+                     else self.config.get('TARGET_ADU_DEV', 10))
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        mode = tuple(self.night_av)
+        if mode != self._highlight_mode:
+            self.reset_highlights()
+        self._highlight_mode = mode
+        scale, reason = exposure_decision(measurement, target, deviation, settings)
+        if reason in ('full clipping', 'any clipping', 'full+any clipping'):
+            sample = (exposure, gain)
+            if sample != self._highlight_sample:
+                self._highlight_previous_reduction = self._highlight_reduction
+                self._highlight_sample = sample
+            # Grow correction strength smoothly as settings take effect.
+            # Frames already in flight must not compound a pending request.
+            reduction = 1.0 - scale
+            reduction = min(reduction, (self._highlight_previous_reduction + reduction) / 2)
+            self._highlight_reduction = reduction
+            scale = 1.0 - reduction
+        else:
+            self.reset_highlights()
+        self.hist_adu = []
+        self._current_adu_target = measurement.adu
+        self.target_adu_found = scale == 1.0
+        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
+                    measurement.full, measurement.any, measurement.adu, scale, reason)
+        if scale != 1.0:
+            self._set_exposure(exposure, gain, exposure * scale)
+            if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
+                logger.info('Highlight adjustment limited by exposure/gain settings')
+        return measurement.adu, measurement.adu
+
+
+    def _set_exposure(self, current_exposure, current_gain, next_exposure):
         next_exposure, next_gain, exposure_delta, gain_delta = self.adjust_exposure_gain(current_exposure, current_gain, next_exposure)
 
 

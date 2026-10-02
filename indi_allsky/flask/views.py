@@ -2630,6 +2630,15 @@ class ConfigView(FormView):
             'TARGET_ADU_DAY'                 : self.indi_allsky_config.get('TARGET_ADU_DAY', 75),
             'TARGET_ADU_DEV'                 : self.indi_allsky_config.get('TARGET_ADU_DEV', 10),
             'TARGET_ADU_DEV_DAY'             : self.indi_allsky_config.get('TARGET_ADU_DEV_DAY', 20),
+            'HIGHLIGHT_PROTECTION__ENABLE'   : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False),
+            'HIGHLIGHT_PROTECTION__FULL_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('FULL_TARGET', 0.8),
+            'HIGHLIGHT_PROTECTION__FULL_DEV'  : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('FULL_DEV', 0.2),
+            'HIGHLIGHT_PROTECTION__ANY_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ANY_TARGET', 2.0),
+            'HIGHLIGHT_PROTECTION__ANY_DEV'   : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ANY_DEV', 0.4),
+            'HIGHLIGHT_PROTECTION__THRESHOLD' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0),
+            'HIGHLIGHT_PROTECTION__MAX_BOOST' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0),
+            'HIGHLIGHT_PROTECTION__GAMMA'     : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA', 0.0),
+            'HIGHLIGHT_PROTECTION__GAMMA_DAY' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA_DAY', 0.0),
             'ADU_FOV_DIV'                    : str(self.indi_allsky_config.get('ADU_FOV_DIV', 4)),  # string in form, int in config
             'SQM_FOV_DIV'                    : str(self.indi_allsky_config.get('SQM_FOV_DIV', 4)),  # string in form, int in config
             'DETECT_STARS'                   : self.indi_allsky_config.get('DETECT_STARS', True),
@@ -3701,6 +3710,15 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['TARGET_ADU_DAY']                       = int(request.json['TARGET_ADU_DAY'])
         self.indi_allsky_config['TARGET_ADU_DEV']                       = int(request.json['TARGET_ADU_DEV'])
         self.indi_allsky_config['TARGET_ADU_DEV_DAY']                   = int(request.json['TARGET_ADU_DEV_DAY'])
+        self.indi_allsky_config.setdefault('HIGHLIGHT_PROTECTION', {}).update({
+            key: convert(request.json['HIGHLIGHT_PROTECTION__' + key])
+            for key, convert in (
+                ('ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
+                ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),
+                ('GAMMA', float), ('GAMMA_DAY', float),
+            )
+            if 'HIGHLIGHT_PROTECTION__' + key in request.json
+        })
         self.indi_allsky_config['ADU_FOV_DIV']                          = int(request.json['ADU_FOV_DIV'])
         self.indi_allsky_config['SQM_FOV_DIV']                          = int(request.json['SQM_FOV_DIV'])
         self.indi_allsky_config['DETECT_STARS']                         = bool(request.json['DETECT_STARS'])
