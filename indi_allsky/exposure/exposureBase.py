@@ -4,6 +4,7 @@ import logging
 
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..highlight import exposure_scale
 
 
 logger = logging.getLogger('indi_allsky')
@@ -133,6 +134,28 @@ class IndiAllSky_Exposure_Base(object):
             next_exposure = current_exposure
 
 
+        self._set_exposure(current_exposure, current_gain, next_exposure)
+
+
+    def compare_highlights(self, measurement, exposure, gain):
+        night = self.night_av[constants.NIGHT_NIGHT]
+        target = self.config['TARGET_ADU' if night else 'TARGET_ADU_DAY']
+        deviation = (self.config.get('TARGET_ADU_DEV_DAY', 20) if exposure < 0.001
+                     else self.config.get('TARGET_ADU_DEV', 10))
+        scale = exposure_scale(measurement, target, deviation, self.config.get('HIGHLIGHT_PROTECTION', {}))
+        self.hist_adu = []
+        self._current_adu_target = measurement.adu
+        self.target_adu_found = scale == 1.0
+        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx',
+                    measurement.full, measurement.any, measurement.adu, scale)
+        if scale != 1.0:
+            self._set_exposure(exposure, gain, exposure * scale)
+            if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
+                logger.info('Highlight adjustment limited by exposure/gain settings')
+        return measurement.adu, measurement.adu
+
+
+    def _set_exposure(self, current_exposure, current_gain, next_exposure):
         next_exposure, next_gain, exposure_delta, gain_delta = self.adjust_exposure_gain(current_exposure, current_gain, next_exposure)
 
 
