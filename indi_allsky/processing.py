@@ -1611,6 +1611,51 @@ class ImageProcessor(object):
         logger.info('Fixed %d holes in %0.4f s', hole_count, holes_elapsed_s)
 
 
+    def measure_highlights(self):
+        from .highlight import measure
+
+        i_ref = self.getLatestImage()
+        data = i_ref.hdulist[0].data
+        # Build a metering view without changing the mosaic, FITS header or
+        # eventual image format. Colour cameras still meter all three channels
+        # when the rendered image is configured as grayscale.
+        if i_ref.image_bitpix in (-32, 32):
+            data = numpy.clip(data, 0, 65535).astype(numpy.uint16)
+        if data.ndim == 3:
+            data = cv2.cvtColor(numpy.moveaxis(data, 0, -1), cv2.COLOR_RGB2BGR)
+        else:
+            bayer_pattern = self.config.get('CFA_PATTERN') or i_ref.image_bayerpat
+            if bayer_pattern:
+                data = cv2.cvtColor(data, self.__cfa_bgr_map[bayer_pattern])
+        if self._adu_mask_dict[i_ref.binning] is None:
+            self._generateAduMask(data, i_ref.binning)
+        bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
+        return measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
+                       self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
+
+
+    def calibrate_highlights(self, measurement):
+        # Keep pre-dark clipping areas, but use the current calibrated capture
+        # for the exposure controller's ADU target and shadow-lift limit.
+        i_ref = self.getLatestImage()
+        data = i_ref.opencv_data
+        if data.ndim == 3:
+            data = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+        bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
+        adu = cv2.mean(data, mask=self._adu_mask_dict[i_ref.binning])[0] / (1 << (bit_depth - 8))
+        return measurement._replace(adu=adu)
+
+
+    def compensate_highlights(self, adu):
+        from .highlight import compensate, shadow_boost
+
+        i_ref = self.getLatestImage()
+        target = self.config['TARGET_ADU' if self.night_av[constants.NIGHT_NIGHT] else 'TARGET_ADU_DAY']
+        max_boost = self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0)
+        self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target, max_boost)
+        return math.log2(shadow_boost(adu, target, max_boost))
+
+
     def calculate_8bit_adu(self):
         i_ref = self.getLatestImage()
 
@@ -1655,6 +1700,10 @@ class ImageProcessor(object):
         else:
             raise Exception('Unsupported bit depth')
 
+
+        if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False):
+            # Integer ADU steps become visible when compensating dark captures.
+            adu_8 = adu if i_ref.image_bitpix == 8 else adu / (1 << (self.max_bit_depth - 8))
 
         logger.info('ADU average: %0.1f (%d)', adu, adu_8)
 
@@ -2334,9 +2383,9 @@ class ImageProcessor(object):
                 WBR_MTF_MIDTONES = float(self.config.get('WBR_MTF_MIDTONES', 0.5))
             else:
                 # day
-                WBB_MTF_MIDTONES = float(self.config.get('WBB_MTF_MIDTONES', 0.5))
-                WBG_MTF_MIDTONES = float(self.config.get('WBG_MTF_MIDTONES', 0.5))
-                WBR_MTF_MIDTONES = float(self.config.get('WBR_MTF_MIDTONES', 0.5))
+                WBB_MTF_MIDTONES = float(self.config.get('WBB_MTF_MIDTONES_DAY', 0.5))
+                WBG_MTF_MIDTONES = float(self.config.get('WBG_MTF_MIDTONES_DAY', 0.5))
+                WBR_MTF_MIDTONES = float(self.config.get('WBR_MTF_MIDTONES_DAY', 0.5))
 
 
         if WBB_MTF_MIDTONES == 0.5 and WBG_MTF_MIDTONES == 0.5 and WBR_MTF_MIDTONES == 0.5:
