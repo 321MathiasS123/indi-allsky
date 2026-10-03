@@ -205,6 +205,10 @@ class IndiAllSkyConfigBase(object):
         "CLAHE_CLIPLIMIT"          : 3.0,
         "CLAHE_GRIDSIZE"           : 8,
         "NIGHT_SUN_ALT_DEG"        : -6.0,
+        "TWILIGHT_TRANSITION" : {
+            "ENABLE"    : False,
+            "NIGHT_ALT" : -12.0,
+        },
         "NIGHT_MOONMODE_ALT_DEG"   : 0.0,
         "NIGHT_MOONMODE_PHASE"     : 33.0,
         "WEB_NONLOCAL_IMAGES"      : False,

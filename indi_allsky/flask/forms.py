@@ -880,6 +880,15 @@ def NIGHT_SUN_ALT_DEG_validator(form, field):
         raise ValidationError('Sun altitude must be less than 90')
 
 
+def TWILIGHT_NIGHT_ALT_validator(form, field):
+    if field.data is None or not math.isfinite(field.data) or not -90 <= field.data <= 90:
+        raise ValidationError('Please enter a finite Sun elevation between -90 and 90 degrees')
+    if form.TWILIGHT_TRANSITION__ENABLE.data:
+        start = form.NIGHT_SUN_ALT_DEG.data
+        if start is None or not math.isfinite(start) or field.data >= start:
+            raise ValidationError('Full night elevation must be below the day/night Sun altitude')
+
+
 def NIGHT_MOONMODE_ALT_DEG_validator(form, field):
     if not isinstance(field.data, (int, float)):
         raise ValidationError('Please enter valid number')
@@ -4706,6 +4715,8 @@ class IndiAllskyConfigForm(FlaskForm):
     CLAHE_CLIPLIMIT                  = FloatField('CLAHE Clip Limit', validators=[CLAHE_CLIPLIMIT_validator])
     CLAHE_GRIDSIZE                   = IntegerField('CLAHE Grid Size', validators=[CLAHE_GRIDSIZE_validator])
     NIGHT_SUN_ALT_DEG                = FloatField('Sun altitude', validators=[NIGHT_SUN_ALT_DEG_validator])
+    TWILIGHT_TRANSITION__ENABLE      = BooleanField('Smooth day/night transition')
+    TWILIGHT_TRANSITION__NIGHT_ALT   = FloatField('Full night settings at Sun elevation (°)', default=-12.0, validators=[TWILIGHT_NIGHT_ALT_validator], widget=NumberInput(step=0.1))
     NIGHT_MOONMODE_ALT_DEG           = FloatField('Moonmode Moon Altitude', validators=[NIGHT_MOONMODE_ALT_DEG_validator])
     NIGHT_MOONMODE_PHASE             = FloatField('Moonmode Moon Phase', validators=[NIGHT_MOONMODE_PHASE_validator])
     WEB_STATUS_TEMPLATE              = TextAreaField('Status Template', validators=[DataRequired(), WEB_STATUS_TEMPLATE_validator])

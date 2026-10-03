@@ -57,7 +57,9 @@ def config_endpoint(sync_env):
     start = next(i for i, node in enumerate(method.body) if isinstance(node, ast.ImportFrom) and node.module == 'syncapi')
     # Keep real authentication, form rejection and the entire final save path.
     # Camera-field conversion is outside this feature and needs Pi services.
-    method.body = method.body[:4] + ast.parse("config_note = 'test save'\nreload_on_save = False").body + method.body[start:]
+    validation_end = next(i + 1 for i, node in enumerate(method.body)
+                          if isinstance(node, ast.If) and ast.unparse(node.test) == 'not form_config.validate()')
+    method.body = method.body[:validation_end] + ast.parse("config_note = 'test save'\nreload_on_save = False").body + method.body[start:]
     namespace = dict(__name__='indi_allsky.flask.views', __package__='indi_allsky.flask', BaseView=BaseView,
         login_required=login_required, current_user=current_user, app=flask.current_app, request=flask.request,
         jsonify=flask.jsonify, db=env.db, constants=env.sync.constants, ConfigSaveException=ConfigSaveException,
