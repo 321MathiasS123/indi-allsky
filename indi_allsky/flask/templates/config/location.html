@@ -234,6 +234,43 @@
             </div>
         </div>
 
+        <!-- Smooth Day/Night Transition Card -->
+        <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
+            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
+                <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Smooth Day/Night Transition</span>
+
+                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">
+                    <label for="TWILIGHT_TRANSITION__ENABLE" class="tw:text-sm">{{ form_config.TWILIGHT_TRANSITION__ENABLE.label.text }}</label>
+                    {{ form_config.TWILIGHT_TRANSITION__ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                </div>
+                <div id="TWILIGHT_TRANSITION__ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <div class="tw:flex tw:flex-col tw:gap-1">
+                    <label for="TWILIGHT_TRANSITION__NIGHT_ALT" class="tw:text-xs">{{ form_config.TWILIGHT_TRANSITION__NIGHT_ALT.label.text }}</label>
+                    {{ form_config.TWILIGHT_TRANSITION__NIGHT_ALT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                    <div id="TWILIGHT_TRANSITION__NIGHT_ALT-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                </div>
+                <p class="tw:text-xs tw:text-base-content/60">When enabled, image settings begin changing at the Sun altitude in Night & Moon Mode Thresholds above and reach full night settings at this lower elevation (normally −12°). Morning reverses the transition. Summer nights that do not reach it use a partial blend. Capture and file day/night boundaries stay at the existing Sun altitude.</p>
+                <p class="tw:text-xs tw:text-base-content/60">For the smoothest result, use matching day/night binning and camera formats. Intermediate gains need suitable dark frames. Automatic gain retains its selected strategy; legacy gain steps, stacking and Moon Mode switches can still produce visible changes.</p>
+                <p class="tw:text-xs tw:text-base-content/60">Continuous settings blend once per frame. Denoising and other discrete algorithms use the nearer day or night profile, switching at the halfway point of the blend.</p>
+                {% if twilight_forecast %}
+                <p class="tw:text-xs tw:text-base-content/60">
+                    Current solar cycle, using saved settings:
+                    {% if twilight_forecast.maximum == 0 %}
+                        day settings throughout.
+                    {% elif twilight_forecast.minimum == 1 %}
+                        night settings throughout.
+                    {% elif twilight_forecast.maximum < 1 %}
+                        partial transition, reaching {% if twilight_forecast.maximum > 0.999 %}over 99.9{% else %}{{ '%.1f'|format(twilight_forecast.maximum * 100) }}{% endif %}% night settings.
+                        Lowest Sun {{ '%.1f'|format(twilight_forecast.lowest_altitude) }}°{% if twilight_forecast.reversal_utc is not none %}, around {{ twilight_forecast.reversal_utc.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}.
+                    {% else %}
+                        evening {% if twilight_forecast.dusk_minutes is not none %}{{ '%.0f'|format(twilight_forecast.dusk_minutes) }} minutes{% else %}no complete crossing{% endif %};
+                        morning {% if twilight_forecast.dawn_minutes is not none %}{{ '%.0f'|format(twilight_forecast.dawn_minutes) }} minutes{% else %}no complete crossing{% endif %}.
+                    {% endif %}
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- VirtualSky Configuration Card -->
         <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
             <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">

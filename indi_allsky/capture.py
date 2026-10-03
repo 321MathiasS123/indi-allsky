@@ -21,6 +21,7 @@ from multiprocessing import Process
 import queue
 
 from . import constants
+from .twilight import capture_period, exposure_minimum, interpolate, night_weight
 from . import camera as camera_module
 
 from .utils import IndiAllSkyDateCalcs
@@ -813,6 +814,11 @@ class CaptureWorker(Process):
                         elif waiting_for_sqm_frame:
                             # take next exposure as quickly as possible
                             next_frame_time = frame_start_time
+                        elif self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+                            # Focus and dedicated SQM captures keep their timing above.
+                            next_frame_time = frame_start_time + capture_period(
+                                self.config, self.astro_av[constants.ASTRO_SUN_ALT],
+                            ) + self.add_period_delay
                         elif self.night:
                             next_frame_time = frame_start_time + self.config['EXPOSURE_PERIOD'] + self.add_period_delay
                         else:
@@ -1491,6 +1497,19 @@ class CaptureWorker(Process):
         if ccd_gain_default < gain_day:
             ccd_exposure_default = gain_day
 
+
+        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            # Startup uses the live Sun; subsequent image processing uses each
+            # exposure's midpoint. Do not seed it with an abrupt mode default.
+            weight = night_weight(
+                self.astro_av[constants.ASTRO_SUN_ALT], self.config['NIGHT_SUN_ALT_DEG'],
+                self.config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),
+            )
+            minimum = exposure_minimum(self.config, self._expUtils, self.night, weight=weight)
+            ccd_exposure_default = min(maximum_exposure, max(minimum, ccd_exposure_default))
+            if exposure_class_str == 'exposure_basic':
+                night_gain = gain_moonmode if self.night_av[constants.NIGHT_MOONMODE] else gain_night
+                ccd_gain_default = interpolate(gain_day, night_gain, weight)
 
         if self._expUtils.EXPOSURE_CURRENT < 0:
             # only set this on first start
