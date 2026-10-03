@@ -2,6 +2,7 @@ import math
 import logging
 
 from .. import constants
+from ..twilight import exposure_minimum, runtime_weight
 from .exposureBase import IndiAllSky_Exposure_Base
 
 logger = logging.getLogger('indi_allsky')
@@ -14,6 +15,8 @@ class IndiAllSky_Exposure_AutoGain_ExposurePriority_dB_Base(IndiAllSky_Exposure_
 
     @property
     def exposure_min(self):
+        if runtime_weight(self.config) is not None:
+            return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
         if self.night_av[constants.NIGHT_NIGHT]:
             return self._expUtils.EXPOSURE_MIN_NIGHT
         else:
@@ -208,6 +211,10 @@ class IndiAllSky_Exposure_AutoGain_ExposurePriority_dB_Base(IndiAllSky_Exposure_
         if self.dB2gain(next_gain_dB) < self.gain_min:
             # reduce gain, then reduce exposure
             next_exposure = current_exposure * (10 ** ((self.gain2dB(self.gain_min) + next_gain_dB) / 20))  # next_gain_dB is negative
+
+            if runtime_weight(self.config) is not None:
+                # The remaining correction is relative to the gain floor.
+                next_exposure = current_exposure * (10 ** ((next_gain_dB - self.gain2dB(self.gain_min)) / 20))
 
             if next_exposure < self.exposure_min:
                 next_exposure = self.exposure_min

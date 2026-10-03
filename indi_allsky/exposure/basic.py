@@ -2,6 +2,7 @@
 import logging
 
 from .. import constants
+from ..twilight import exposure_minimum, interpolate, runtime_weight
 from .exposureBase import IndiAllSky_Exposure_Base
 
 logger = logging.getLogger('indi_allsky')
@@ -14,6 +15,8 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def exposure_min(self):
+        if runtime_weight(self.config) is not None:
+            return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
         if self.night_av[constants.NIGHT_NIGHT]:
             # night
             return self._expUtils.EXPOSURE_MIN_NIGHT
@@ -28,6 +31,10 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def gain_min(self):
+        if runtime_weight(self.config) is not None:
+            night_gain = (self._expUtils.GAIN_MIN_MOONMODE if self.night_av[constants.NIGHT_MOONMODE]
+                          else self._expUtils.GAIN_MIN_NIGHT)
+            return interpolate(self._expUtils.GAIN_MIN_DAY, night_gain, runtime_weight(self.config))
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode
@@ -42,6 +49,10 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def gain_max(self):
+        if runtime_weight(self.config) is not None:
+            night_gain = (self._expUtils.GAIN_MAX_MOONMODE if self.night_av[constants.NIGHT_MOONMODE]
+                          else self._expUtils.GAIN_MAX_NIGHT)
+            return interpolate(self._expUtils.GAIN_MAX_DAY, night_gain, runtime_weight(self.config))
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode
