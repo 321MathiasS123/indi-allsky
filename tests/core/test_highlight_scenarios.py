@@ -160,3 +160,40 @@ def test_flat_patch_with_fixed_gain_settles_in_every_mode(name):
         history.append(exposure)
     assert max(history[-20:]) / min(history[-20:]) < 1.01
     assert metrics.full <= 1
+
+
+@pytest.mark.parametrize('delay', [0, 1, 2])
+@pytest.mark.parametrize('radius', [5, 8])
+def test_sustained_dawn_catch_up_with_frames_already_in_flight(delay, radius):
+    y, x = np.ogrid[:128, :128]
+    scene = .3 + 3 * np.exp(-((x - 64) ** 2 + (y - 64) ** 2) / (2 * radius ** 2))
+    mask = np.ones(scene.shape, dtype=np.uint8)
+
+    def run(accelerated):
+        instance = controller('exposure_basic', night=False)
+        pending = [1.0] * (delay + 1)
+        history, clipping = [], []
+        for frame in range(150):
+            exposure = pending.pop(0)
+            illumination = 1.03 ** min(frame, 40)
+            data = np.minimum(scene * illumination * exposure * 65535, 65535).astype(np.uint16)
+            metrics = measure(data, mask, 16)
+            instance._expUtils.EXPOSURE_NEXT = exposure
+            if not accelerated:
+                instance.reset_highlights()  # original 10%-only policy
+            instance.compare_highlights(metrics, exposure, 0)
+            next_exposure = instance._expUtils.EXPOSURE_NEXT
+            assert .8 * exposure - 1e-6 <= next_exposure <= 1.1 * exposure + 1e-6
+            pending.append(next_exposure)
+            history.append(exposure)
+            clipping.append(max(0, metrics.full - 1))
+        return np.array(history), np.array(clipping)
+
+    original, old_clipping = run(False)
+    improved, new_clipping = run(True)
+    if radius == 5:  # modest clipping keeps the original smooth response
+        np.testing.assert_array_equal(improved, original)
+    else:
+        assert new_clipping.sum() < old_clipping.sum()
+    assert max(improved[-30:]) / min(improved[-30:]) < 1.01
+    assert new_clipping[-1] == 0

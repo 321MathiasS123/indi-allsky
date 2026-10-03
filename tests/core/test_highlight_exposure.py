@@ -6,7 +6,7 @@ import numpy as np
 
 from indi_allsky import constants
 from indi_allsky import exposure as modes
-from indi_allsky.highlight import HighlightMeasurement, exposure_scale, measure
+from indi_allsky.highlight import HighlightMeasurement, exposure_scale, exposure_decision, measure
 
 
 @pytest.mark.parametrize('full,any_channel,adu,direction', [
@@ -141,3 +141,67 @@ def test_closed_loop_settles_then_recovers_when_bright_source_disappears():
     assert exposure > protected_exposure
     assert 70 <= metrics.adu <= 90
     assert metrics.full == metrics.any == 0
+
+
+def test_catch_up_waits_for_applied_settings_and_resets_near_the_band():
+    instance = controller('exposure_basic', night=False)
+    exposure = 1.0
+    for reduction in [0.9, 0.9, 0.85, 0.85, 0.8, 0.8]:
+        for pending in range(2):
+            instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
+            assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * reduction, abs=1e-6)
+        exposure = instance._expUtils.EXPOSURE_NEXT
+    instance.compare_highlights(HighlightMeasurement(1.1, 2.5, 80), exposure, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * 0.9, abs=1e-6)
+    exposure = instance._expUtils.EXPOSURE_NEXT
+    instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * 0.9, abs=1e-6)
+
+
+@pytest.mark.parametrize('reset', ['ordinary', 'invalid_frame', 'mode', 'shadow_floor'])
+def test_catch_up_history_does_not_cross_unrelated_control_periods(reset):
+    instance = controller('exposure_basic', night=False)
+    for exposure in [1.0, 0.9, 0.81, 0.6885, 0.585225]:
+        instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
+    if reset == 'ordinary':
+        instance.compare_exposure(80, 0.5, 0)
+    elif reset == 'invalid_frame':
+        instance.reset_highlights()
+    elif reset == 'mode':
+        instance.night_av[constants.NIGHT_NIGHT] = True
+    else:
+        instance.compare_highlights(HighlightMeasurement(2, 5, 20), 0.5, 0)
+    instance.compare_highlights(HighlightMeasurement(2, 5, 80), 0.4, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.36)
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_accelerated_request_uses_every_modes_existing_actuator_policy(name):
+    actual = controller(name)
+    reference = controller(name)
+    gain = actual.gain_min if name != 'exposure_basic' else actual.gain_max
+    for exposure, factor in [(1, .9), (.9, .9), (.81, .85), (.6885, .85), (.585225, .8)]:
+        expected = reference.adjust_exposure_gain(exposure, gain, exposure * factor)
+        actual.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, gain)
+        assert actual._expUtils.EXPOSURE_NEXT == pytest.approx(expected[0], abs=1e-6)
+        assert actual._expUtils.GAIN_NEXT == pytest.approx(expected[1], abs=.001)
+
+
+@pytest.mark.parametrize('adu,expected,reason', [
+    (10, 1.1, 'recover shadow floor'), (20, 1, 'shadow floor'),
+    (21, 20 / 21, 'full+any clipping'), (80, .8, 'full+any clipping'),
+])
+def test_faster_clipping_reduction_retains_the_shadow_floor(adu, expected, reason):
+    scale, actual_reason = exposure_decision(HighlightMeasurement(2, 5, adu), 80, 10, {}, .8)
+    assert scale == pytest.approx(expected)
+    assert actual_reason == reason
+
+
+def test_diagnostic_line_reports_reason_and_actual_render_lift(caplog):
+    instance = controller('exposure_basic', night=False)
+    with caplog.at_level('INFO', logger='indi_allsky'):
+        # Stack brightness can differ from this frame's metered ADU.
+        instance.compare_highlights(HighlightMeasurement(0, 3, 80), .1, 0, shadow_lift=1.25)
+    assert 'reason: any clipping' in caplog.text
+    assert 'shadow lift: 1.250 stops' in caplog.text
+    assert 'exposure request 0.900x' in caplog.text

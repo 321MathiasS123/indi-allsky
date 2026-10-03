@@ -56,6 +56,11 @@ def measure(data, mask, bit_depth, threshold=99.0):
 
 def exposure_scale(measurement, target, deviation, settings):
     """Return a bounded request; the selected exposure mode chooses the actuators."""
+    return exposure_decision(measurement, target, deviation, settings)[0]
+
+
+def exposure_decision(measurement, target, deviation, settings, reduction=0.9):
+    """Return the request and its reason, retaining the shadow safety floor."""
     full_target = settings.get('FULL_TARGET', 0.8)
     full_dev = settings.get('FULL_DEV', 0.2)
     any_target = settings.get('ANY_TARGET', 2.0)
@@ -67,21 +72,27 @@ def exposure_scale(measurement, target, deviation, settings):
 
     # Keep shadows within the permitted lift, including after a scene change.
     if adu < floor * 0.98:
-        return min(1.1, floor / adu)
+        return min(1.1, floor / adu), 'recover shadow floor'
     if over:
         # A small brightness deadband prevents chasing noise at the lift limit.
         if adu <= floor * 1.02:
             logger.info('Highlight target limited by maximum shadow lift')
-            return 1.0
-        return max(0.9, floor / adu)
+            return 1.0, 'shadow floor'
+        reason = 'full+any clipping' if measurement.full > full_target + full_dev and measurement.any > any_target + any_dev else (
+            'full clipping' if measurement.full > full_target + full_dev else 'any clipping')
+        return max(reduction, floor / adu), reason
     if adu > target + deviation:
-        return max(0.9, target / adu)
+        return max(0.9, target / adu), 'ADU above band'
     # Never lengthen exposure just to create clipping in an otherwise dark sky.
     if under and adu < target - deviation:
         if measurement.full_next > full_target + full_dev or measurement.any_next > any_target + any_dev:
-            return 1.0
-        return min(1.1, target / adu)
-    return 1.0
+            return 1.0, 'predicted clipping on increase'
+        return min(1.1, target / adu), 'ADU below band'
+    return 1.0, 'hold within control limits'
+
+
+def shadow_boost(adu, target, max_boost):
+    return min(2 ** max_boost, max(1.0, target / max(adu, 0.1)))
 
 
 def compensate(data, bit_depth, adu, target, max_boost):
@@ -92,7 +103,7 @@ def compensate(data, bit_depth, adu, target, max_boost):
     reaches full scale only for an already-full-scale input. No local contrast
     enhancement or changes to stored stretch/gamma settings are introduced.
     """
-    boost = min(2 ** max_boost, max(1.0, target / max(adu, 0.1)))
+    boost = shadow_boost(adu, target, max_boost)
     if boost == 1.0:
         return data
     maximum = (1 << bit_depth) - 1

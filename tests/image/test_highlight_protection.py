@@ -1,6 +1,7 @@
 from copy import deepcopy
 import ast
 import logging
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -139,7 +140,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
         measure_highlights=lambda: events.append('measure') or HighlightMeasurement(1, 2, 200),
         calibrate_highlights=lambda m: events.append('calibrated_adu') or m._replace(adu=20),
         denoise=lambda: events.append('denoise'),
-        compensate_highlights=lambda adu: events.append('compensate'),
+        compensate_highlights=lambda adu: events.append('compensate') or 2.0,
         stretch=lambda: events.append('stretch'),
         convert_16bit_to_8bit=lambda: events.append('convert'),
     )
@@ -147,7 +148,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
               'IMAGE_SAVE_FITS_PRE_DARK': fits_mode == 'pre_dark'}
     original_config = deepcopy(config)
     controller = SimpleNamespace(hist_adu=[21, 23], compare_highlights=Mock(return_value=(20, 20)),
-                                 compare_exposure=Mock(return_value=(20, 20)))
+                                 compare_exposure=Mock(return_value=(20, 20)), reset_highlights=Mock())
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
@@ -174,8 +175,10 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     assert events == expected + ['stretch', 'convert']
     assert controller.compare_highlights.call_count == int(active)
     assert controller.compare_exposure.call_count == int(not excluded and not repaired and not active)
+    assert controller.reset_highlights.call_count == int(enabled and not focus and (excluded or repaired))
     if active:
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
+        assert controller.compare_highlights.call_args.kwargs == {'shadow_lift': 2.0}
     if repaired or excluded:
         assert namespace['adu_average'] == 22
         assert controller.hist_adu == [21, 23]
@@ -190,11 +193,12 @@ def highlight_processor():
     cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == 'ImageProcessor')
     cls.body = [n for n in cls.body if
                 (isinstance(n, ast.FunctionDef) and n.name in (
-                    'measure_highlights', 'calibrate_highlights', 'compensate_highlights', '_generateAduMask'))
+                    'measure_highlights', 'calibrate_highlights', 'compensate_highlights', '_generateAduMask',
+                    'correct_asi676mc_frame', '_set_asi676mc_repair_result', '_debayer'))
                 or (isinstance(n, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == '__cfa_bgr_map' for t in n.targets))]
+                    isinstance(t, ast.Name) and t.id in ('__cfa_bgr_map', '__cfa_gray_map') for t in n.targets))]
     namespace = dict(__package__='indi_allsky', constants=constants, numpy=np, cv2=cv2,
-                     logger=logging.getLogger(__name__))
+                     logger=logging.getLogger(__name__), math=math, asi676mc=asi676mc)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), 'processing-highlight-methods', 'exec'), namespace)
     processor = namespace['ImageProcessor']()
     processor.max_bit_depth = 16
@@ -223,7 +227,7 @@ def test_processor_meters_pre_dark_capture_with_calibrated_adu_not_stack(highlig
     assert calibrated.full_next == measured.full_next and calibrated.any_next == measured.any_next
     assert calibrated.adu == pytest.approx(reference.opencv_data.mean() / 256)
     assert calibrated.adu != pytest.approx(processor.image.mean() / 256)
-    processor.compensate_highlights(20)
+    assert processor.compensate_highlights(20) == 2.0
     assert np.all(processor.image == 8000)
     np.testing.assert_array_equal(raw, original)
 
@@ -289,6 +293,65 @@ def test_pre_dark_meter_generates_existing_roi_fallback_before_stack(highlight_p
     expected_area = 21 * 21 if roi else 51 * 51
     assert np.count_nonzero(processor._adu_mask_dict[2]) == expected_area
     assert result.full == pytest.approx(4 * 100 / expected_area)
+
+
+@pytest.mark.parametrize('repair_settings,camera', [
+    (None, 'Generic camera'), ({'ENABLE': False}, 'ZWO ASI676MC'),
+    ({'ENABLE': True}, 'Generic camera'), ({'ENABLE': True}, None),
+])
+@pytest.mark.parametrize('layout', ['mono', 'rgb', 'RGGB', 'GRBG', 'BGGR', 'GBRG'])
+@pytest.mark.parametrize('bitpix,dtype', [(8, np.uint8), (16, np.uint16), (-32, np.float32), (32, np.uint32)])
+def test_meter_calibration_and_lift_work_without_purple_repair(highlight_processor, repair_settings, camera, layout, bitpix, dtype):
+    processor = highlight_processor
+    if repair_settings is not None:
+        processor.config['IMAGE_ASI676MC_REPAIR'] = repair_settings
+    processor.max_bit_depth = 8 if bitpix == 8 else 16
+    maximum = 2 ** processor.max_bit_depth - 1
+    data = np.full((64, 64), maximum // 8, dtype=dtype)
+    data[20:30, 20:30] = maximum
+    if layout == 'rgb':
+        data = np.stack([data] * 3)
+    original = data.copy()
+    reference = SimpleNamespace(hdulist=[SimpleNamespace(data=data)], binning=1, image_bitpix=bitpix,
+                                image_bayerpat=None if layout in ('mono', 'rgb') else layout,
+                                detected_camera_name=camera, asi676mc_repair_result=None)
+    processor.getLatestImage = lambda: reference
+    processor._adu_mask_dict = {1: np.ones((64, 64), dtype=np.uint8)}
+    assert processor.correct_asi676mc_frame(reference) is False
+    assert reference.asi676mc_repair_result is None
+    metrics = processor.measure_highlights()
+    assert metrics.full > 1 and metrics.any >= metrics.full
+    np.testing.assert_array_equal(data, original)
+    # The ordinary debayer path normalizes supported FITS formats; neither it
+    # nor highlight control requires repair metadata or a particular camera.
+    reference.opencv_data = processor._debayer(reference)
+    processor.image = reference.opencv_data.copy()
+    calibrated = processor.calibrate_highlights(metrics)
+    assert calibrated.full == metrics.full
+    assert 0 < processor.compensate_highlights(calibrated.adu) <= 2
+    assert processor.image.dtype in (np.uint8, np.uint16)
+
+
+@pytest.mark.parametrize('bad', [False, True])
+def test_actual_purple_repair_retains_normal_metering_and_repaired_lift(highlight_processor, bad):
+    processor = highlight_processor
+    processor.config['IMAGE_ASI676MC_REPAIR'] = {'ENABLE': True, 'EXCLUDE_ONLY': False}
+    data = np.full((64, 64), 1000, dtype=np.uint16)
+    if bad:
+        data[::2, ::2] = data[1::2, 1::2] = 4000
+    reference = SimpleNamespace(hdulist=[SimpleNamespace(data=data, header={})], binning=1,
+                                image_bitpix=16, image_bayerpat='RGGB', detected_camera_name='ZWO ASI676MC',
+                                asi676mc_repair_result=None)
+    processor.getLatestImage = lambda: reference
+    processor._adu_mask_dict = {1: np.ones((64, 64), dtype=np.uint8)}
+    assert processor.correct_asi676mc_frame(reference) is bad
+    assert reference.asi676mc_repair_result['status'] == ('repaired' if bad else 'normal')
+    if not bad:
+        assert processor.measure_highlights().full == 0
+    reference.opencv_data = processor._debayer(reference)
+    processor.image = reference.opencv_data.copy()
+    assert processor.compensate_highlights(float(processor.image.mean()) / 256) == 2
+    assert np.all(processor.image >= reference.opencv_data)
 
 
 @pytest.mark.parametrize('bits', [8, 12, 16])

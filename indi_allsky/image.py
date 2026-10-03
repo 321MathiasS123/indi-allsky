@@ -606,7 +606,7 @@ class ImageWorker(Process):
         self.image_processor.denoise()
 
         if highlights is not None or highlight_repaired:
-            self.image_processor.compensate_highlights(adu)
+            highlight_lift = self.image_processor.compensate_highlights(adu)
 
         self.image_processor.stretch()
 
@@ -640,6 +640,8 @@ class ImageWorker(Process):
             asi676mc.excluded_from_downstream_measurements(repair_result)
         )
         if exclude_from_exposure or highlight_repaired:
+            if highlight_enabled:
+                self.exposure_o.reset_highlights()
             exposure_history = list(
                 getattr(self.exposure_o, 'hist_adu', ())
             )
@@ -649,13 +651,13 @@ class ImageWorker(Process):
                 else 0.0
             )
             if highlight_repaired:
-                logger.info('Highlight exposure/gain held: repaired ASI676MC frame has reconstructed highlights')
+                logger.info('Highlight exposure/gain held: repaired ASI676MC frame has reconstructed highlights; shadow lift: %.3f stops', highlight_lift)
             else:
                 logger.warning(
                     'Ignoring excluded ASI676MC frame for exposure control'
                 )
         elif highlights is not None:
-            adu, adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
+            adu, adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain, shadow_lift=highlight_lift)
         else:
             adu, adu_average = self.exposure_o.compare_exposure(
                 adu,

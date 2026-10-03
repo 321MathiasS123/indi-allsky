@@ -1612,12 +1612,13 @@ class ImageProcessor(object):
 
 
     def compensate_highlights(self, adu):
-        from .highlight import compensate
+        from .highlight import compensate, shadow_boost
 
         i_ref = self.getLatestImage()
         target = self.config['TARGET_ADU' if self.night_av[constants.NIGHT_NIGHT] else 'TARGET_ADU_DAY']
-        self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target,
-                                self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0))
+        max_boost = self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0)
+        self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target, max_boost)
+        return math.log2(shadow_boost(adu, target, max_boost))
 
 
     def calculate_8bit_adu(self):
