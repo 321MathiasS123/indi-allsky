@@ -35,6 +35,7 @@ from .denoise import IndiAllskyDenoise
 from .stack import IndiAllskyStacker
 from .overlay.cardinalDirsLabel import IndiAllskyCardinalDirsLabel
 from .utils import IndiAllSkyDateCalcs
+from .twilight import TwilightTransition
 from .overlay.moonOverlay import IndiAllSkyMoonOverlay
 from .overlay.lightgraphOverlay import IndiAllSkyLightgraphOverlay
 from .overlay.imageOverlay import IndiAllSkyImageOverlay
@@ -114,7 +115,8 @@ class ImageProcessor(object):
         night_av,
         astro_av,
     ):
-        self.config = config
+        self.twilight = TwilightTransition(config)
+        self.config = self.twilight.config
 
         self.position_av = position_av
         self.exposure_av = exposure_av
@@ -178,6 +180,7 @@ class ImageProcessor(object):
 
         self._ia_scnr = IndiAllskyScnr(self.config, self.night_av)
         self._ia_denoise = IndiAllskyDenoise(self.config, self.night_av)
+        self._twilight_filters = {}
         self._cardinal_dirs_label = IndiAllskyCardinalDirsLabel(self.config)
         self._moon_overlay = IndiAllSkyMoonOverlay(self.config)
         self._lightgraph_overlay = IndiAllSkyLightgraphOverlay(self.config, self.position_av)
@@ -441,6 +444,18 @@ class ImageProcessor(object):
         detected_camera_name=None,
     ):
         """Ingest one capture and retain its authoritative device identity."""
+        # Queue time is the receipt time; elapsed time includes readout.  Use
+        # the exposure midpoint so delayed processing cannot move the blend.
+        if self.twilight.enabled:
+            # Convert before arithmetic so an ambiguous local time retains its
+            # UTC offset. Archived frames without elapsed time use receipt time.
+            midpoint = exp_date.astimezone(timezone.utc) - timedelta(seconds=max(exp_elapsed, exposure) - exposure / 2)
+            self.twilight.update(midpoint, self.position_av[constants.POSITION_LATITUDE],
+                                 self.position_av[constants.POSITION_LONGITUDE],
+                                 self.position_av[constants.POSITION_ELEVATION])
+        if self.twilight.weight is not None:
+            logger.info('Twilight transition: Sun %.3f degrees, %.1f%% night settings',
+                        self.twilight.altitude, self.twilight.weight * 100)
         if isinstance(self._detection_mask_dict, type(None)):
             # binning_av needs to be populated before running this
             self.post_init()
@@ -478,6 +493,7 @@ class ImageProcessor(object):
         )
 
         self.image_list.insert(0, i_ref)  # new image is first in list
+        i_ref.twilight_weight = self.twilight.weight
 
         return i_ref
 
@@ -971,6 +987,17 @@ class ImageProcessor(object):
             logger.warning('No bayer pattern detected')
             return data
 
+
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            amount = self.twilight.value('NIGHT_GRAYSCALE', 'DAYTIME_GRAYSCALE')
+            i_ref.twilight_grayscale = amount
+            if amount == 1 and self.config.get('NIGHT_GRAYSCALE') == self.config.get('DAYTIME_GRAYSCALE'):
+                return cv2.cvtColor(data, self.__cfa_gray_map[image_bayerpat])
+            color = cv2.cvtColor(data, self.__cfa_bgr_map[image_bayerpat])
+            if amount:
+                gray = cv2.cvtColor(data, self.__cfa_gray_map[image_bayerpat])
+                return cv2.addWeighted(color, 1 - amount, cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), amount, 0)
+            return color
 
         if self.config.get('NIGHT_GRAYSCALE') and self.night_av[constants.NIGHT_NIGHT]:
             debayer_algorithm = self.__cfa_gray_map[image_bayerpat]
@@ -2082,7 +2109,58 @@ class ImageProcessor(object):
         return self.image
 
 
+    def _twilight_filter(self, name, filter_class, algorithm_key):
+        weight = self.twilight.weight
+        if weight is None or self.config.get('USE_NIGHT_COLOR', True):
+            return False
+        if self.focus_mode:
+            return True
+        original = self.image
+        results = []
+        for night in (False, True):
+            if weight == (0 if night else 1):
+                results.append(None)
+                continue
+            key = (name, night)
+            if key not in self._twilight_filters:
+                self._twilight_filters[key] = filter_class(self.twilight.endpoint_config(night), self.night_av)
+            filter_o = self._twilight_filters[key]
+            algorithm = filter_o.config.get(algorithm_key)
+            if not algorithm:
+                results.append(original)
+                continue
+            try:
+                results.append(getattr(filter_o, algorithm)(original.copy()))
+            except AttributeError:
+                logger.error('Unknown %s algorithm: %s', name, algorithm)
+                results.append(original)
+        if weight == 0:
+            self.image = results[0]
+        elif weight == 1:
+            self.image = results[1]
+        else:
+            self.image = cv2.addWeighted(results[0], 1 - weight, results[1], weight, 0)
+        if name == 'scnr':
+            gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+            if gray:
+                self.image = cv2.addWeighted(original, gray, self.image, 1 - gray, 0)
+        return True
+
+
+    def contrast_transition(self, bit16=False):
+        if not getattr(self, 'twilight', None) or self.twilight.weight is None:
+            return False
+        amount = self.twilight.value('NIGHT_CONTRAST_ENHANCE', 'DAYTIME_CONTRAST_ENHANCE')
+        if amount and not self.focus_mode:
+            original = self.image.copy()
+            (self.contrast_clahe_16bit if bit16 else self.contrast_clahe)()
+            self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
+        return True
+
+
     def denoise(self):
+        if getattr(self, 'twilight', None) and self._twilight_filter('denoise', IndiAllskyDenoise, 'IMAGE_DENOISE'):
+            return
         if self.focus_mode:
             # disable processing in focus mode
             return
@@ -2118,6 +2196,8 @@ class ImageProcessor(object):
 
 
     def scnr(self):
+        if getattr(self, 'twilight', None) and self._twilight_filter('scnr', IndiAllskyScnr, 'SCNR_ALGORITHM'):
+            return
         if self.focus_mode:
             # disable processing in focus mode
             return
@@ -2144,11 +2224,17 @@ class ImageProcessor(object):
 
     def _scnr(self, algo):
 
+        original = self.image
         try:
             scnr_function = getattr(self._ia_scnr, algo)
             self.image = scnr_function(self.image)
         except AttributeError:
             logger.error('Unknown SCNR algorithm: %s', algo)
+
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+            if gray:
+                self.image = cv2.addWeighted(original, gray, self.image, 1 - gray, 0)
 
 
     def white_balance_manual_bgr(self):
@@ -2178,6 +2264,12 @@ class ImageProcessor(object):
                 WBG_FACTOR = float(self.config.get('WBG_FACTOR_DAY', 1.0))
                 WBR_FACTOR = float(self.config.get('WBR_FACTOR_DAY', 1.0))
 
+
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+            WBB_FACTOR, WBG_FACTOR, WBR_FACTOR = (
+                1.0 + (v - 1.0) * (1 - gray) for v in (WBB_FACTOR, WBG_FACTOR, WBR_FACTOR)
+            )
 
         if WBB_FACTOR == 1.0 and WBG_FACTOR == 1.0 and WBR_FACTOR == 1.0:
             # no action
@@ -2259,6 +2351,14 @@ class ImageProcessor(object):
             # mono
             return
 
+
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            amount = self.twilight.value('AUTO_WB', 'AUTO_WB_DAY', color=True)
+            if amount:
+                original = self.image.copy()
+                self._white_balance_auto_bgr()
+                self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
+            return bool(amount)
 
         if self.config.get('USE_NIGHT_COLOR', True):
             auto_wb = self.config.get('AUTO_WB')
@@ -2349,6 +2449,17 @@ class ImageProcessor(object):
 
 
     def _white_balance_mtf(self, WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES):
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+            WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES = (
+                0.5 + (v - 0.5) * (1 - gray) for v in (WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES)
+            )
+            if WBB_MTF_MIDTONES == WBG_MTF_MIDTONES == WBR_MTF_MIDTONES == 0.5:
+                return
+            params = (WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES, self.max_bit_depth)
+            if getattr(self, '_twilight_wb_mtf', None) != params:
+                self._wbb_mtf_lut = self._wbg_mtf_lut = self._wbr_mtf_lut = None
+                self._twilight_wb_mtf = params
         if self._wb_mtf_night != self.night_av[constants.NIGHT_NIGHT]:
             self._wb_mtf_night = self.night_av[constants.NIGHT_NIGHT]
             self._wbb_mtf_lut = None  # recalculate LUT
@@ -2597,6 +2708,12 @@ class ImageProcessor(object):
 
     def colorize(self):
         if len(self.image.shape) == 3:
+            if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+                amount = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+                if amount:
+                    # Color corrections must not recolor the grayscale endpoint.
+                    gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+                    self.image = cv2.addWeighted(self.image, 1 - amount, cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), amount, 0)
             # already color
             return
 
@@ -3938,6 +4055,18 @@ class ImageProcessor(object):
         if isinstance(self._stretch_o, type(None)):
             return
 
+
+        if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            settings = self.config.get('IMAGE_STRETCH', {})
+            night = not self.night_av[constants.NIGHT_MOONMODE] or settings.get('MOONMODE', False)
+            amount = (1 - self.twilight.weight) * bool(settings.get('DAYTIME')) + self.twilight.weight * night
+            if amount:
+                original = self.image
+                stretched = self._stretch(self.getLatestImage())
+                if settings.get('SPLIT'):
+                    stretched = self.splitscreen(original, stretched)
+                self.image = cv2.addWeighted(original, 1 - amount, stretched, amount, 0)
+            return
 
         if self.night_av[constants.NIGHT_NIGHT]:
             # night
