@@ -4659,6 +4659,8 @@ class IndiAllskyConfigForm(FlaskForm):
     HIGHLIGHT_PROTECTION__ANY_DEV     = FloatField('Any-channel deviation (percentage points)', default=0.4, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.1))
     HIGHLIGHT_PROTECTION__THRESHOLD   = FloatField('Clipping threshold (% of full scale)', default=99.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=90, max=100)], widget=NumberInput(step=0.1))
     HIGHLIGHT_PROTECTION__MAX_BOOST   = FloatField('Maximum shadow lift (stops)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0, max=4)], widget=NumberInput(step=0.1))
+    HIGHLIGHT_PROTECTION__GAMMA       = FloatField('Highlight gamma (Night)', default=0.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0)], widget=NumberInput(step=0.01))
+    HIGHLIGHT_PROTECTION__GAMMA_DAY   = FloatField('Highlight gamma (Day)', default=0.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0)], widget=NumberInput(step=0.01))
     ADU_ROI_X1                       = IntegerField('ADU ROI x1', validators=[ADU_ROI_validator])
     ADU_ROI_Y1                       = IntegerField('ADU ROI y1', validators=[ADU_ROI_validator])
     ADU_ROI_X2                       = IntegerField('ADU ROI x2', validators=[ADU_ROI_validator])

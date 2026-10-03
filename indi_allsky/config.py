@@ -163,6 +163,8 @@ class IndiAllSkyConfigBase(object):
             "ANY_DEV" : 0.4,
             "THRESHOLD" : 99.0,
             "MAX_BOOST" : 2.0,
+            "GAMMA" : 0.0,
+            "GAMMA_DAY" : 0.0,
         },
         "ADU_ROI" : [],
         "ADU_FOV_DIV" : 4,

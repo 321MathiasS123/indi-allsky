@@ -207,7 +207,8 @@ def highlight_processor():
     cls.body = [n for n in cls.body if
                 (isinstance(n, ast.FunctionDef) and n.name in (
                     'measure_highlights', 'calibrate_highlights', 'compensate_highlights', '_generateAduMask',
-                    'correct_asi676mc_frame', '_set_asi676mc_repair_result', '_debayer'))
+                    'correct_asi676mc_frame', '_set_asi676mc_repair_result', '_debayer',
+                    'apply_gamma_correction', '_apply_gamma_correction'))
                 or (isinstance(n, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id in ('__cfa_bgr_map', '__cfa_gray_map') for t in n.targets))]
     namespace = dict(__package__='indi_allsky', constants=constants, numpy=np, cv2=cv2,
@@ -218,6 +219,63 @@ def highlight_processor():
     processor.night_av = [False, False]
     processor.config = {'TARGET_ADU_DAY': 80, 'HIGHLIGHT_PROTECTION': {'MAX_BOOST': 2}}
     return processor
+
+
+@pytest.mark.parametrize('shared_color', [False, True, None])
+@pytest.mark.parametrize('shape', [(2, 2), (2, 2, 3)])
+def test_highlight_gamma_toggle_and_profile_transitions(highlight_processor, shared_color, shape):
+    processor = highlight_processor
+    processor.focus_mode = False
+    processor._gamma_lut = None
+    processor.config = {'GAMMA_CORRECTION': 0.5, 'GAMMA_CORRECTION_DAY': 2.0,
+                        'HIGHLIGHT_PROTECTION': {'ENABLE': False, 'GAMMA': 1.0, 'GAMMA_DAY': 4.0}}
+    if shared_color is not None:
+        processor.config['USE_NIGHT_COLOR'] = shared_color
+    # Reuse the processor and LUT through on/off, night, day and moon transitions.
+    for enabled in (False, True, False, True):
+        processor.config['HIGHLIGHT_PROTECTION']['ENABLE'] = enabled
+        for night, moon in ((False, False), (True, False), (True, True), (False, False)):
+            processor.night_av = [night, moon]
+            processor.image = np.full(shape, 64, dtype=np.uint8)
+            processor.apply_gamma_correction()
+            night_profile = shared_color is not False or night
+            expected = (64 if night_profile else 180) if enabled else (16 if night_profile else 127)
+            np.testing.assert_array_equal(processor.image, np.full(shape, expected, dtype=np.uint8))
+    assert processor.config['GAMMA_CORRECTION'] == 0.5
+    assert processor.config['GAMMA_CORRECTION_DAY'] == 2.0
+
+
+@pytest.mark.parametrize('settings', [None, {}, {'ENABLE': True},
+                                    {'ENABLE': True, 'GAMMA': 0, 'GAMMA_DAY': 0},
+                                    {'ENABLE': False, 'GAMMA': 4, 'GAMMA_DAY': 4}])
+def test_highlight_gamma_missing_zero_or_disabled_preserves_normal_processing(highlight_processor, settings):
+    processor = highlight_processor
+    processor.focus_mode = False
+    processor._gamma_lut = None
+    processor.config = {'USE_NIGHT_COLOR': False, 'GAMMA_CORRECTION': 0.5, 'GAMMA_CORRECTION_DAY': 2.0}
+    if settings is not None:
+        processor.config['HIGHLIGHT_PROTECTION'] = settings
+    for night, expected in ((False, 127), (True, 16)):
+        processor.night_av[constants.NIGHT_NIGHT] = night
+        processor.image = np.full((2, 2, 3), 64, dtype=np.uint8)
+        processor.apply_gamma_correction()
+        assert np.all(processor.image == expected)
+    processor.focus_mode = True
+    processor.config['HIGHLIGHT_PROTECTION'] = {'ENABLE': True, 'GAMMA': 4}
+    original = processor.image.copy()
+    processor.apply_gamma_correction()
+    np.testing.assert_array_equal(processor.image, original)
+
+
+def test_highlight_gamma_overrides_unity_standard_gamma(highlight_processor):
+    processor = highlight_processor
+    processor.focus_mode = False
+    processor._gamma_lut = None
+    processor.config = {'USE_NIGHT_COLOR': False, 'GAMMA_CORRECTION_DAY': 1,
+                        'HIGHLIGHT_PROTECTION': {'ENABLE': True, 'GAMMA_DAY': 2}}
+    processor.image = np.array([[0, 64, 255]], dtype=np.uint8)
+    processor.apply_gamma_correction()
+    np.testing.assert_array_equal(processor.image, [[0, 127, 255]])
 
 
 def test_processor_meters_pre_dark_capture_with_calibrated_adu_not_stack(highlight_processor):

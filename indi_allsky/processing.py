@@ -2555,6 +2555,14 @@ class ImageProcessor(object):
                 GAMMA_CORRECTION = float(self.config.get('GAMMA_CORRECTION_DAY', 1.0))
 
 
+        highlight_config = self.config.get('HIGHLIGHT_PROTECTION', {})
+        if highlight_config.get('ENABLE', False):
+            key = 'GAMMA' if self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT] else 'GAMMA_DAY'
+            highlight_gamma = float(highlight_config.get(key, 0.0))
+            if highlight_gamma > 0.0:
+                GAMMA_CORRECTION = highlight_gamma
+
+
         if GAMMA_CORRECTION == 1.0:
             # no action
             return

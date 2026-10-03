@@ -37,6 +37,8 @@ def form_class():
     ('FULL_DEV', '0.8'), ('ANY_DEV', '2.1'), ('THRESHOLD', '89'),
     ('THRESHOLD', '101'), ('MAX_BOOST', '4.1'), ('MAX_BOOST', '-1'),
     ('MAX_BOOST', ''), ('FULL_TARGET', '0'),
+    ('GAMMA', '-0.1'), ('GAMMA_DAY', '-1'), ('GAMMA', 'nan'),
+    ('GAMMA_DAY', 'inf'), ('GAMMA_DAY', ''),
 ])
 def test_invalid_settings_rejected(form_class, field, value):
     app = Flask(__name__)
@@ -47,6 +49,16 @@ def test_invalid_settings_rejected(form_class, field, value):
         assert form['HIGHLIGHT_PROTECTION__' + field].errors
 
 
+@pytest.mark.parametrize('field', ['GAMMA', 'GAMMA_DAY'])
+@pytest.mark.parametrize('value', ['0', '1', '1.85'])
+def test_highlight_gamma_accepts_inherit_unity_and_override(form_class, field, value):
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + field: value}))
+        assert form.validate(), form.errors
+
+
 def test_defaults_off_controls_render_and_use_existing_save_registry(form_class):
     app = Flask(__name__)
     app.config['WTF_CSRF_ENABLED'] = False
@@ -54,6 +66,8 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
         form = form_class()
         assert form.validate(), form.errors
         assert not form.HIGHLIGHT_PROTECTION__ENABLE.data
+        assert form.HIGHLIGHT_PROTECTION__GAMMA.data == 0
+        assert form.HIGHLIGHT_PROTECTION__GAMMA_DAY.data == 0
         template = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
         start = template.index('                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">')
         end = template.index('                <!-- ADU FOV Div & ROI Coordinates -->', start)
@@ -78,13 +92,17 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
                 and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'update'
                 and 'HIGHLIGHT_PROTECTION' in ast.unparse(n))
     from types import SimpleNamespace
-    config = {'TARGET_ADU': 70, 'IMAGE_STRETCH': {'MODE2_MIDTONES': 0.4}}
+    config = {'TARGET_ADU': 70, 'IMAGE_STRETCH': {'MODE2_MIDTONES': 0.4},
+              'GAMMA_CORRECTION': 0.87, 'GAMMA_CORRECTION_DAY': 1.565}
     view = SimpleNamespace(indi_allsky_config=config)
     payload = eval(load, {'self': view})
-    payload.update(HIGHLIGHT_PROTECTION__ENABLE=True, HIGHLIGHT_PROTECTION__FULL_TARGET=0.9)
+    payload.update(HIGHLIGHT_PROTECTION__ENABLE=True, HIGHLIGHT_PROTECTION__FULL_TARGET=0.9,
+                   HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85)
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-highlight-fields', 'exec'),
          {'self': view, 'request': SimpleNamespace(json=payload)})
     assert config['TARGET_ADU'] == 70
+    assert config['GAMMA_CORRECTION'] == 0.87
+    assert config['GAMMA_CORRECTION_DAY'] == 1.565
     assert config['IMAGE_STRETCH'] == {'MODE2_MIDTONES': 0.4}
     assert eval(load, {'self': view}) == payload
     # A configuration tab opened before the upgrade does not supply new fields.

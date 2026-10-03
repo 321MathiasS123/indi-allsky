@@ -4317,6 +4317,8 @@ class ConfigView(FormView):
             'HIGHLIGHT_PROTECTION__ANY_DEV'   : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ANY_DEV', 0.4),
             'HIGHLIGHT_PROTECTION__THRESHOLD' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0),
             'HIGHLIGHT_PROTECTION__MAX_BOOST' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0),
+            'HIGHLIGHT_PROTECTION__GAMMA'     : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA', 0.0),
+            'HIGHLIGHT_PROTECTION__GAMMA_DAY' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA_DAY', 0.0),
             'ADU_FOV_DIV'                    : str(self.indi_allsky_config.get('ADU_FOV_DIV', 4)),  # string in form, int in config
             'SQM_FOV_DIV'                    : str(self.indi_allsky_config.get('SQM_FOV_DIV', 4)),  # string in form, int in config
             'DETECT_STARS'                   : self.indi_allsky_config.get('DETECT_STARS', True),
@@ -5400,6 +5402,7 @@ class AjaxConfigView(BaseView):
             for key, convert in (
                 ('ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
                 ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),
+                ('GAMMA', float), ('GAMMA_DAY', float),
             )
             if 'HIGHLIGHT_PROTECTION__' + key in request.json
         })
