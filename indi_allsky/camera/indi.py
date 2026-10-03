@@ -1190,7 +1190,7 @@ class IndiClient(PyIndi.BaseClient):
             'indi_canon_ccd',
             'indi_nikon_ccd',
             'indi_pentax_ccd',
-            'indin_sony_ccd',
+            'indi_sony_ccd',
         ]:
             gain_ctl = self.get_control(self.ccd_device, 'CCD_ISO', 'switch')
 
@@ -1221,6 +1221,7 @@ class IndiClient(PyIndi.BaseClient):
                     'max'     : max(gain_list),
                     'step'    : None,
                     'format'  : '',
+                    'values'  : gain_list,
                 }
             except ValueError:
                 raise Exception('No available ISO/gain settings for camera.  Make sure your camera is set to Manual/Bulb mode.')
@@ -1261,6 +1262,14 @@ class IndiClient(PyIndi.BaseClient):
             'max'     : gain_ctl[index].max,
             'step'    : gain_ctl[index].step,
             'format'  : gain_ctl[index].format,
+            # SDK command precision; INDI's numeric step can be a GUI increment.
+            'quantum' : 1.0 if indi_exec in (
+                'indi_asi_ccd', 'indi_asi_single_ccd',
+                'indi_playerone_ccd', 'indi_playerone_single_ccd',
+                'indi_svbony_ccd', 'indi_svbonycam_ccd', 'indi_sv305_ccd',
+                'indi_toupcam_ccd', 'indi_altair_ccd', 'indi_altaircam_ccd',
+                'indi_nncam_ccd', 'indi_tscam_ccd', 'indi_ogmacam_ccd', 'indi_omegonprocam_ccd',
+            ) else 0.0,
         }
 
         #logger.info('Gain Info: %s', pformat(gain_info))

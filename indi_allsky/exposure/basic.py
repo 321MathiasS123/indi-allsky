@@ -2,6 +2,7 @@
 import logging
 
 from .. import constants
+from ..twilight import exposure_minimum, interpolate, runtime_weight, transition_gain
 from .exposureBase import IndiAllSky_Exposure_Base
 
 logger = logging.getLogger('indi_allsky')
@@ -10,16 +11,12 @@ logger = logging.getLogger('indi_allsky')
 class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
     def __init__(self, *args, **kwargs):
         super(IndiAllSky_Exposure_Basic, self).__init__(*args, **kwargs)
+        self.twilight_gain_info = {}
 
 
     @property
     def exposure_min(self):
-        if self.night_av[constants.NIGHT_NIGHT]:
-            # night
-            return self._expUtils.EXPOSURE_MIN_NIGHT
-        else:
-            # day
-            return self._expUtils.EXPOSURE_MIN_DAY
+        return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
 
     @property
     def exposure_max(self):
@@ -28,6 +25,11 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def gain_min(self):
+        # Only fixed-gain capture follows the blend; automatic gain keeps its policy.
+        if runtime_weight(self.config) is not None:
+            night_gain = (self._expUtils.GAIN_MIN_MOONMODE if self.night_av[constants.NIGHT_MOONMODE]
+                          else self._expUtils.GAIN_MIN_NIGHT)
+            return transition_gain(interpolate(self._expUtils.GAIN_MIN_DAY, night_gain, runtime_weight(self.config)), self.twilight_gain_info)
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode
@@ -42,6 +44,10 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def gain_max(self):
+        if runtime_weight(self.config) is not None:
+            night_gain = (self._expUtils.GAIN_MAX_MOONMODE if self.night_av[constants.NIGHT_MOONMODE]
+                          else self._expUtils.GAIN_MAX_NIGHT)
+            return transition_gain(interpolate(self._expUtils.GAIN_MAX_DAY, night_gain, runtime_weight(self.config)), self.twilight_gain_info)
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode

@@ -136,6 +136,8 @@ class ImageWorker(Process):
             self.night_av,
             self.astro_av,
         )
+        # Exposure control and processing must consume the same per-frame blend.
+        self.config = self.image_processor.config
 
 
         exposure_class_str = self.config.get('CCD_CONFIG', {}).get('EXPOSURE_CLASSNAME', 'exposure_basic')
@@ -348,6 +350,8 @@ class ImageWorker(Process):
             .filter(IndiAllSkyDbCameraTable.id == camera_id)\
             .one()
 
+
+        self.exposure_o.twilight_gain_info = (camera.data or {}).get('twilight_gain_info', {})
 
         ### Special function: image is for SQM calculations only
         if sqm_exposure:
@@ -588,7 +592,9 @@ class ImageWorker(Process):
 
 
         if self.config.get('CONTRAST_ENHANCE_16BIT'):
-            if not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
+            if self.image_processor.contrast_transition(bit16=True):
+                pass
+            elif not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
                 # Contrast enhancement during the day
                 self.image_processor.contrast_clahe_16bit()
             elif self.night_av[constants.NIGHT_NIGHT] and self.config['NIGHT_CONTRAST_ENHANCE']:
@@ -634,6 +640,14 @@ class ImageWorker(Process):
                 gain,
             )
 
+
+        # Excluded/repaired frames must not move the limits behind highlight
+        # protection's held exposure request.
+        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and not exclude_from_exposure and not (
+            self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+            and (repair_result or {}).get('status') == 'repaired'
+        ):
+            self.exposure_o.apply_transition_limits()
 
         # generate a new mask base once the target ADU is found
         # this should only only fire once per restart
@@ -700,7 +714,9 @@ class ImageWorker(Process):
 
 
         if not self.config.get('CONTRAST_ENHANCE_16BIT'):
-            if not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
+            if self.image_processor.contrast_transition():
+                pass
+            elif not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
                 # Contrast enhancement during the day
                 self.image_processor.contrast_clahe()
             elif self.night_av[constants.NIGHT_NIGHT] and self.config['NIGHT_CONTRAST_ENHANCE']:
