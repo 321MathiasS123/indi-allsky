@@ -2,6 +2,7 @@
 import logging
 
 from .. import constants
+from ..twilight import exposure_minimum
 from .exposureBase import IndiAllSky_Exposure_Base
 
 logger = logging.getLogger('indi_allsky')
@@ -25,10 +26,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
 
     @property
     def exposure_min(self):
-        if self.night_av[constants.NIGHT_NIGHT]:
-            return self._expUtils.EXPOSURE_MIN_NIGHT
-        else:
-            return self._expUtils.EXPOSURE_MIN_DAY
+        return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
 
     @property
     def exposure_max(self):
