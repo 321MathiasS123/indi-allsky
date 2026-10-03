@@ -140,12 +140,13 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def reset_highlights(self):
-        self._highlight_overshoot_count = 0
+        self._highlight_reduction = 0.0
+        self._highlight_previous_reduction = 0.0
         self._highlight_sample = None
         self._highlight_mode = None
 
 
-    def compare_highlights(self, measurement, exposure, gain, shadow_lift=None):
+    def compare_highlights(self, measurement, exposure, gain):
         night = self.night_av[constants.NIGHT_NIGHT]
         target = self.config['TARGET_ADU' if night else 'TARGET_ADU_DAY']
         deviation = (self.config.get('TARGET_ADU_DEV_DAY', 20) if exposure < 0.001
@@ -155,29 +156,25 @@ class IndiAllSky_Exposure_Base(object):
         if mode != self._highlight_mode:
             self.reset_highlights()
         self._highlight_mode = mode
-        severe = (
-            measurement.full > 1.5 * (settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2))
-            or measurement.any > 1.5 * (settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4))
-        )
-        floor = target / (2 ** settings.get('MAX_BOOST', 2.0))
-        if severe and measurement.adu > floor * 1.02:
-            # At long exposures the next capture may already be in flight.
-            # Repeated measurements at the same settings must not escalate.
+        scale, reason = exposure_decision(measurement, target, deviation, settings)
+        if reason in ('full clipping', 'any clipping', 'full+any clipping'):
             sample = (exposure, gain)
             if sample != self._highlight_sample:
-                self._highlight_overshoot_count = min(5, self._highlight_overshoot_count + 1)
-            self._highlight_sample = sample
+                self._highlight_previous_reduction = self._highlight_reduction
+                self._highlight_sample = sample
+            # Grow correction strength smoothly as settings take effect.
+            # Frames already in flight must not compound a pending request.
+            reduction = 1.0 - scale
+            reduction = min(reduction, (self._highlight_previous_reduction + reduction) / 2)
+            self._highlight_reduction = reduction
+            scale = 1.0 - reduction
         else:
             self.reset_highlights()
-        reduction = 0.8 if self._highlight_overshoot_count >= 5 else (
-            0.85 if self._highlight_overshoot_count >= 3 else 0.9)
-        scale, reason = exposure_decision(measurement, target, deviation, settings, reduction)
         self.hist_adu = []
         self._current_adu_target = measurement.adu
         self.target_adu_found = scale == 1.0
-        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s; catch-up samples: %d; shadow lift: %s stops',
-                    measurement.full, measurement.any, measurement.adu, scale, reason,
-                    self._highlight_overshoot_count, 'unavailable' if shadow_lift is None else '%.3f' % shadow_lift)
+        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
+                    measurement.full, measurement.any, measurement.adu, scale, reason)
         if scale != 1.0:
             self._set_exposure(exposure, gain, exposure * scale)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:

@@ -479,6 +479,12 @@ class ImageWorker(Process):
 
         self.image_processor.debayer()  # populates self.opencv_data
 
+        if highlights is not None:
+            # Publish capture settings as soon as calibrated brightness is
+            # available; stacking and rendering must not delay this request.
+            highlights = self.image_processor.calibrate_highlights(highlights)
+            highlight_adu, highlight_adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
+
 
         self.image_processor.stack()  # populates self.image
 
@@ -599,14 +605,12 @@ class ImageWorker(Process):
         adu = self.image_processor.calculate_8bit_adu()
         # adu value may be updated below
 
-        if highlights is not None:
-            highlights = self.image_processor.calibrate_highlights(highlights)
-
-
         self.image_processor.denoise()
 
         if highlights is not None or highlight_repaired:
             highlight_lift = self.image_processor.compensate_highlights(adu)
+            if highlights is not None:
+                logger.info('Highlight shadow lift applied: %.3f stops', highlight_lift)
 
         self.image_processor.stretch()
 
@@ -657,7 +661,7 @@ class ImageWorker(Process):
                     'Ignoring excluded ASI676MC frame for exposure control'
                 )
         elif highlights is not None:
-            adu, adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain, shadow_lift=highlight_lift)
+            adu, adu_average = highlight_adu, highlight_adu_average
         else:
             adu, adu_average = self.exposure_o.compare_exposure(
                 adu,

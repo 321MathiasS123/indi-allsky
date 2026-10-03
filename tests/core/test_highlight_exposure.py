@@ -20,14 +20,21 @@ from indi_allsky.highlight import HighlightMeasurement, exposure_scale, exposure
 def test_dual_deadband_and_shadow_floor(full, any_channel, adu, direction):
     scale = exposure_scale(HighlightMeasurement(full, any_channel, adu), 80, 10, {})
     assert (scale > 1) - (scale < 1) == direction
-    assert 0.9 <= scale <= 1.1
+    assert 0.8 <= scale <= 1.1
 
 
 def test_no_reduction_past_lift_limit_and_custom_settings():
     assert exposure_scale(HighlightMeasurement(10, 20, 21), 80, 10, {}) == pytest.approx(20 / 21)
     assert exposure_scale(HighlightMeasurement(0.8, 2, 80), 80, 10,
-                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1}) == 0.9
+                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1}) == pytest.approx(0.8)
     assert exposure_scale(HighlightMeasurement(10, 20, 80), 80, 10, {'MAX_BOOST': 0}) == 1
+
+
+@pytest.mark.parametrize('adu,expected', [(69, 70 / 69), (69.99, 70 / 69.99),
+                                         (70, 1), (80, 1), (90, 1),
+                                         (90.01, 90 / 90.01), (91, 90 / 91)])
+def test_brightness_recovery_also_tapers_at_the_adu_band(adu, expected):
+    assert exposure_scale(HighlightMeasurement(0, 0, adu), 80, 10, {}) == pytest.approx(expected)
 
 
 MODE_NAMES = [name for name in dir(modes) if name.startswith('exposure_')]
@@ -121,7 +128,7 @@ def test_closed_loop_settles_then_recovers_when_bright_source_disappears():
     mask = np.ones(scene.shape, dtype=np.uint8)
     exposure = 1.0
     history = []
-    for frame in range(60):
+    for frame in range(90):  # allow the proportional fine adjustment to settle
         data = np.minimum(scene * exposure * 65535, 65535).astype(np.uint16)
         metrics = measure(data, mask, 16)
         instance._expUtils.EXPOSURE_NEXT = exposure
@@ -143,48 +150,93 @@ def test_closed_loop_settles_then_recovers_when_bright_source_disappears():
     assert metrics.full == metrics.any == 0
 
 
-def test_catch_up_waits_for_applied_settings_and_resets_near_the_band():
+def test_pending_frames_do_not_compound_unapplied_requests():
+    instance = controller('exposure_basic', night=False)
+    for pending in range(6):
+        instance.compare_highlights(HighlightMeasurement(3, 0, 80), 1.0, 0)
+        assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.9)
+    instance.compare_highlights(HighlightMeasurement(1.1, 0, 80), 0.9, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.855, abs=1e-6)
+
+
+@pytest.mark.parametrize('reset', ['ordinary', 'invalid_frame', 'mode', 'shadow_floor', 'inside_band'])
+def test_proportional_strength_resets_between_control_periods(reset):
     instance = controller('exposure_basic', night=False)
     exposure = 1.0
-    for reduction in [0.9, 0.9, 0.85, 0.85, 0.8, 0.8]:
-        for pending in range(2):
-            instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
-            assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * reduction, abs=1e-6)
+    for factor in (.9, .85, .825):
+        instance.compare_highlights(HighlightMeasurement(3, 0, 80), exposure, 0)
+        assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * factor, abs=1e-6)
         exposure = instance._expUtils.EXPOSURE_NEXT
-    instance.compare_highlights(HighlightMeasurement(1.1, 2.5, 80), exposure, 0)
-    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * 0.9, abs=1e-6)
-    exposure = instance._expUtils.EXPOSURE_NEXT
-    instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
-    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * 0.9, abs=1e-6)
-
-
-@pytest.mark.parametrize('reset', ['ordinary', 'invalid_frame', 'mode', 'shadow_floor'])
-def test_catch_up_history_does_not_cross_unrelated_control_periods(reset):
-    instance = controller('exposure_basic', night=False)
-    for exposure in [1.0, 0.9, 0.81, 0.6885, 0.585225]:
-        instance.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, 0)
     if reset == 'ordinary':
-        instance.compare_exposure(80, 0.5, 0)
+        instance.compare_exposure(80, exposure, 0)
     elif reset == 'invalid_frame':
         instance.reset_highlights()
     elif reset == 'mode':
         instance.night_av[constants.NIGHT_NIGHT] = True
+    elif reset == 'shadow_floor':
+        instance.compare_highlights(HighlightMeasurement(3, 0, 20), exposure, 0)
     else:
-        instance.compare_highlights(HighlightMeasurement(2, 5, 20), 0.5, 0)
-    instance.compare_highlights(HighlightMeasurement(2, 5, 80), 0.4, 0)
-    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.36)
+        instance.compare_highlights(HighlightMeasurement(.8, 2, 80), exposure, 0)
+    instance.compare_highlights(HighlightMeasurement(3, 0, 80), exposure, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * .9, abs=1e-6)
+
+
+@pytest.mark.parametrize('missing', [False, True])
+def test_disabled_legacy_boundaries_match_main(missing):
+    instance = controller('exposure_legacy_autogain')
+    if missing:
+        instance.config.pop('HIGHLIGHT_PROTECTION')
+    else:
+        instance.config['HIGHLIGHT_PROTECTION']['ENABLE'] = False
+    instance.post_init()
+    assert instance.auto_gain_exposure_cutoff_low == 24
+    assert instance.auto_gain_exposure_cutoff_mid == 26.75
+    assert instance.auto_gain_exposure_cutoff_high == 29.5
+    # Preserve main's behavior at the exposure ceiling and gain-step boundary.
+    assert instance.adjust_exposure_gain(30, 0, 33) == (30, 0, 0, 0)
+    assert instance.adjust_exposure_gain(24, 42.857, 21.6) == pytest.approx((26.75, 28.571, 0, -14.286))
+    instance._expUtils.EXPOSURE_MAX = .05
+    instance.post_init()
+    assert instance.auto_gain_exposure_cutoff_high == -.45
+
+
+@pytest.mark.parametrize('missing', [False, True])
+@pytest.mark.parametrize('name,minimum,expected', [
+    ('exposure_autogain_exp_prio_db_1_10', 100, 9.0),
+    ('exposure_autogain_exp_prio_db', 6, 3.582964534981475),
+    ('exposure_autogain_exp_prio_iso', 200, 3.6),
+    ('exposure_autogain_exp_prio_iso_1_100', 2, 3.6),
+])
+def test_disabled_nonzero_gain_floor_matches_main(name, minimum, expected, missing):
+    instance = controller(name)
+    if missing:
+        instance.config.pop('HIGHLIGHT_PROTECTION')
+    else:
+        instance.config['HIGHLIGHT_PROTECTION']['ENABLE'] = False
+    instance._expUtils.GAIN_MIN_NIGHT = minimum
+    instance._expUtils.GAIN_MAX_NIGHT = minimum * 4
+    assert instance.reduce_gain(1, minimum, .9)[0] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize('ratio,expected', [(1, 1), (1.01, .995), (1.1, .95), (1.2, .9), (1.3, .85), (1.4, .8), (100, .8)])
+@pytest.mark.parametrize('channel', ['full', 'any'])
+def test_proportional_reduction_tapers_at_either_upper_limit(channel, ratio, expected):
+    metrics = HighlightMeasurement(ratio if channel == 'full' else 0,
+                                   ratio * 2.4 if channel == 'any' else 0, 80)
+    assert exposure_scale(metrics, 80, 10, {}) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize('name', MODE_NAMES)
-def test_accelerated_request_uses_every_modes_existing_actuator_policy(name):
+@pytest.mark.parametrize('full,factor', [(1.02, .995), (1.1, .975), (1.2, .95), (1.4, .9)])
+def test_proportional_request_uses_every_modes_existing_actuator_policy(name, full, factor):
     actual = controller(name)
     reference = controller(name)
     gain = actual.gain_min if name != 'exposure_basic' else actual.gain_max
-    for exposure, factor in [(1, .9), (.9, .9), (.81, .85), (.6885, .85), (.585225, .8)]:
-        expected = reference.adjust_exposure_gain(exposure, gain, exposure * factor)
-        actual.compare_highlights(HighlightMeasurement(2, 5, 80), exposure, gain)
-        assert actual._expUtils.EXPOSURE_NEXT == pytest.approx(expected[0], abs=1e-6)
-        assert actual._expUtils.GAIN_NEXT == pytest.approx(expected[1], abs=.001)
+    exposure = 1.0
+    expected = reference.adjust_exposure_gain(exposure, gain, exposure * factor)
+    actual.compare_highlights(HighlightMeasurement(full, 0, 80), exposure, gain)
+    assert actual._expUtils.EXPOSURE_NEXT == pytest.approx(expected[0], abs=1e-6)
+    assert actual._expUtils.GAIN_NEXT == pytest.approx(expected[1], abs=.001)
 
 
 @pytest.mark.parametrize('adu,expected,reason', [
@@ -192,16 +244,15 @@ def test_accelerated_request_uses_every_modes_existing_actuator_policy(name):
     (21, 20 / 21, 'full+any clipping'), (80, .8, 'full+any clipping'),
 ])
 def test_faster_clipping_reduction_retains_the_shadow_floor(adu, expected, reason):
-    scale, actual_reason = exposure_decision(HighlightMeasurement(2, 5, adu), 80, 10, {}, .8)
+    scale, actual_reason = exposure_decision(HighlightMeasurement(3, 8, adu), 80, 10, {})
     assert scale == pytest.approx(expected)
     assert actual_reason == reason
 
 
-def test_diagnostic_line_reports_reason_and_actual_render_lift(caplog):
+def test_early_diagnostic_reports_decision_without_inventing_render_lift(caplog):
     instance = controller('exposure_basic', night=False)
     with caplog.at_level('INFO', logger='indi_allsky'):
-        # Stack brightness can differ from this frame's metered ADU.
-        instance.compare_highlights(HighlightMeasurement(0, 3, 80), .1, 0, shadow_lift=1.25)
+        instance.compare_highlights(HighlightMeasurement(0, 3, 80), .1, 0)
     assert 'reason: any clipping' in caplog.text
-    assert 'shadow lift: 1.250 stops' in caplog.text
-    assert 'exposure request 0.900x' in caplog.text
+    assert 'shadow lift' not in caplog.text  # reported later from the rendered frame
+    assert 'exposure request 0.938x' in caplog.text

@@ -59,7 +59,7 @@ def exposure_scale(measurement, target, deviation, settings):
     return exposure_decision(measurement, target, deviation, settings)[0]
 
 
-def exposure_decision(measurement, target, deviation, settings, reduction=0.9):
+def exposure_decision(measurement, target, deviation, settings):
     """Return the request and its reason, retaining the shadow safety floor."""
     full_target = settings.get('FULL_TARGET', 0.8)
     full_dev = settings.get('FULL_DEV', 0.2)
@@ -80,14 +80,19 @@ def exposure_decision(measurement, target, deviation, settings, reduction=0.9):
             return 1.0, 'shadow floor'
         reason = 'full+any clipping' if measurement.full > full_target + full_dev and measurement.any > any_target + any_dev else (
             'full clipping' if measurement.full > full_target + full_dev else 'any clipping')
-        return max(reduction, floor / adu), reason
+        # Taper corrections to zero at the upper limits. Clipped area is not
+        # linear in exposure, so use a conservative gain and cap the reduction.
+        excess = max(measurement.full / (full_target + full_dev) - 1,
+                     measurement.any / (any_target + any_dev) - 1)
+        reduction = min(0.2, 0.5 * excess)
+        return max(1.0 - reduction, floor / adu), reason
     if adu > target + deviation:
-        return max(0.9, target / adu), 'ADU above band'
+        return max(0.9, (target + deviation) / adu), 'ADU above band'
     # Never lengthen exposure just to create clipping in an otherwise dark sky.
     if under and adu < target - deviation:
         if measurement.full_next > full_target + full_dev or measurement.any_next > any_target + any_dev:
             return 1.0, 'predicted clipping on increase'
-        return min(1.1, target / adu), 'ADU below band'
+        return min(1.1, (target - deviation) / adu), 'ADU below band'
     return 1.0, 'hold within control limits'
 
 

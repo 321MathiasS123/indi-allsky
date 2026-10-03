@@ -110,7 +110,8 @@ def test_compensation_keeps_stretch_settings_and_normal_brightness_path(stretch_
 @pytest.mark.parametrize('status', [None, 'normal', 'skipped', 'repaired', 'excluded', 'validation_failed'])
 @pytest.mark.parametrize('focus', [False, True])
 @pytest.mark.parametrize('fits_mode', ['off', 'pre_dark', 'post_dark'])
-def test_worker_routes_measurement_and_processing_without_touching_off_path(enabled, status, focus, fits_mode, caplog):
+@pytest.mark.parametrize('meter_valid', [False, True])
+def test_worker_routes_measurement_and_processing_without_touching_off_path(enabled, status, focus, fits_mode, meter_valid, caplog):
     # Execute the actual processing/control segment with camera and DB services
     # replaced by spies. This catches integration order and invalid-frame leaks.
     source = (Path(__file__).resolve().parents[2] / 'indi_allsky/image.py').read_text(encoding='utf-8')
@@ -120,7 +121,8 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
                                  source.index('        # generate a new mask base')])
     excluded = status in ('excluded', 'validation_failed')
     repaired = enabled and not focus and status == 'repaired'
-    active = enabled and not focus and not excluded and not repaired
+    metered = enabled and not focus and not excluded and not repaired
+    active = metered and meter_valid
     events = []
     reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0)
 
@@ -136,19 +138,21 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
         calculateJankySqm=lambda: None,
         debayer=lambda: events.append('debayer'),
         stack=lambda: events.append('stack'),
-        calculate_8bit_adu=lambda: 20,
-        measure_highlights=lambda: events.append('measure') or HighlightMeasurement(1, 2, 200),
+        calculate_8bit_adu=lambda: 60,  # stack brightness differs from this capture
+        measure_highlights=lambda: events.append('measure') or (HighlightMeasurement(1, 2, 200) if meter_valid else None),
         calibrate_highlights=lambda m: events.append('calibrated_adu') or m._replace(adu=20),
         denoise=lambda: events.append('denoise'),
-        compensate_highlights=lambda adu: events.append('compensate') or 2.0,
+        compensate_highlights=Mock(side_effect=lambda adu: events.append('compensate') or 1.25),
         stretch=lambda: events.append('stretch'),
         convert_16bit_to_8bit=lambda: events.append('convert'),
     )
     config = {'HIGHLIGHT_PROTECTION': {'ENABLE': enabled}, 'IMAGE_SAVE_FITS': fits_mode != 'off',
               'IMAGE_SAVE_FITS_PRE_DARK': fits_mode == 'pre_dark'}
     original_config = deepcopy(config)
-    controller = SimpleNamespace(hist_adu=[21, 23], compare_highlights=Mock(return_value=(20, 20)),
-                                 compare_exposure=Mock(return_value=(20, 20)), reset_highlights=Mock())
+    controller = SimpleNamespace(hist_adu=[21, 23],
+                                 compare_highlights=Mock(side_effect=lambda *args: events.append('highlight_control') or (20, 20)),
+                                 compare_exposure=Mock(side_effect=lambda *args: events.append('ordinary_control') or (60, 60)),
+                                 reset_highlights=Mock())
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
@@ -157,28 +161,37 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
                      logger=logging.getLogger(__name__))
     with caplog.at_level(logging.INFO):
         exec(early, namespace)
+        assert controller.compare_highlights.call_count == int(active)
+        controller.compare_exposure.assert_not_called()
         exec(late, namespace)
     expected = ['purple_check']
     if fits_mode == 'pre_dark':
         expected.append('save')
-    if active:
+    if metered:
         expected.append('measure')
     expected += ['dark', 'holes']
     if fits_mode == 'post_dark':
         expected.append('save')
-    expected += ['debayer', 'stack']
+    expected.append('debayer')
     if active:
-        expected.append('calibrated_adu')
-    expected.append('denoise')
+        expected += ['calibrated_adu', 'highlight_control']
+    expected += ['stack', 'denoise']
     if active or repaired:
         expected.append('compensate')
-    assert events == expected + ['stretch', 'convert']
+    expected += ['stretch', 'convert']
+    if not excluded and not repaired and not active:
+        expected.append('ordinary_control')
+    assert events == expected
     assert controller.compare_highlights.call_count == int(active)
     assert controller.compare_exposure.call_count == int(not excluded and not repaired and not active)
     assert controller.reset_highlights.call_count == int(enabled and not focus and (excluded or repaired))
     if active:
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
-        assert controller.compare_highlights.call_args.kwargs == {'shadow_lift': 2.0}
+        assert controller.compare_highlights.call_args.kwargs == {}
+        assert namespace['adu'] == namespace['adu_average'] == 20
+        assert 'Highlight shadow lift applied: 1.250 stops' in caplog.text
+    if active or repaired:
+        processor.compensate_highlights.assert_called_once_with(60)
     if repaired or excluded:
         assert namespace['adu_average'] == 22
         assert controller.hist_adu == [21, 23]
