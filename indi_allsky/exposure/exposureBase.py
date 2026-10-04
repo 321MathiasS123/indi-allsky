@@ -1,9 +1,11 @@
 import copy
 import functools
 import logging
+import math
 
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..highlight import exposure_decision
 
 
 logger = logging.getLogger('indi_allsky')
@@ -24,6 +26,9 @@ class IndiAllSky_Exposure_Base(object):
         self._target_adu_found = False
         self._current_adu_target = 0
         self.hist_adu = []
+        # Populated from camera metadata only for discrete ISO switch controls.
+        self.gain_values = []
+        self.reset_highlights()
 
 
     @property
@@ -41,6 +46,7 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def compare_exposure(self, adu, exposure, gain):
+        self.reset_highlights()
         if adu <= 0.0:
             # ensure we do not divide by zero
             logger.warning('Zero average, setting a default of 0.1')
@@ -133,6 +139,58 @@ class IndiAllSky_Exposure_Base(object):
             next_exposure = current_exposure
 
 
+        self._set_exposure(current_exposure, current_gain, next_exposure)
+
+
+    def reset_highlights(self):
+        """Discard correction history after a mode change or unusable capture."""
+        self._highlight_reduction = 0.0
+        self._highlight_previous_reduction = 0.0
+        self._highlight_sample = None
+        self._highlight_mode = None
+
+
+    def compare_highlights(self, measurement, exposure, gain):
+        """Use this capture's actual settings, never an unapplied queued request."""
+        night = self.night_av[constants.NIGHT_NIGHT]
+        target = self.config['TARGET_ADU' if night else 'TARGET_ADU_DAY']
+        # Match normal ADU control's short-exposure deviation selection.
+        deviation = (self.config.get('TARGET_ADU_DEV_DAY', 20) if exposure < 0.001
+                     else self.config.get('TARGET_ADU_DEV', 10))
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        mode = tuple(self.night_av)
+        if mode != self._highlight_mode:
+            self.reset_highlights()
+        self._highlight_mode = mode
+        scale, reason = exposure_decision(measurement, target, deviation, settings)
+        if reason in ('full clipping', 'any clipping', 'full+any clipping'):
+            sample = (exposure, gain)
+            if sample != self._highlight_sample:
+                self._highlight_previous_reduction = self._highlight_reduction
+                self._highlight_sample = sample
+            # Grow correction strength smoothly as settings take effect.
+            # Frames already in flight must not compound a pending request.
+            reduction = 1.0 - scale
+            reduction = min(reduction, (self._highlight_previous_reduction + reduction) / 2)
+            self._highlight_reduction = reduction
+            scale = 1.0 - reduction
+        else:
+            self.reset_highlights()
+        self.hist_adu = []
+        # Keep existing status/telemetry fields useful without the ADU history
+        # delay. The reason string and requested multiplier are logged once here.
+        self._current_adu_target = measurement.adu
+        self.target_adu_found = scale == 1.0
+        logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
+                    measurement.full, measurement.any, measurement.adu, scale, reason)
+        if scale != 1.0:
+            self._set_exposure(exposure, gain, exposure * scale, highlight=True)
+            if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
+                logger.info('Highlight adjustment limited by exposure/gain settings')
+        return measurement.adu, measurement.adu
+
+
+    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
         next_exposure, next_gain, exposure_delta, gain_delta = self.adjust_exposure_gain(current_exposure, current_gain, next_exposure)
 
 
@@ -141,6 +199,42 @@ class IndiAllSky_Exposure_Base(object):
             next_gain = self.gain_max
         elif next_gain < self.gain_min:
             next_gain = self.gain_min
+
+        if highlight:
+            # ISO switches cannot accept the continuous gain requested by the
+            # controller. ISO is linear in signal (unlike dB gain); compensate
+            # with exposure while retaining the selected mode's limits.
+            values = [g for g in self.gain_values if g > 0 and self.gain_min <= g <= self.gain_max]
+            if values:
+                signal = next_exposure * next_gain
+                feasible = [g for g in values if self.exposure_min <= signal / g <= self.exposure_max]
+                if feasible:
+                    next_gain = min(feasible, key=lambda g: abs(g - next_gain))
+                    next_exposure = signal / next_gain
+                else:
+                    # With fixed exposure, the smallest available ISO step is
+                    # the hardware limit on smoothness; do not stall between ISOs.
+                    current_signal = current_exposure * current_gain
+                    direction = signal - current_signal
+                    candidates = [(g, min(self.exposure_max, max(self.exposure_min, signal / g))) for g in values]
+                    directional = [(g, e) for g, e in candidates if (e * g - current_signal) * direction > 0]
+                    next_gain, next_exposure = min(directional or candidates, key=lambda pair: abs(pair[1] * pair[0] - signal))
+
+            # Shared exposure storage uses whole microseconds. A fractional
+            # increase must not truncate back to the same value indefinitely.
+            exposure_us = round(next_exposure * 1000000)
+            current_us = round(current_exposure * 1000000)
+            if next_exposure > current_exposure and exposure_us <= current_us:
+                exposure_us = current_us + 1
+            elif next_exposure < current_exposure and exposure_us >= current_us:
+                exposure_us = current_us - 1
+            exposure_us = min(math.floor(self.exposure_max * 1000000),
+                              max(math.ceil(self.exposure_min * 1000000), exposure_us))
+            # The shared setter truncates; avoid losing a microsecond to binary
+            # floating-point error when it converts seconds back to integers.
+            next_exposure = math.nextafter(exposure_us / 1000000, math.inf)
+            exposure_delta = next_exposure - current_exposure
+            gain_delta = next_gain - current_gain
 
 
         # Binning
