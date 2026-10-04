@@ -343,6 +343,8 @@ class CaptureWorker(Process):
             try:
                 self.saferun()
             except CaptureTimeoutError:
+                # Unwind capture first; do not resume the interrupted camera
+                # operation after aborting. The parent replaces this worker.
                 self.indiclient.abortCcdExposure()
                 self.indiclient.disconnectServer()
                 raise
@@ -807,6 +809,8 @@ class CaptureWorker(Process):
                             next_frame_time = frame_start_time + self.config['EXPOSURE_PERIOD_DAY'] + self.add_period_delay
 
                         self.frame_deadline.schedule_next(
+                            # Convert the wall-clock scheduler once; subsequent
+                            # timeout checks use only monotonic time.
                             time.monotonic() + max(0.0, next_frame_time - time.time()),
                             max(0.0, next_frame_time - frame_start_time),
                         )

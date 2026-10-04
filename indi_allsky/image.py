@@ -809,6 +809,8 @@ class ImageWorker(Process):
         latest_file, new_filename = self.write_img(self.image_processor.image, i_ref, camera, jpeg_exif=jpeg_exif)
 
         if latest_file and self.processing_allowance is not None:
+            # Include writing latest in the allowance, without changing the
+            # existing process_elapsed metric stored with archived images.
             self.processing_allowance.record(time.monotonic() - watchdog_processing_start)
 
         if new_filename:

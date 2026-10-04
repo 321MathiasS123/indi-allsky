@@ -491,6 +491,7 @@ class IndiAllSky(object):
             frame_deadline=frame_deadline,
         )
         self.capture_worker.start()
+        # Run in the parent: a blocked camera call must not block its timer.
         self.capture_watchdog = CaptureWatchdog(self.capture_worker, frame_deadline)
         self.capture_watchdog.start()
 
@@ -520,6 +521,8 @@ class IndiAllSky(object):
         logger.info('Stopping Capture worker')
 
         self.capture_q.put({'stop' : True})
+        # Keep recovery armed while draining an in-flight exposure, otherwise
+        # a hung camera could prevent shutdown/reload from ever completing.
         self.capture_worker.join()
         if self.capture_watchdog:
             self.capture_watchdog.stop()

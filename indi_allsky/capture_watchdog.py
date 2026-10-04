@@ -1,5 +1,11 @@
-import os
+"""Capture-side frame progress and a parent-owned recovery timer.
+
+Only delivered camera frames renew the timer. The supervisor must remain
+independent of camera calls, image processing, database I/O and wall-clock time.
+"""
+
 import math
+import os
 import signal
 import time
 from multiprocessing import Array
@@ -49,22 +55,20 @@ class FrameDeadline:
         self.processing = processing or ProcessingAllowance()
         # deadline (zero means suspended), awaiting frame, last frame/start,
         # scheduled start of the next exposure, exposure, period.
-        # Never share this lock with
-        # another worker; a forcibly stopped capture gets a fresh instance.
+        # A replacement capture worker gets fresh state, including its lock.
+        # This lets the parent recover even if the old worker held that lock.
         self._state = Array('d', [0.0] * 6)
 
-    def _timeout(self):
-        if self.timeout:
-            return self.timeout
-        return 2 * max(self._state[4], self._state[5]) + self.processing.maximum()
-
     def _deadline(self):
-        reference = self._state[2]
+        # Called with the state lock held. Automatic mode already includes
+        # the full capture interval, so it must not add the idle gap again.
+        _, _, reference, next_start, exposure, period = self._state
         # Ordinary intervals are already inside the fixed timeout. Only defer
         # for an intentional idle gap that itself exceeds the whole timeout.
-        if self.timeout and self._state[3] > reference + self.timeout:
-            reference = self._state[3]
-        return reference + self._timeout()
+        if self.timeout and next_start > reference + self.timeout:
+            reference = next_start
+        timeout = self.timeout or 2 * max(exposure, period) + self.processing.maximum()
+        return reference + timeout
 
     def begin_exposure(self, exposure=0.0, period=0.0):
         now = time.monotonic()
@@ -94,6 +98,8 @@ class FrameDeadline:
                 self._state[0] = self._deadline()
 
     def schedule_next(self, when, period=None):
+        # A schedule describes an intentional gap, not evidence of progress.
+        # If a frame is still missing, retain its existing recovery deadline.
         with self._state.get_lock():
             self._state[3] = when
             if period is not None:
@@ -102,6 +108,8 @@ class FrameDeadline:
                 self._state[0] = self._deadline()
 
     def suspend(self):
+        # A late callback during pause must not rearm capture; only a new
+        # exposure command can arm a suspended deadline.
         with self._state.get_lock():
             self._state[0] = 0.0
 
@@ -130,6 +138,8 @@ class FrameArrivalQueue:
 
 
 class CaptureWatchdog(Thread):
+    """Interrupt a stalled worker, then force its exit if cleanup also stalls."""
+
     check_interval = 1.0
     stop_grace = 3.0
 
@@ -150,10 +160,13 @@ class CaptureWatchdog(Thread):
             if not self.worker.is_alive():
                 return
 
+            # Read the clock first: crossing the deadline during a snapshot
+            # must not expire an older snapshot after a fresh frame arrives.
+            now = time.monotonic()
             current = self.deadline.snapshot()
             if current is not None:
                 deadline = current
-            if not deadline or time.monotonic() < deadline:
+            if not deadline or now < deadline:
                 continue
 
             self.timed_out = True

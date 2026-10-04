@@ -19,25 +19,23 @@ def clock(monkeypatch):
 
 
 class AdvancingEvent:
-    def __init__(self, clock, stop_at=float('inf'), on_wait=lambda: None):
+    def __init__(self, clock, stop_at=float('inf')):
         self.clock = clock
         self.stop_at = stop_at
-        self.on_wait = on_wait
 
     def wait(self, seconds):
         self.clock.now += seconds
-        self.on_wait()
         return self.clock.now >= self.stop_at
 
 
 @pytest.mark.parametrize('timeout', [1, 80, 150, 330])
-@pytest.mark.parametrize('poll_offset', [0, 0.01, 0.51, 0.99, 10.37])
+@pytest.mark.parametrize('poll_offset', [0, 0.01, 0.51, 0.99])
 def test_deadline_reacts_within_one_second_and_kills_within_four(clock, monkeypatch, timeout, poll_offset):
     deadline = FrameDeadline(timeout)
     deadline.begin_exposure()
     started = clock.now
     # Phase of the parent's polling is independent of the last frame.
-    clock.now += poll_offset % min(timeout, 1)
+    clock.now += poll_offset
     worker = Mock(pid=123, is_alive=Mock(return_value=True))
     actions = []
     worker.kill.side_effect = lambda: actions.append(('kill', clock.now))
@@ -220,6 +218,29 @@ def test_cooperative_abort_is_not_force_killed(clock, monkeypatch):
     watchdog.run()
     assert watchdog.timed_out
     worker.kill.assert_not_called()
+
+
+def test_frame_arriving_during_deadline_read_is_not_falsely_expired(clock, monkeypatch):
+    deadline = FrameDeadline(80)
+    deadline.begin_exposure()
+    snapshot = deadline.snapshot
+    def concurrent_arrival():
+        previous = snapshot()
+        clock.now = 179.999
+        deadline.received()
+        clock.now = 180.01
+        return previous
+    monkeypatch.setattr(deadline, 'snapshot', concurrent_arrival)
+    clock.now = 178.98
+    send_signal = Mock()
+    monkeypatch.setattr(watchdog_module, 'os', SimpleNamespace(kill=send_signal))
+    watchdog = CaptureWatchdog(Mock(is_alive=Mock(return_value=True)), deadline)
+    watchdog._stop_event = AdvancingEvent(clock, stop_at=181)
+
+    watchdog.run()
+
+    assert not watchdog.timed_out
+    send_signal.assert_not_called()
 
 
 def test_stuck_progress_lock_cannot_block_recovery(clock, monkeypatch):
