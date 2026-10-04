@@ -21,6 +21,8 @@ app = create_app()
 
 class IndiClientPassive(IndiClient):
 
+    exposure_control = False
+
     def __init__(self, *args, **kwargs):
         super(IndiClientPassive, self).__init__(*args, **kwargs)
 

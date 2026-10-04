@@ -1,6 +1,7 @@
 """Exercise the real fields and validators without Linux D-Bus services."""
 import ast
 import math
+import re
 from pathlib import Path
 
 from flask import Flask
@@ -69,14 +70,19 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
         assert form.HIGHLIGHT_PROTECTION__GAMMA.data == 0
         assert form.HIGHLIGHT_PROTECTION__GAMMA_DAY.data == 0
         template = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
-        start = template.index('                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">')
-        end = template.index('                <!-- ADU FOV Div & ROI Coordinates -->', start)
+        start = template.index('        <!-- Highlight Protection Card -->')
+        end = template.index('        <!-- CLAHE Contrast & Histogram Stretch Card -->', start)
+        assert template.index('<!-- ADU FOV Div & ROI Coordinates -->') < start
         html = Environment(autoescape=True).from_string(template[start:end]).render(form_config=form)
+        assert 'id="highlight-protection-settings"' in html
+        assert 'TARGET_ADU' not in html
         registry = (ROOT / 'templates/config.html').read_text(encoding='utf-8')
         for field in form:
             assert f'id="{field.id}"' in html
             assert f'id="{field.id}-error"' in html
             assert registry.count("'" + field.id + "'") == 1
+            # Moving a settings box must not leave a second copy of its controls.
+            assert len(re.findall(r'form_config\.' + field.id + r'\b', template)) == (2 if field.id.endswith('__ENABLE') else 1)
 
 
 def test_settings_round_trip_through_real_config_view_assignments(form_class):

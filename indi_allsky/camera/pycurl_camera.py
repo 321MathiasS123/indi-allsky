@@ -134,6 +134,8 @@ class PycurlCameraWorker(Thread):
 
 class IndiClientPycurl(IndiClient):
 
+    exposure_control = False
+
     def __init__(self, *args, **kwargs):
         super(IndiClientPycurl, self).__init__(*args, **kwargs)
 

@@ -1008,6 +1008,16 @@ class CaptureWorker(Process):
         # get CCD information
         ccd_info = self.indiclient.getCcdInfo()
 
+        exposure_control = (getattr(self.indiclient, 'exposure_control', True)
+                            and ccd_info.get('EXPOSURE_CONTROL', True))
+        if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False) and not exposure_control:
+            message = 'Highlight protection is inactive: this camera interface cannot command exposure. Normal processing will be used.'
+            logger.warning(message)
+            self._miscDb.addNotification(
+                NotificationCategory.GENERAL, 'highlight_control_unavailable', message,
+                expire=timedelta(hours=24),
+            )
+
 
         if self.config.get('CFA_PATTERN'):
             cfa_pattern = self.config['CFA_PATTERN']
@@ -1092,6 +1102,8 @@ class CaptureWorker(Process):
                 # from friendly labels and historical aliases. Camera-specific
                 # tools use this value as their authoritative persisted gate.
                 'detected_name': self.camera_name,
+                'exposure_control': exposure_control,
+                'gain_values': ccd_info.get('GAIN_INFO', {}).get('values', []),
             },
         }
 

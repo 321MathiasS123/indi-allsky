@@ -349,6 +349,9 @@ class ImageWorker(Process):
             .filter(IndiAllSkyDbCameraTable.id == camera_id)\
             .one()
 
+        camera_data = camera.data or {}
+        self.exposure_o.gain_values = camera_data.get('gain_values', [])
+
 
         ### Special function: image is for SQM calculations only
         if sqm_exposure:
@@ -407,6 +410,15 @@ class ImageWorker(Process):
             #task.setFailed('Bad Image: {0:s}'.format(str(filename_p)))
             return
 
+
+        # Apply the capability guard after per-frame settings have been loaded.
+        if (self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+                and camera_data.get('exposure_control') is False):
+            if not getattr(self, '_highlight_control_warned', False):
+                logger.warning('Highlight protection inactive: camera cannot command exposure')
+                self._highlight_control_warned = True
+            # Runtime only: controller, shadow lift and gamma fall back together.
+            self.config['HIGHLIGHT_PROTECTION'] = dict(self.config['HIGHLIGHT_PROTECTION'], ENABLE=False)
 
         # Purple-frame handling deliberately precedes both pre-dark and
         # post-dark standard FITS saving. In active repair mode those outputs

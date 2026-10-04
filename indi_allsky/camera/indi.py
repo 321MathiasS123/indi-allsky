@@ -672,6 +672,7 @@ class IndiClient(PyIndi.BaseClient):
         ccdinfo = dict()
 
         ctl_CCD_EXPOSURE = self.get_control(self.ccd_device, 'CCD_EXPOSURE', 'number')
+        ccdinfo['EXPOSURE_CONTROL'] = ctl_CCD_EXPOSURE.getPermission() != PyIndi.IP_RO
         ccdinfo['CCD_EXPOSURE'] = dict()
         for i in ctl_CCD_EXPOSURE:
             ccdinfo['CCD_EXPOSURE'][i.getName()] = {
@@ -1381,12 +1382,12 @@ class IndiClient(PyIndi.BaseClient):
         ]:
             logger.info('Mapping gain to ISO for libgphoto device')
 
-            try:
-                gain_switch = self.__canon_gain_to_iso[int(new_gain)]
-                logger.info('Setting ISO switch: %s', gain_switch)
-            except KeyError:
-                logger.error('Canon ISO not found for %s, using ISO 100', str(new_gain))
-                gain_switch = 'ISO1'
+            selected_gain = min(self.__canon_gain_to_iso, key=lambda g: abs(g - new_gain))
+            if selected_gain != new_gain:
+                logger.warning('Requested ISO %s is unavailable; using ISO %s', new_gain, selected_gain)
+            new_gain = selected_gain
+            gain_switch = self.__canon_gain_to_iso[new_gain]
+            logger.info('Setting ISO switch: %s', gain_switch)
 
             gain_config = {
                 'SWITCHES' : {

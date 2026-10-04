@@ -112,6 +112,63 @@ def test_fixed_gain_including_camera_without_gain_control(gain):
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.9)
 
 
+@pytest.mark.parametrize('microseconds', [1, 2, 5, 9, 10, 32])
+def test_sub_microsecond_recovery_does_not_stall(microseconds):
+    instance = controller('exposure_basic', night=False)
+    instance._expUtils.EXPOSURE_MIN_DAY = 0.000001
+    current = microseconds / 1000000
+    instance.compare_highlights(HighlightMeasurement(0, 0, 40), current, 0)
+    assert instance._expUtils.EXPOSURE_NEXT > current
+    assert instance._expUtils.EXPOSURE_NEXT <= current * 1.1 + 0.000001
+    instance._expUtils.EXPOSURE_MAX = current
+    instance.compare_highlights(HighlightMeasurement(0, 0, 40), current, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == current
+
+
+@pytest.mark.parametrize('current,gain,measurement,ratio', [
+    (30, 400, HighlightMeasurement(5, 10, 70), 0.9),
+    (30, 400, HighlightMeasurement(0, 0, 30), 1.1),
+    (27, 400, HighlightMeasurement(0, 0, 30), 1.1),
+    (0.001, 400, HighlightMeasurement(5, 10, 70), 0.9),
+])
+def test_discrete_iso_preserves_proportional_signal_with_exposure(current, gain, measurement, ratio):
+    instance = controller('exposure_autogain_exp_prio_iso')
+    instance.gain_values = [100, 200, 400, 800]
+    instance.compare_highlights(measurement, current, gain)
+    assert instance._expUtils.GAIN_NEXT in instance.gain_values
+    assert instance.exposure_min <= instance._expUtils.EXPOSURE_NEXT <= instance.exposure_max
+    assert instance._expUtils.EXPOSURE_NEXT * instance._expUtils.GAIN_NEXT == pytest.approx(
+        current * gain * ratio, abs=0.0008)
+
+
+@pytest.mark.parametrize('clipping,expected', [(True, 200), (False, 800)])
+def test_discrete_iso_with_fixed_exposure_takes_smallest_available_step(clipping, expected):
+    instance = controller('exposure_autogain_exp_prio_iso')
+    instance._expUtils.EXPOSURE_MIN_NIGHT = 30
+    instance.gain_values = [100, 200, 400, 800]
+    measurement = HighlightMeasurement(5, 10, 70) if clipping else HighlightMeasurement(0, 0, 30)
+    instance.compare_highlights(measurement, 30, 400)
+    assert instance._expUtils.EXPOSURE_NEXT == 30
+    assert instance._expUtils.GAIN_NEXT == expected
+
+
+def test_discrete_iso_closed_loop_can_recover_and_respects_gain_limits():
+    instance = controller('exposure_autogain_exp_prio_iso')
+    instance.gain_values = [100, 200, 400, 800]
+    exposure, gain = 30, 400
+    for _ in range(15):
+        instance.compare_highlights(HighlightMeasurement(5, 10, 70), exposure, gain)
+        exposure, gain = instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT
+        assert gain in instance.gain_values
+    reduced_signal = exposure * gain
+    for _ in range(30):
+        instance.compare_highlights(HighlightMeasurement(0, 0, 30), exposure, gain)
+        exposure, gain = instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT
+        assert gain in instance.gain_values
+        assert exposure <= 30 and gain <= 800
+    assert exposure * gain > reduced_signal * 2
+
+
 @pytest.mark.parametrize('name', [n for n in MODE_NAMES if 'exp_prio' in n])
 def test_fixed_exposure_uses_available_auto_gain(name):
     instance = controller(name)

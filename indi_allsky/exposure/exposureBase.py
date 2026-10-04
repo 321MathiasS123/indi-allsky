@@ -1,6 +1,7 @@
 import copy
 import functools
 import logging
+import math
 
 from ..twilight import runtime_weight
 from .. import constants
@@ -26,6 +27,7 @@ class IndiAllSky_Exposure_Base(object):
         self._target_adu_found = False
         self._current_adu_target = 0
         self.hist_adu = []
+        self.gain_values = []
         self.reset_highlights()
 
 
@@ -199,13 +201,13 @@ class IndiAllSky_Exposure_Base(object):
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
         if scale != 1.0:
-            self._set_exposure(exposure, gain, exposure * scale)
+            self._set_exposure(exposure, gain, exposure * scale, highlight=True)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
         return measurement.adu, measurement.adu
 
 
-    def _set_exposure(self, current_exposure, current_gain, next_exposure):
+    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
         next_exposure, next_gain, exposure_delta, gain_delta = self.adjust_exposure_gain(current_exposure, current_gain, next_exposure)
 
 
@@ -214,6 +216,41 @@ class IndiAllSky_Exposure_Base(object):
             next_gain = self.gain_max
         elif next_gain < self.gain_min:
             next_gain = self.gain_min
+
+        if highlight:
+            # ISO switches cannot accept the continuous gain requested by the
+            # controller. Preserve its signal change with exposure if possible.
+            values = [g for g in self.gain_values if g > 0 and self.gain_min <= g <= self.gain_max]
+            if values:
+                signal = next_exposure * next_gain
+                feasible = [g for g in values if self.exposure_min <= signal / g <= self.exposure_max]
+                if feasible:
+                    next_gain = min(feasible, key=lambda g: abs(g - next_gain))
+                    next_exposure = signal / next_gain
+                else:
+                    # With fixed exposure, the smallest available ISO step is
+                    # the hardware limit on smoothness; do not stall between ISOs.
+                    current_signal = current_exposure * current_gain
+                    direction = signal - current_signal
+                    directional = [g for g in values if
+                                   (min(self.exposure_max, max(self.exposure_min, signal / g)) * g - current_signal) * direction > 0]
+                    next_gain = min(directional or values, key=lambda g: abs(
+                        min(self.exposure_max, max(self.exposure_min, signal / g)) * g - signal))
+                    next_exposure = min(self.exposure_max, max(self.exposure_min, signal / next_gain))
+
+            # Shared exposure storage uses whole microseconds. A fractional
+            # increase must not truncate back to the same value indefinitely.
+            exposure_us = round(next_exposure * 1000000)
+            current_us = round(current_exposure * 1000000)
+            if next_exposure > current_exposure and exposure_us <= current_us:
+                exposure_us = current_us + 1
+            elif next_exposure < current_exposure and exposure_us >= current_us:
+                exposure_us = current_us - 1
+            exposure_us = min(math.floor(self.exposure_max * 1000000),
+                              max(math.ceil(self.exposure_min * 1000000), exposure_us))
+            next_exposure = math.nextafter(exposure_us / 1000000, math.inf)
+            exposure_delta = next_exposure - current_exposure
+            gain_delta = next_gain - current_gain
 
 
         # Binning

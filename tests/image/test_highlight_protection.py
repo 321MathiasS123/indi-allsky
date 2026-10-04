@@ -303,6 +303,26 @@ def test_processor_meters_pre_dark_capture_with_calibrated_adu_not_stack(highlig
     np.testing.assert_array_equal(raw, original)
 
 
+@pytest.mark.parametrize('configured,detected,expected_bits', [(12, 8, 12), (16, 12, 16), (0, 12, 12), (0, 16, 16)])
+def test_meter_uses_configured_or_detected_output_range_not_fits_container(highlight_processor, configured, detected, expected_bits):
+    processor = highlight_processor
+    source = (Path(__file__).resolve().parents[2] / 'indi_allsky/processing.py').read_text(encoding='utf-8')
+    start = source.index('        detected_bit_depth = i_ref.detected_bit_depth')
+    end = source.index('        # read this before', start)
+    processor.config['CCD_BIT_DEPTH'] = configured
+    processor.max_bit_depth = 8
+    data = np.full((10, 10), 100, dtype=np.uint16)
+    data[:2, :2] = 2 ** expected_bits - 1
+    reference = SimpleNamespace(hdulist=[SimpleNamespace(data=data)], binning=1,
+                                image_bitpix=16, image_bayerpat=None, detected_bit_depth=detected)
+    exec(textwrap.dedent(source[start:end]), {'self': processor, 'i_ref': reference,
+                                            'logger': logging.getLogger(__name__)})
+    processor.getLatestImage = lambda: reference
+    processor._adu_mask_dict = {1: np.ones((10, 10), dtype=np.uint8)}
+    assert processor.max_bit_depth == expected_bits
+    assert processor.measure_highlights().full == 4
+
+
 @pytest.mark.parametrize('bits', [8, 10, 12, 14, 16])
 @pytest.mark.parametrize('layout', ['mono', 'rgb', 'RGGB', 'GRBG', 'BGGR', 'GBRG', 'override'])
 def test_pre_dark_meter_supports_formats_and_colour_clipping_in_grayscale_mode(highlight_processor, bits, layout):
