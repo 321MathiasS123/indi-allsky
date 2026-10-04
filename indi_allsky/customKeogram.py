@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+import time
 
 import cv2
 from PIL import Image
@@ -38,8 +39,24 @@ def image_query(model, camera_id, start, end):
 
 
 def output_path(image_dir, task_id):
-    # Task IDs isolate exports; existing scratch cleanup expires their previews.
+    # Each job writes a temporary file before replacing the camera's last result.
     return Path(image_dir).joinpath('scratch', 'custom_keogram_{0:d}.jpg'.format(task_id))
+
+
+def preview_path(image_dir, camera_id):
+    # Existing scratch expiration removes this file after 24 hours.
+    return Path(image_dir).joinpath('scratch', 'custom_keogram_camera_{0:d}.jpg'.format(camera_id))
+
+
+def preview_version(image_dir, camera_id):
+    """Identify the retained file and enforce expiry between cleanup runs."""
+    try:
+        stat = preview_path(image_dir, camera_id).stat()
+    except FileNotFoundError:
+        return None
+    if stat.st_mtime <= time.time() - 86400:
+        return None
+    return str(stat.st_mtime_ns)
 
 
 def validate_frame_count(count):

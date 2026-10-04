@@ -1571,6 +1571,11 @@ class VideoWorker(Process):
             progress({'total': count})
             # Fetch rows before progress commits so no streaming database cursor is held open.
             result = customKeogram.generate(self.config, camera, entries.all(), outfile, progress)
+            # Bind the saved range to this exact file, so old task URLs cannot
+            # download a newer image under the previous range's filename.
+            progress({'file_mtime_ns': str(outfile.stat().st_mtime_ns)})
+            # Keep the previous successful preview until its replacement is complete.
+            outfile.replace(customKeogram.preview_path(self.image_dir, camera.id))
         except Exception as e:
             logger.exception('Custom keogram generation failed')
             db.session.rollback()

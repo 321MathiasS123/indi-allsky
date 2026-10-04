@@ -3,6 +3,7 @@
 import ast
 from datetime import datetime, timedelta
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import shutil
@@ -50,7 +51,8 @@ def environment(tmp_path):
                      app=flask.current_app, current_user=SimpleNamespace(is_admin=True),
                      request=flask.request, jsonify=flask.jsonify, send_file=flask.send_file,
                      url_for=flask.url_for, customKeogram=customKeogram,
-                     datetime=datetime, timedelta=timedelta)
+                     datetime=datetime, timedelta=timedelta, os=os,
+                     asi676mc_calibration=SimpleNamespace(cleanup_expired_sessions=lambda: 0))
     load_nodes(ROOT / 'indi_allsky/flask/views.py', {'AjaxCustomKeogramView', 'CustomKeogramView'}, namespace)
     handler = namespace['AjaxCustomKeogramView']()
     handler.login_disabled = False
@@ -62,11 +64,13 @@ def environment(tmp_path):
     worker_node = next(node for node in worker_tree.body if isinstance(node, ast.ClassDef) and node.name == 'VideoWorker')
     worker_node.bases = []
     worker_node.body = [node for node in worker_node.body if isinstance(node, ast.FunctionDef)
-                        and node.name == 'generateCustomKeogram']
+                        and node.name in {'generateCustomKeogram', 'expireData', '_deleteAssets',
+                                          '_getFolderFolders', '_getFolderFilesAll'}]
     namespace['logger'] = logging.getLogger('custom-keogram-test')
     exec(compile(ast.Module(body=[worker_node], type_ignores=[]), str(path), 'exec'), namespace)
     worker = namespace['VideoWorker']()
     worker.config, worker.image_dir = CONFIG, tmp_path
+    worker.scratch_base_dir = tmp_path / 'scratch'
     with app.app_context():
         db.create_all()
         Camera = namespace['IndiAllSkyDbCameraTable']
@@ -132,7 +136,7 @@ def test_crosses_day_night_uses_exact_range_and_downloads(environment):
     assert (result['frames'], result['skipped'], result['resized']) == (3, 1, 1)
     assert result['first'] == '2026-10-01 15:00:00'
     assert result['last'] == '2026-10-01 22:00:00'
-    with Image.open(customKeogram.output_path(env.path, task_id)) as image:
+    with Image.open(customKeogram.preview_path(env.path, 1)) as image:
         assert image.size == (3, 64)
     download = env.client.get(result['image_url'] + '&download=1')
     assert download.status_code == 200
@@ -227,7 +231,7 @@ def test_wrong_camera_other_task_and_expired_preview(environment):
     task_id, task = run_job(env, submit(env))
     assert status(env, task_id, camera_id=2).status_code == 404
     assert status(env, 1000).status_code == 404
-    path = customKeogram.output_path(env.path, task_id)
+    path = customKeogram.preview_path(env.path, 1)
     path.unlink()
     assert status(env, task_id).status_code == 410
     task.data = dict(task.data, action='generateVideo')
@@ -246,6 +250,78 @@ def test_frame_limit_checked_before_queue_and_in_worker(environment, monkeypatch
     assert 'up to 1 images' in rejected.json['message']
     _, task = run_job(env, queued)
     assert task.state.name == 'FAILED'
+
+
+def test_returning_restores_last_result_and_new_success_replaces_it(environment):
+    env = environment
+    assert status(env, None).json == {'state': 'EMPTY', 'preview': None}
+    add_image(env, 15)
+    add_image(env, 22, night=True, color=(100, 120, 140))
+    first_id, _ = run_job(env, submit(env))
+    restored = status(env, None).json
+    assert restored['task_id'] == first_id
+    assert restored['preview']['start'] == '2026-10-01T15:00'
+    assert restored['preview']['end'] == '2026-10-01T22:00'
+    assert status(env, None, camera_id=2).json['state'] == 'EMPTY'
+    path = customKeogram.preview_path(env.path, 1)
+    original = path.read_bytes()
+    replacement = submit(env, start='2026-10-01T21:00')
+    pending = status(env, None).json
+    assert pending['state'] == 'MANUAL'
+    assert pending['task_id'] == replacement.json['task_id']
+    assert pending['preview']['task_id'] == first_id
+    assert path.read_bytes() == original
+    second_id, _ = run_job(env, replacement)
+    assert path.read_bytes() != original
+    assert list(path.parent.iterdir()) == [path]
+    restored = status(env, None).json
+    assert restored['task_id'] == second_id
+    assert restored['preview']['start'] == '2026-10-01T21:00'
+    # An old bookmark must not download the new image with the old range's name.
+    assert status(env, first_id, image=1, download=1).status_code == 410
+    download = status(env, second_id, image=1, download=1)
+    assert '2026-10-01T2100' in download.headers['Content-Disposition']
+    download.close()
+
+
+def test_failed_replacement_preserves_the_last_image(environment):
+    env = environment
+    add_image(env, 15)
+    first_id, _ = run_job(env, submit(env))
+    path = customKeogram.preview_path(env.path, 1)
+    original = path.read_bytes()
+    add_image(env, 22, night=True, missing=True)
+    failed_id, task = run_job(env, submit(env, start='2026-10-01T21:00'))
+    assert task.state.name == 'FAILED'
+    assert path.read_bytes() == original
+    assert status(env, failed_id).json['preview']['task_id'] == first_id
+    assert status(env, None).json['task_id'] == first_id
+
+
+def test_preview_expires_at_24_hours_and_existing_cleanup_removes_it(environment, monkeypatch):
+    env = environment
+    add_image(env, 15)
+    task_id, _ = run_job(env, submit(env))
+    path = customKeogram.preview_path(env.path, 1)
+    written = path.stat().st_mtime
+    monkeypatch.setattr(customKeogram.time, 'time', lambda: written + 86400 - 1)
+    assert status(env, None).json['task_id'] == task_id
+    monkeypatch.setattr(customKeogram.time, 'time', lambda: written + 86400)
+    assert status(env, None).json['state'] == 'EMPTY'
+    assert status(env, task_id, image=1).status_code == 410
+    assert path.exists()  # The scheduled worker removes the now-hidden file.
+    old = (datetime.now() - timedelta(hours=25)).timestamp()
+    os.utime(path, (old, old))
+    fresh = customKeogram.preview_path(env.path, 2)
+    fresh.write_bytes(b'other camera')
+    Task = env.models['IndiAllSkyDbTaskQueueTable']
+    cleanup = Task(queue=env.models['TaskQueueQueue'].VIDEO, state=env.models['TaskQueueState'].QUEUED, data={})
+    env.db.session.add(cleanup)
+    env.db.session.commit()
+    env.worker.expireData(cleanup, camera_id=1)
+    assert cleanup.state.name == 'SUCCESS'
+    assert not path.exists()
+    assert fresh.exists()
 
 
 def test_generator_preserves_chronological_pixels_and_all_frames(tmp_path):

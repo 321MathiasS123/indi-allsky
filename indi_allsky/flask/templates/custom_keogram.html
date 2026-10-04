@@ -27,9 +27,10 @@
     <p id="custom-keogram-status" role="status" aria-live="polite" class="tw:text-sm"></p>
     {# This scratch preview is deliberately separate from the saved daily keograms. #}
     <div id="custom-keogram-result" hidden>
+        <p id="custom-keogram-range" class="tw:text-sm tw:mb-4"></p>
         <div class="tw:flex tw:flex-wrap tw:items-center tw:gap-4 tw:mb-4">
             <a id="custom-keogram-download" class="tw:btn tw:btn-neutral" download>Download</a>
-            <p class="tw:text-xs tw:text-base-content/70">Download to keep this keogram. The preview is temporary and may be cleared after 24 hours or a restart.</p>
+            <p class="tw:text-xs tw:text-base-content/70">Your last keogram is restored when you return. A successful generation replaces it. Download to keep it beyond 24 hours; a server restart may clear it sooner.</p>
         </div>
         <a id="custom-keogram-open" target="_blank" rel="noopener noreferrer">
             <img id="custom-keogram-image" alt="Keogram for the selected time range" class="tw:w-full tw:object-contain tw:rounded-[var(--radius-box)]" style="max-height: 65vh;">
