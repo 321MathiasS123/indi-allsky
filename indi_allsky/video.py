@@ -21,6 +21,7 @@ import ephem
 from . import constants
 from . import asi676mc
 from . import asi676mc_calibration
+from . import customKeogram
 
 from .timelapse import TimelapseGenerator
 from .panorama import buildPanoramaCropFilter
@@ -1546,6 +1547,45 @@ class VideoWorker(Process):
         self._miscUpload.s3_upload_panorama_video(video_entry, video_metadata)
         self._miscUpload.upload_panorama_video(video_entry)
         self._miscUpload.youtube_upload_panorama_video(video_entry, video_metadata)
+
+
+    def generateCustomKeogram(self, task, **kwargs):
+        outfile = customKeogram.output_path(self.image_dir, task.id)
+
+        def progress(result):
+            # Reassign JSON so SQLAlchemy persists updates for the polling UI.
+            task.data = dict(task.data, custom_keogram=dict(
+                task.data.get('custom_keogram', {}), **result,
+            ))
+            db.session.commit()
+
+        try:
+            start, end = customKeogram.parse_range(kwargs.get('start'), kwargs.get('end'))
+            camera = IndiAllSkyDbCameraTable.query.filter(
+                IndiAllSkyDbCameraTable.id == kwargs['camera_id'],
+            ).one()
+            entries = customKeogram.image_query(IndiAllSkyDbImageTable, camera.id, start, end)
+            count = entries.count()
+            # Capture/retention may have changed the range since it was queued.
+            customKeogram.validate_frame_count(count)
+            progress({'total': count})
+            # Fetch rows before progress commits so no streaming database cursor is held open.
+            result = customKeogram.generate(self.config, camera, entries.all(), outfile, progress)
+        except Exception as e:
+            logger.exception('Custom keogram generation failed')
+            db.session.rollback()
+            try:
+                outfile.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup must not hide the failure or stop the shared worker.
+                logger.warning('Unable to remove custom keogram: %s', outfile, exc_info=True)
+            message = str(e) if isinstance(e, ValueError) else 'Unable to create the keogram. Check the worker log for details.'
+            task.setFailed(message[:255])
+            return
+
+        task.setSuccess('Created from {0:d} images; {1:d} missing or unreadable images skipped.'.format(
+            result['frames'], result['skipped'],
+        ))
 
 
     def generateKeogramStarTrails(self, task, **kwargs):
