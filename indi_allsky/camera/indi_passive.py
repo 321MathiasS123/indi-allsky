@@ -21,6 +21,8 @@ app = create_app()
 
 class IndiClientPassive(IndiClient):
 
+    exposure_control = False  # Exposure is controlled by the external INDI client.
+
     def __init__(self, *args, **kwargs):
         super(IndiClientPassive, self).__init__(*args, **kwargs)
 
