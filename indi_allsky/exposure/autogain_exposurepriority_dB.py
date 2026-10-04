@@ -24,11 +24,11 @@ class IndiAllSky_Exposure_AutoGain_ExposurePriority_dB_Base(IndiAllSky_Exposure_
 
     @property
     def gain_min(self):
-        return self._expUtils.GAIN_MIN_NIGHT
+        return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[0]
 
     @property
     def gain_max(self):
-        return self._expUtils.GAIN_MAX_NIGHT
+        return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[1]
 
 
     @property

@@ -24,6 +24,7 @@ from ..flask import create_app
 
 #from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..gain import gain_quantum, quantize_gain
 
 from ..exceptions import TimeOutException
 from ..exceptions import CameraException
@@ -1121,6 +1122,7 @@ class IndiClient(PyIndi.BaseClient):
         self.exposure = exposure
         self.sqm_exposure = sqm_exposure
 
+        gain = self.normalize_gain(gain)
 
         if self.gain != gain:
             self.setCcdGain(gain)
@@ -1305,13 +1307,22 @@ class IndiClient(PyIndi.BaseClient):
             'step'    : gain_ctl[index].step,
             'format'  : gain_ctl[index].format,
             'values'  : [],
+            'quantum' : gain_quantum(indi_exec),
         }
 
         #logger.info('Gain Info: %s', pformat(gain_info))
         return gain_info
 
 
+    def normalize_gain(self, gain):
+        return quantize_gain(gain, gain_quantum(self.ccd_device.getDriverExec()), self.__canon_gain_to_iso)
+
+
     def setCcdGain(self, new_gain):
+        requested_gain = new_gain
+        new_gain = self.normalize_gain(new_gain)
+        if new_gain != requested_gain:
+            logger.info('Requested gain %.3f mapped to supported gain %.3f', requested_gain, new_gain)
         logger.warning('Setting CCD gain to %0.3f', new_gain)
         indi_exec = self.ccd_device.getDriverExec()
 
@@ -1384,12 +1395,7 @@ class IndiClient(PyIndi.BaseClient):
         ]:
             logger.info('Mapping gain to ISO for libgphoto device')
 
-            # Resolve unsupported requests for every caller, and record the ISO
-            # actually sent so the next frame is not analysed using a fictitious gain.
-            selected_gain = min(self.__canon_gain_to_iso, key=lambda g: abs(g - new_gain))
-            if selected_gain != new_gain:
-                logger.warning('Requested ISO %s is unavailable; using ISO %s', new_gain, selected_gain)
-            new_gain = selected_gain
+            # normalize_gain resolved the supported ISO before command/logging.
             gain_switch = self.__canon_gain_to_iso[new_gain]
             logger.info('Setting ISO switch: %s', gain_switch)
 

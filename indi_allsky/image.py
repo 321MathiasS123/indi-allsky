@@ -354,6 +354,7 @@ class ImageWorker(Process):
 
         camera_data = camera.data or {}
         self.exposure_o.gain_values = camera_data.get('gain_values', [])
+        self.exposure_o.gain_quantum = camera_data.get('gain_quantum', 0.0)
 
 
         ### Special function: image is for SQM calculations only

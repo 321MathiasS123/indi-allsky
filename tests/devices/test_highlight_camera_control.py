@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import textwrap
 
 import pytest
+from indi_allsky.gain import gain_quantum, quantize_gain
 
 
 ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky'
@@ -21,9 +22,10 @@ def client_class():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiClient')
     cls.bases = []
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-                and n.name in ('getCcdGain', 'setCcdGain', 'getCcdInfo')]
+                and n.name in ('getCcdGain', 'setCcdGain', 'getCcdInfo', 'normalize_gain', 'setCcdExposure')]
     namespace = {'logger': logging.getLogger(__name__), 'PyIndi': SimpleNamespace(IP_RO=0),
-                 'TimeOutException': TimeoutError}
+                 'TimeOutException': TimeoutError, 'gain_quantum': gain_quantum, 'quantize_gain': quantize_gain,
+                 'time': SimpleNamespace(time=lambda: 0)}
     exec(compile(ast.Module(body=[cls], type_ignores=[]), 'camera-control', 'exec'), namespace)
     return namespace['IndiClient']
 
@@ -94,7 +96,7 @@ def test_unsupported_camera_warns_and_disables_all_highlight_processing_only_at_
     control = namespace['exposure_control']
     assert control is (interface_control and driver_control)
     assert bool(notifications) is (enabled and not control)
-    camera = SimpleNamespace(data={'exposure_control': control, 'gain_values': [100, 200, 400]})
+    camera = SimpleNamespace(data={'exposure_control': control, 'gain_values': [100, 200, 400], 'gain_quantum': 1})
     source = (ROOT / 'image.py').read_text(encoding='utf-8')
     start = source.index('        camera_data = camera.data or {}')
     end = source.index('        ### Special function:', start)
@@ -110,4 +112,59 @@ def test_unsupported_camera_warns_and_disables_all_highlight_processing_only_at_
         assert worker.config['HIGHLIGHT_PROTECTION']['ENABLE'] is (enabled and control)
     assert worker.config['HIGHLIGHT_PROTECTION']['GAMMA_DAY'] == 1.85
     assert worker.exposure_o.gain_values == [100, 200, 400]
+    assert worker.exposure_o.gain_quantum == 1
     assert saved['HIGHLIGHT_PROTECTION']['ENABLE'] is enabled
+
+
+@pytest.mark.parametrize('driver', ['indi_asi_ccd', 'indi_asi_single_ccd', 'indi_playerone_ccd',
+                                   'indi_playerone_single_ccd', 'indi_toupcam_ccd', 'indi_altair_ccd',
+                                   'indi_altaircam_ccd', 'indi_nncam_ccd', 'indi_tscam_ccd',
+                                   'indi_ogmacam_ccd', 'indi_omegonprocam_ccd', 'indi_svbony_ccd',
+                                   'indi_svbonycam_ccd', 'indi_sv305_ccd', 'indi_qhy_ccd', 'indi_libcamera_ccd'])
+def test_driver_precision_overrides_gui_step_and_agrees_with_command_metadata(client_class, driver):
+    client = client_class()
+    client.ccd_device = SimpleNamespace(getDriverExec=lambda: driver)
+    client._IndiClient__canon_gain_to_iso = {}
+    # ASI's range/10 GUI increment must not become a 60-unit hardware step.
+    widget = SimpleNamespace(getValue=lambda: 85.912, min=0, max=600, step=60, format='%g')
+    client.get_control = lambda *a, **kw: [widget]
+    client._IndiClient__map_indexes = lambda ctl, names: {names[0]: 0}
+    info = client.getCcdGain()
+    expected = 85.912 if driver in ('indi_qhy_ccd', 'indi_libcamera_ccd') else 86
+    assert info['quantum'] == (0 if expected == 85.912 else 1)
+    commands = []
+    client.configureDevice = lambda device, settings, **kw: commands.append(settings)
+    client._expUtils = SimpleNamespace()
+    client.setCcdGain(85.912)
+    property_values = next(iter(commands[0]['PROPERTIES'].values()))
+    assert next(iter(property_values.values())) == expected
+    assert client.gain == client._expUtils.GAIN_CURRENT == expected
+
+
+def test_equivalent_integer_gain_requests_do_not_resend_camera_commands(client_class):
+    client = client_class()
+    client.ccd_device = SimpleNamespace(getDriverExec=lambda: 'indi_asi_ccd')
+    client._IndiClient__canon_gain_to_iso = {}
+    client.timeout, client.gain, client.binning = 60, -1, 1
+    client._expUtils = SimpleNamespace()
+    commands = []
+    client.configureDevice = lambda device, settings, **kw: commands.append(settings)
+    client.set_number = lambda *a, **kw: None
+    client.setCcdExposure(30, 85.912, 1)
+    client.setCcdExposure(30, 86.1, 1)
+    assert len(commands) == 1 and client.gain == 86
+    assert client._expUtils.GAIN_CURRENT == 86 and client._expUtils.EXPOSURE_CURRENT == 30
+
+
+@pytest.mark.parametrize('info,requested,expected', [
+    ({'quantum': 1}, 85.912, 86), ({'quantum': 0}, 1.875, 1.875),
+    ({'values': [100, 200, 400, 800]}, 385.9, 400), ({}, 85.912, 85.912),
+])
+def test_capture_startup_seeds_representable_pending_and_current_gain(info, requested, expected):
+    source = (ROOT / 'capture.py').read_text(encoding='utf-8')
+    start = source.index('        # Seed pending/current with the same command')
+    end = source.index('        self._expUtils.GAIN_MAX_NIGHT', start)
+    worker = SimpleNamespace(_expUtils=SimpleNamespace())
+    namespace = dict(self=worker, ccd_gain_default=requested, ccd_info={'GAIN_INFO': info}, quantize_gain=quantize_gain)
+    exec(textwrap.dedent(source[start:end]), namespace)
+    assert worker._expUtils.GAIN_CURRENT == worker._expUtils.GAIN_NEXT == expected

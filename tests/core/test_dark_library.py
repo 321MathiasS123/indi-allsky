@@ -208,6 +208,21 @@ def test_camera_capabilities_round_trip_ccd_info_and_database_snapshot():
     assert capabilities.capture_height == 2152
 
 
+@pytest.mark.parametrize('quantum,expected', [(1, 86), (0, 85.912)])
+def test_capture_plan_uses_reported_gain_precision_instead_of_gui_step(quantum, expected):
+    capabilities = CameraCapabilities.from_ccd_info({
+        'GAIN_INFO': {'min': 0, 'max': 600, 'step': 60, 'quantum': quantum, 'values': []},
+    })
+    restored = CameraCapabilities.from_camera(SimpleNamespace(
+        data={'camera_capabilities': capabilities.to_dict()},
+    ))
+    config = _config(EXPOSURE_MODE_BASIC, exposure_max=1)
+    config['CCD_CONFIG']['NIGHT']['GAIN'] = 85.912
+    state = build_effective_capture_state(config, restored)
+    assert restored.snap_gain(85.912) == expected
+    assert next(profile for profile in state.profiles if profile.name == 'night').gain_min == expected
+
+
 def test_binned_dimensions_respect_the_camera_roi_alignment():
     capabilities = replace(
         _capabilities(),

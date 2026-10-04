@@ -6,6 +6,7 @@ import math
 from ..twilight import runtime_weight
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..gain import gain_limits, quantize_gain
 from ..highlight import MAX_EXPOSURE_INCREASE, HighlightTransition, exposure_decision
 
 
@@ -29,6 +30,7 @@ class IndiAllSky_Exposure_Base(object):
         self.hist_adu = []
         # Populated from camera metadata only for discrete ISO switch controls.
         self.gain_values = []
+        self.gain_quantum = 0.0
         self.highlight_transition = HighlightTransition()
         self.reset_highlights()
 
@@ -239,11 +241,20 @@ class IndiAllSky_Exposure_Base(object):
 
     def _highlight_request_pending(self, exposure, gain):
         pending_exposure = self._expUtils.EXPOSURE_NEXT
-        pending_gain = self._expUtils.GAIN_NEXT
+        pending_gain = self.effective_gain(self._expUtils.GAIN_NEXT)
         return (self.exposure_min <= pending_exposure <= self.exposure_max
                 and self.gain_min <= pending_gain <= self.gain_max
                 and (not math.isclose(exposure, pending_exposure, rel_tol=0, abs_tol=0.0000005)
                      or not math.isclose(gain, pending_gain, rel_tol=0, abs_tol=0.0005)))
+
+
+    def effective_gain(self, gain):
+        """Use the same representable values for limits, requests and captures."""
+        return quantize_gain(gain, self.gain_quantum, self.gain_values)
+
+
+    def effective_gain_limits(self, minimum, maximum):
+        return gain_limits(minimum, maximum, self.gain_quantum, self.gain_values)
 
 
     def _calculate_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
@@ -291,6 +302,17 @@ class IndiAllSky_Exposure_Base(object):
             # floating-point error when it converts seconds back to integers.
             next_exposure = math.nextafter(exposure_us / 1000000, math.inf)
             exposure_delta = next_exposure - current_exposure
+            gain_delta = next_gain - current_gain
+
+        if self.gain_quantum or self.gain_values:
+            requested_gain = next_gain
+            next_gain = self.effective_gain(next_gain)
+            if (highlight and self.gain_quantum and next_gain == current_gain
+                    and not math.isclose(requested_gain, current_gain, rel_tol=0, abs_tol=1e-9)):
+                # A sub-step correction must not stall forever outside the
+                # deadband. Take one hardware step, bounded by the mode limits.
+                next_gain = self.effective_gain(current_gain + math.copysign(self.gain_quantum, requested_gain - current_gain))
+            next_gain = min(self.gain_max, max(self.gain_min, next_gain))
             gain_delta = next_gain - current_gain
 
         return next_exposure, next_gain, exposure_delta, gain_delta
@@ -346,7 +368,7 @@ class IndiAllSky_Exposure_Base(object):
         exposure = self._expUtils.EXPOSURE_NEXT
         gain = self._expUtils.GAIN_NEXT
         next_exposure = max(self.exposure_min, min(self.exposure_max, exposure))
-        next_gain = max(self.gain_min, min(self.gain_max, gain))
+        next_gain = self.effective_gain(max(self.gain_min, min(self.gain_max, gain)))
         if next_exposure != exposure:
             # Add the clamp to any correction already made by the AE controller.
             self._expUtils.EXPOSURE_NEXT = next_exposure

@@ -35,11 +35,11 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
 
     @property
     def gain_min(self):
-        return self._expUtils.GAIN_MIN_NIGHT
+        return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[0]
 
     @property
     def gain_max(self):
-        return self._expUtils.GAIN_MAX_NIGHT
+        return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[1]
 
 
     @property
@@ -164,6 +164,9 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
             self._expUtils.GAIN_MAX_NIGHT,
             auto_gain_levels,
         )
+        if self.gain_quantum or self.gain_values:
+            self.auto_gain_step_list = sorted(set(min(self.gain_max, max(self.gain_min, self.effective_gain(gain)))
+                                                 for gain in self.auto_gain_step_list))
 
 
         highlight_enabled = self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
