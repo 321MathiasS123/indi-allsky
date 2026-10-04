@@ -27,6 +27,7 @@ from ..version import __version__
 from .. import constants
 from .. import asi676mc
 from .. import asi676mc_calibration
+from .. import customKeogram
 from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
@@ -588,6 +589,104 @@ class RealtimeKeogramView(TemplateView):
         context['refreshInterval'] = refreshInterval_ms + 1000  # additional time for exposures to download
 
         return context
+
+
+class CustomKeogramView(TemplateView):
+    decorators = [login_required]
+    page_title = 'Custom Keogram'
+
+    def get_context(self):
+        context = super(CustomKeogramView, self).get_context()
+        context['range_end'] = self.camera_now.strftime('%Y-%m-%dT%H:%M')
+        context['range_start'] = (self.camera_now - timedelta(hours=6)).strftime('%Y-%m-%dT%H:%M')
+        context['camera_timezone'] = getattr(self.camera, 'tz', None)
+        context['local_indi_allsky'] = self.local_indi_allsky
+        context['can_generate'] = self.camera.id > 0 and self.local_indi_allsky and (self.login_disabled or current_user.is_admin)
+        return context
+
+
+class AjaxCustomKeogramView(BaseView):
+    methods = ['GET', 'POST']
+    decorators = [login_required]
+
+    def dispatch_request(self):
+        if not (self.login_disabled or current_user.is_admin):
+            return jsonify({'message': 'Sign in as an administrator to create custom keograms.'}), 403
+
+        if request.method == 'POST':
+            return self.queue_keogram()
+
+        task_id = request.args.get('task_id', type=int)
+        camera_id = request.args.get('camera_id', type=int)
+        if not task_id or not 0 < task_id <= 2147483647 or not camera_id or not 0 < camera_id <= 2147483647:
+            return jsonify({'message': 'Choose a valid camera and custom keogram.'}), 400
+        task = IndiAllSkyDbTaskQueueTable.query.filter(
+            IndiAllSkyDbTaskQueueTable.id == task_id,
+            IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO,
+        ).first()
+        if (not task or not isinstance(task.data, dict)
+                or task.data.get('action') != 'generateCustomKeogram'
+                or task.data.get('kwargs', {}).get('camera_id') != camera_id):
+            return jsonify({'message': 'This custom keogram is no longer available. Generate it again.'}), 404
+
+        result = dict(task.data.get('custom_keogram', {}))
+        result.update({
+            'state': task.state.name,
+            'message': task.result or 'Waiting for the image worker.',
+            'start': task.data['kwargs']['start'],
+            'end': task.data['kwargs']['end'],
+        })
+        if task.state == TaskQueueState.SUCCESS:
+            path = customKeogram.output_path(app.config['INDI_ALLSKY_IMAGE_FOLDER'], task.id)
+            if not path.is_file():
+                return jsonify({'message': 'This temporary preview has expired. Generate it again.'}), 410
+            if request.args.get('image'):
+                return send_file(
+                    path, mimetype='image/jpeg',
+                    as_attachment=request.args.get('download') == '1',
+                    download_name='keogram_{0}_{1}.jpg'.format(
+                        task.data['kwargs']['start'].replace(':', ''),
+                        task.data['kwargs']['end'].replace(':', ''),
+                    ),
+                    max_age=0,
+                )
+            result['image_url'] = url_for('indi_allsky.ajax_custom_keogram_view',
+                                         task_id=task.id, camera_id=camera_id, image=1)
+        return jsonify(result)
+
+    def queue_keogram(self):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'message': 'Choose a camera and a valid time range.'}), 400
+        try:
+            camera_id = data.get('camera_id')
+            if type(camera_id) is not int or not 0 < camera_id <= 2147483647:
+                raise ValueError('Choose a valid camera.')
+            start, end = customKeogram.parse_range(data.get('start'), data.get('end'))
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
+        camera = IndiAllSkyDbCameraTable.query.filter(IndiAllSkyDbCameraTable.id == camera_id).first()
+        if not camera:
+            return jsonify({'message': 'The selected camera is no longer available.'}), 404
+        if not camera.local:
+            return jsonify({'message': 'Open this page on the camera\'s capture server to generate a custom keogram.'}), 400
+
+        count = customKeogram.image_query(IndiAllSkyDbImageTable, camera_id, start, end).count()
+        if not count:
+            return jsonify({'message': 'No saved images were found in this range. Excluded images are not used.'}), 400
+        if count > customKeogram.MAX_FRAMES:
+            return jsonify({'message': 'This range has too many images. Choose a shorter range (up to 20,000 images).'}), 400
+        task = IndiAllSkyDbTaskQueueTable(
+            queue=TaskQueueQueue.VIDEO, state=TaskQueueState.MANUAL, priority=100,
+            data={
+                'action': 'generateCustomKeogram',
+                'kwargs': {'camera_id': camera_id, 'start': data['start'], 'end': data['end']},
+                'custom_keogram': {'total': count, 'frames': 0, 'skipped': 0},
+            },
+        )
+        db.session.add(task)
+        db.session.commit()
+        return jsonify({'task_id': task.id}), 202
 
 
 class LatestImageRedirect(BaseView):
@@ -14765,6 +14864,8 @@ bp_allsky.add_url_rule('/raw_canvas', view_func=LatestRawImageCanvasView.as_view
 bp_allsky.add_url_rule('/raw_img', view_func=LatestRawImageImgView.as_view('latest_rawimage_img_view', template_name='index_img.html'))
 bp_allsky.add_url_rule('/js/latest_rawimage', view_func=JsonLatestRawImageView.as_view('js_latest_rawimage_view'))
 bp_allsky.add_url_rule('/realtime_keogram', view_func=RealtimeKeogramView.as_view('realtime_keogram_view', template_name='realtime_keogram.html'))
+bp_allsky.add_url_rule('/custom_keogram', view_func=CustomKeogramView.as_view('custom_keogram_view', template_name='custom_keogram.html'))
+bp_allsky.add_url_rule('/ajax/custom_keogram', view_func=AjaxCustomKeogramView.as_view('ajax_custom_keogram_view'))
 
 bp_allsky.add_url_rule('/loop', view_func=ImageLoopImgView.as_view('image_loop_view', template_name='loop_img.html'))
 bp_allsky.add_url_rule('/loop_canvas', view_func=ImageLoopCanvasView.as_view('image_loop_canvas_view', template_name='loop_canvas.html'))
@@ -15008,4 +15109,3 @@ def manifest():
     response = jsonify(manifest_data)
     response.headers['Content-Type'] = 'application/manifest+json'
     return response
-
