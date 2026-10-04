@@ -136,6 +136,7 @@ class ImageWorker(Process):
             self.night_av,
             self.astro_av,
         )
+        # Exposure control and processing must consume the same per-frame blend.
         self.config = self.image_processor.config
 
 
@@ -632,7 +633,7 @@ class ImageWorker(Process):
 
 
         if self.config.get('CONTRAST_ENHANCE_16BIT'):
-            if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and self.image_processor.contrast_transition(bit16=True):
+            if self.image_processor.contrast_transition(bit16=True):
                 pass
             elif not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
                 # Contrast enhancement during the day
@@ -689,6 +690,8 @@ class ImageWorker(Process):
             )
 
 
+        # Excluded/repaired frames must not move the limits behind highlight
+        # protection's held exposure request.
         if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and not exclude_from_exposure and not (
             self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
             and (repair_result or {}).get('status') == 'repaired'
@@ -760,7 +763,7 @@ class ImageWorker(Process):
 
 
         if not self.config.get('CONTRAST_ENHANCE_16BIT'):
-            if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and self.image_processor.contrast_transition():
+            if self.image_processor.contrast_transition():
                 pass
             elif not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CONTRAST_ENHANCE']:
                 # Contrast enhancement during the day

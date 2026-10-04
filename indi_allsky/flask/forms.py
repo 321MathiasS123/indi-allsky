@@ -885,6 +885,8 @@ def NIGHT_SUN_ALT_DEG_validator(form, field):
 def TWILIGHT_NIGHT_ALT_validator(form, field):
     if field.data is None or not math.isfinite(field.data) or not -90 <= field.data <= 90:
         raise ValidationError('Please enter a finite Sun elevation between -90 and 90 degrees')
+    # Disabled transitions may retain endpoints incompatible with the current
+    # mode threshold; they must be valid before enabling the feature again.
     if form.TWILIGHT_TRANSITION__ENABLE.data:
         start = form.NIGHT_SUN_ALT_DEG.data
         if start is None or not math.isfinite(start) or field.data >= start:

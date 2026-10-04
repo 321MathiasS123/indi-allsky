@@ -91,6 +91,7 @@ class IndiAllSky_Exposure_Base(object):
             tracking = getattr(self, '_twilight_tracking', None)
             self._twilight_tracking = None
             if previous_target != target_adu:
+                # Samples collected for a different target cannot establish a lock.
                 self.target_adu_found = False
                 self.hist_adu = []
                 if (previous_target and exposure > 0 and target_adu_min <= adu <= target_adu_max
@@ -105,6 +106,7 @@ class IndiAllSky_Exposure_Base(object):
                                               target_adu, target_adu, 1.0)
                     ideal = base * target_adu / previous_target
                     if self.exposure_min <= ideal <= self.exposure_max and self._expUtils.GAIN_NEXT == gain:
+                        # Retain requested exposure, gain, and the unrounded ideal.
                         self._twilight_tracking = (self._expUtils.EXPOSURE_NEXT, gain, ideal)
             self._twilight_target = target_adu
 
@@ -309,6 +311,7 @@ class IndiAllSky_Exposure_Base(object):
         next_exposure = max(self.exposure_min, min(self.exposure_max, exposure))
         next_gain = max(self.gain_min, min(self.gain_max, gain))
         if next_exposure != exposure:
+            # Add the clamp to any correction already made by the AE controller.
             self._expUtils.EXPOSURE_NEXT = next_exposure
             self._expUtils.EXPOSURE_DELTA += next_exposure - exposure
         if next_gain != gain:

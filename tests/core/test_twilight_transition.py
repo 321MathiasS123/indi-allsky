@@ -205,6 +205,20 @@ def test_fixed_gain_and_exposure_limits_update_even_inside_brightness_deadband()
 
 
 @pytest.mark.parametrize('name', modes.__all__)
+@pytest.mark.parametrize('night', [False, True])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_uninitialized_or_disabled_transition_keeps_original_exposure_minimum(name, night, enabled):
+    obj, t = controller(name)
+    # Before the first frame, use the selected mode. Disabled transitions must
+    # also ignore any weight left over in the runtime configuration.
+    if enabled:
+        t.config.pop('_TWILIGHT_WEIGHT')
+    t.config['TWILIGHT_TRANSITION']['ENABLE'] = enabled
+    obj.night_av[0] = night
+    assert obj.exposure_min == (1 if night else .0001)
+
+
+@pytest.mark.parametrize('name', modes.__all__)
 def test_disabled_limit_update_does_nothing(name):
     source = config()
     source['TWILIGHT_TRANSITION']['ENABLE'] = False

@@ -502,7 +502,6 @@ class ImageProcessor(object):
         )
 
         self.image_list.insert(0, i_ref)  # new image is first in list
-        i_ref.twilight_weight = self.twilight.weight
 
         return i_ref
 
@@ -998,6 +997,8 @@ class ImageProcessor(object):
 
 
         if getattr(self, 'twilight', None) and self.twilight.weight is not None:
+            # Keep three channels when only one endpoint is gray, so downstream
+            # processing sees the same image shape throughout the transition.
             amount = self.twilight.value('NIGHT_GRAYSCALE', 'DAYTIME_GRAYSCALE')
             i_ref.twilight_grayscale = amount
             if amount == 1 and self.config.get('NIGHT_GRAYSCALE') == self.config.get('DAYTIME_GRAYSCALE'):
@@ -2128,6 +2129,7 @@ class ImageProcessor(object):
 
 
     def _twilight_filter(self, name, filter_class, algorithm_key):
+        """Return True when handled, including a disabled endpoint or focus mode."""
         weight = self.twilight.weight
         if weight is None or self.config.get('USE_NIGHT_COLOR', True):
             return False
@@ -2136,6 +2138,7 @@ class ImageProcessor(object):
         original = self.image
         # Algorithms and denoise strength levels are discrete. Select the
         # nearest endpoint, including its options, and process this frame once.
+        # An exact midpoint tie selects day, in either direction.
         night = weight > 0.5
         key = (name, night)
         if key not in self._twilight_filters:
@@ -2145,6 +2148,8 @@ class ImageProcessor(object):
         if not algorithm:
             return True
         if name == 'scnr':
+            # The algorithm is discrete, but its midtone value changes each frame.
+            # Invalidate the cached lookup table only when that value changes.
             midtones = self.config['SCNR_MTF_MIDTONES']
             if filter_o.config.get('SCNR_MTF_MIDTONES') != midtones:
                 filter_o.config['SCNR_MTF_MIDTONES'] = midtones
@@ -2161,13 +2166,16 @@ class ImageProcessor(object):
 
 
     def contrast_transition(self, bit16=False):
+        """Fade one CLAHE result; False tells callers to use ordinary mode selection."""
         if not getattr(self, 'twilight', None) or self.twilight.weight is None:
             return False
         amount = self.twilight.value('NIGHT_CONTRAST_ENHANCE', 'DAYTIME_CONTRAST_ENHANCE')
         if amount and not self.focus_mode:
-            original = self.image.copy()
+            # CLAHE replaces self.image, so retaining the input needs no copy.
+            original = self.image
             (self.contrast_clahe_16bit if bit16 else self.contrast_clahe)()
-            self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
+            if amount < 1:
+                self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
         return True
 
 
@@ -2280,6 +2288,7 @@ class ImageProcessor(object):
 
         if getattr(self, 'twilight', None) and self.twilight.weight is not None:
             gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
+            # Move channel gains toward neutral as the frame becomes gray.
             WBB_FACTOR, WBG_FACTOR, WBR_FACTOR = (
                 1.0 + (v - 1.0) * (1 - gray) for v in (WBB_FACTOR, WBG_FACTOR, WBR_FACTOR)
             )
@@ -2368,9 +2377,11 @@ class ImageProcessor(object):
         if getattr(self, 'twilight', None) and self.twilight.weight is not None:
             amount = self.twilight.value('AUTO_WB', 'AUTO_WB_DAY', color=True)
             if amount:
-                original = self.image.copy()
+                # White balance returns a new image; blend only between endpoints.
+                original = self.image
                 self._white_balance_auto_bgr()
-                self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
+                if amount < 1:
+                    self.image = cv2.addWeighted(original, 1 - amount, self.image, amount, 0)
             return bool(amount)
 
         if self.config.get('USE_NIGHT_COLOR', True):
@@ -2470,6 +2481,7 @@ class ImageProcessor(object):
             if WBB_MTF_MIDTONES == WBG_MTF_MIDTONES == WBR_MTF_MIDTONES == 0.5:
                 return
             params = (WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES, self.max_bit_depth)
+            # The binary camera mode no longer captures changes to these LUTs.
             if getattr(self, '_twilight_wb_mtf', None) != params:
                 self._wbb_mtf_lut = self._wbg_mtf_lut = self._wbr_mtf_lut = None
                 self._twilight_wb_mtf = params
@@ -2685,6 +2697,7 @@ class ImageProcessor(object):
 
 
     def _apply_gamma_correction(self, gamma):
+        # Twilight can change gamma without changing the operational camera mode.
         if self._gamma_lut is None or self._gamma_lut_gamma != gamma:
             range_array = numpy.arange(0, 256, dtype=numpy.float32)
             self._gamma_lut = (((range_array / 255) ** (1.0 / gamma)) * 255).astype(numpy.uint8)
@@ -4088,7 +4101,8 @@ class ImageProcessor(object):
                 stretched = self._stretch(self.getLatestImage())
                 if settings.get('SPLIT'):
                     stretched = self.splitscreen(original, stretched)
-                self.image = cv2.addWeighted(original, 1 - amount, stretched, amount, 0)
+                # At full strength the single stretch result is already final.
+                self.image = stretched if amount == 1 else cv2.addWeighted(original, 1 - amount, stretched, amount, 0)
             return
 
         if self.night_av[constants.NIGHT_NIGHT]:

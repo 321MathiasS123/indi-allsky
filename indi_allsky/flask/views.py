@@ -5205,6 +5205,7 @@ class ConfigView(FormView):
 
         context['form_config'] = IndiAllskyConfigForm(data=form_data)
         context['twilight_forecast'] = None
+        # Forecast the saved location/settings, not unsaved form edits.
         if self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('ENABLE'):
             try:
                 context['twilight_forecast'] = transition_forecast(
@@ -5225,6 +5226,7 @@ class AjaxConfigView(BaseView):
 
     def dispatch_request(self):
         form_data = dict(request.json)
+        # Older clients omit these controls; validate the values they will retain.
         for key, default in (('ENABLE', False), ('NIGHT_ALT', -12.0)):
             form_data.setdefault('TWILIGHT_TRANSITION__' + key,
                                  self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get(key, default))
@@ -5463,6 +5465,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['CLAHE_CLIPLIMIT']                      = float(request.json['CLAHE_CLIPLIMIT'])
         self.indi_allsky_config['CLAHE_GRIDSIZE']                       = int(request.json['CLAHE_GRIDSIZE'])
         self.indi_allsky_config['NIGHT_SUN_ALT_DEG']                    = float(request.json['NIGHT_SUN_ALT_DEG'])
+        # Omitted fields are retained rather than reset by older clients.
         self.indi_allsky_config.setdefault('TWILIGHT_TRANSITION', {}).update({
             key: convert(request.json['TWILIGHT_TRANSITION__' + key])
             for key, convert in (('ENABLE', bool), ('NIGHT_ALT', float))

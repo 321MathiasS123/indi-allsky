@@ -15,14 +15,7 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def exposure_min(self):
-        if runtime_weight(self.config) is not None:
-            return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
-        if self.night_av[constants.NIGHT_NIGHT]:
-            # night
-            return self._expUtils.EXPOSURE_MIN_NIGHT
-        else:
-            # day
-            return self._expUtils.EXPOSURE_MIN_DAY
+        return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
 
     @property
     def exposure_max(self):
@@ -31,6 +24,7 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
 
     @property
     def gain_min(self):
+        # Only fixed-gain capture follows the blend; automatic gain keeps its policy.
         if runtime_weight(self.config) is not None:
             night_gain = (self._expUtils.GAIN_MIN_MOONMODE if self.night_av[constants.NIGHT_MOONMODE]
                           else self._expUtils.GAIN_MIN_NIGHT)

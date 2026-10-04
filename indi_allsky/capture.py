@@ -830,6 +830,7 @@ class CaptureWorker(Process):
                             # take next exposure as quickly as possible
                             next_frame_time = frame_start_time
                         elif self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+                            # Focus and dedicated SQM captures keep their timing above.
                             next_frame_time = frame_start_time + capture_period(
                                 self.config, self.astro_av[constants.ASTRO_SUN_ALT],
                             ) + self.add_period_delay
@@ -1539,6 +1540,8 @@ class CaptureWorker(Process):
 
 
         if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            # Startup uses the live Sun; subsequent image processing uses each
+            # exposure's midpoint. Do not seed it with an abrupt mode default.
             weight = night_weight(
                 self.astro_av[constants.ASTRO_SUN_ALT], self.config['NIGHT_SUN_ALT_DEG'],
                 self.config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),

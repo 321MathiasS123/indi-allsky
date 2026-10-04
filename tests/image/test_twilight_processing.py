@@ -65,19 +65,31 @@ def processor(processor_class):
 
 @pytest.mark.parametrize('bits', [8, 16])
 @pytest.mark.parametrize('altitude', [-6, -9, -12])
-def test_stretch_and_contrast_fade_same_frame(processor, bits, altitude):
-    p = processor({'DAYTIME_CONTRAST_ENHANCE': False, 'NIGHT_CONTRAST_ENHANCE': True}, altitude, bits)
+@pytest.mark.parametrize('mono', [False, True])
+@pytest.mark.parametrize('split', [False, True])
+def test_stretch_and_contrast_fade_same_frame(processor, bits, altitude, mono, split):
+    p = processor({'DAYTIME_CONTRAST_ENHANCE': False, 'NIGHT_CONTRAST_ENHANCE': True,
+                   'IMAGE_STRETCH': {'CLASSNAME': 'mode2_mtf', 'DAYTIME': False, 'SPLIT': split}}, altitude, bits)
+    if mono:
+        p.image = p.image[:, :, 0].copy()
+    retained = p.image
     original = p.image.copy()
     full_stretch = p._stretch(p.getLatestImage())
+    if split:
+        full_stretch = p.splitscreen(original, full_stretch)
     w = p.twilight.weight
     p.stretch()
     numpy.testing.assert_array_equal(p.image, cv2.addWeighted(original, 1 - w, full_stretch, w, 0))
+    numpy.testing.assert_array_equal(retained, original)
     p.image = original.copy()
     (p.contrast_clahe_16bit if bits == 16 else p.contrast_clahe)()
     full_contrast = p.image.copy()
     p.image = original.copy()
+    retained = p.image
     assert p.contrast_transition(bit16=bits == 16)
     numpy.testing.assert_array_equal(p.image, cv2.addWeighted(original, 1 - w, full_contrast, w, 0))
+    # Keeping a reference instead of copying is safe only if filters leave it intact.
+    numpy.testing.assert_array_equal(retained, original)
 
 
 @pytest.mark.parametrize('algorithm_day,algorithm_night', [('', 'gaussian_blur'), ('median_blur', ''),
@@ -181,15 +193,20 @@ def test_white_balance_cache_follows_effective_parameters_in_both_directions(pro
         numpy.testing.assert_array_equal(p.image, fresh.image)
 
 
-def test_auto_white_balance_fades_instead_of_switching(processor):
-    p = processor({'AUTO_WB_DAY': False, 'AUTO_WB': True})
+@pytest.mark.parametrize('altitude', [-13, -12, -9, -6, -5])
+@pytest.mark.parametrize('shared', [False, True])
+def test_auto_white_balance_fades_instead_of_switching(processor, altitude, shared):
+    p = processor({'AUTO_WB_DAY': False, 'AUTO_WB': True, 'USE_NIGHT_COLOR': shared}, altitude)
     p.image[:, :, 0] //= 2
     original = p.image.copy()
     p._white_balance_auto_bgr()
     balanced = p.image.copy()
     p.image = original.copy()
+    retained = p.image
     p.white_balance_auto_bgr()
-    numpy.testing.assert_array_equal(p.image, cv2.addWeighted(original, .5, balanced, .5, 0))
+    amount = 1 if shared else p.twilight.weight
+    numpy.testing.assert_array_equal(p.image, cv2.addWeighted(original, 1 - amount, balanced, amount, 0))
+    numpy.testing.assert_array_equal(retained, original)
 
 
 def test_grayscale_transition_preserves_shape_through_both_endpoints(processor):
@@ -258,7 +275,7 @@ def test_ingestion_uses_exposure_midpoint_and_keeps_camera_identity(processor):
     frame = p.add('frame.fit', 20, 50, 1, when, 25, 'camera', detected_camera_name='device')
     expected = TwilightTransition(p.twilight.source)
     expected.update(when - timedelta(seconds=15), 57, 0, 0)
-    assert frame.twilight_weight == expected.weight
+    assert p.twilight.weight == expected.weight
     assert p.getLatestImage() is frame
     assert p._add.call_args.kwargs == {'detected_camera_name': 'device'}
 

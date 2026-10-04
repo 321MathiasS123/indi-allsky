@@ -15,12 +15,7 @@ class IndiAllSky_Exposure_AutoGain_ExposurePriority_dB_Base(IndiAllSky_Exposure_
 
     @property
     def exposure_min(self):
-        if runtime_weight(self.config) is not None:
-            return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
-        if self.night_av[constants.NIGHT_NIGHT]:
-            return self._expUtils.EXPOSURE_MIN_NIGHT
-        else:
-            return self._expUtils.EXPOSURE_MIN_DAY
+        return exposure_minimum(self.config, self._expUtils, self.night_av[constants.NIGHT_NIGHT])
 
     @property
     def exposure_max(self):
