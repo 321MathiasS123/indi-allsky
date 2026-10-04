@@ -467,6 +467,12 @@ class ImageWorker(Process):
             self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
             and not self.image_processor.focus_mode
         )
+        # Share only rendering state; correction-history resets must not release
+        # protection. Unusable/repaired captures hold the last trusted envelope.
+        self.image_processor.highlight_transition = self.exposure_o.highlight_transition
+        self.exposure_o.highlight_transition.trusted = False
+        if not highlight_enabled:
+            self.exposure_o.highlight_transition.reset()
         highlight_repaired = (
             highlight_enabled
             and (i_ref.asi676mc_repair_result or {}).get('status') == 'repaired'
@@ -625,7 +631,7 @@ class ImageWorker(Process):
 
         self.image_processor.denoise()
 
-        if highlights is not None or highlight_repaired:
+        if highlight_enabled and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result):
             # Rendering uses the stack's own ADU. Capture control above uses the
             # current frame, so older frames in a stack cannot skew its feedback.
             highlight_lift = self.image_processor.compensate_highlights(adu)

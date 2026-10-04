@@ -7,6 +7,38 @@ from test_highlight_exposure import MODE_NAMES, controller
 
 
 @pytest.mark.parametrize('name', MODE_NAMES)
+@pytest.mark.parametrize('delay', [0, 1])
+def test_bright_cloud_then_clear_sky_retains_protection_through_recovery_and_releases(name, delay):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    initial = (1., gain)
+    pending = [initial] * (delay + 1)
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = initial
+    state = instance.highlight_transition
+    scene = np.full((100, 100, 3), .15)
+    mask = np.ones((100, 100), dtype=np.uint8)
+    phases = []
+    for frame in range(250):
+        exposure, gain = pending.pop(0)
+        scene[40:60, 40:60] = 1.1 if frame < 100 else .15
+        # Gain is fixed throughout this short-exposure scene in every mode.
+        data = np.minimum(scene * exposure * 65535, 65535).astype(np.uint16)
+        measurement = measure(data, mask, 16)
+        instance.compare_highlights(measurement, exposure, gain)
+        pending.append((instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT))
+        state.render_target(measurement.adu, 70, 2)
+        state.gamma(1.565, 1.85)
+        phases.append(state.phase)
+        if 80 <= frame < 100:
+            assert state.active and state.reference == 70
+        if frame >= 100 and measurement.adu < 60:
+            assert state.active  # do not release just because the cloud vanished
+    assert 'releasing' in phases[100:]
+    assert phases[-1] == 'normal' and state.lift == state.gamma_mix == 0
+    assert measurement.full == measurement.any == 0 and measurement.adu >= 60
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
 @pytest.mark.parametrize('delay', [0, 1, 3])
 def test_delayed_darkening_sky_recovers_without_alternating_signal(name, delay):
     instance = controller(name)

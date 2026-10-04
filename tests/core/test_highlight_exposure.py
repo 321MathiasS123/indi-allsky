@@ -378,3 +378,63 @@ def test_recovery_does_not_keep_a_pending_setting_outside_changed_limits():
     instance.compare_highlights(HighlightMeasurement(0, 0, 30), 1, 0)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(1.1)
     assert instance._expUtils.GAIN_NEXT == 0
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+@pytest.mark.parametrize('night,moon', [(False, False), (True, False), (True, True)])
+def test_achievable_ceiling_releases_even_with_unsafe_impossible_prediction(name, night, moon):
+    instance = controller(name, night, moon)
+    if name.endswith('iso'):
+        instance.gain_values = [100, 200, 400, 800]
+    gain, exposure = instance.gain_max, instance.exposure_max
+    instance._expUtils.EXPOSURE_NEXT = exposure
+    instance._expUtils.GAIN_NEXT = gain
+    instance.highlight_transition.active = True
+    # Below the ADU band, but the mode cannot increase exposure or gain any more.
+    instance.compare_highlights(HighlightMeasurement(0, 0, 30, 10, 20), exposure, gain)
+    assert not instance.highlight_transition.active
+    assert instance.highlight_transition.reason == 'achievable exposure/gain ceiling'
+    assert instance._expUtils.EXPOSURE_NEXT == exposure
+    assert instance._expUtils.GAIN_NEXT == gain
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_dry_run_does_not_publish_settings_and_real_gain_headroom_holds_protection(name):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    exposure = 1 if name == 'exposure_basic' else 30
+    instance._expUtils.EXPOSURE_NEXT = exposure
+    instance._expUtils.GAIN_NEXT = gain
+    before = list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)
+    result = instance._calculate_exposure(exposure, gain, exposure * 1.1, highlight=True)
+    assert (result[0], result[1]) != (exposure, gain)
+    assert (list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)) == before
+    instance.compare_highlights(HighlightMeasurement(0, 0, 30, 10, 20), exposure, gain)
+    assert instance.highlight_transition.active
+
+
+def test_pending_capture_postpones_release_inside_normal_adu_band():
+    instance = controller('exposure_basic', night=False)
+    instance.highlight_transition.active = True
+    instance._expUtils.EXPOSURE_NEXT = 1.1
+    instance.compare_highlights(HighlightMeasurement(0, 0, 75), 1, 0)
+    assert instance.highlight_transition.active
+    assert instance.highlight_transition.reason == 'await pending exposure/gain'
+    instance.compare_highlights(HighlightMeasurement(0, 0, 75), 1.1, 0)
+    assert not instance.highlight_transition.active
+
+
+def test_correction_history_reset_does_not_discard_rendering_state():
+    instance = controller('exposure_basic')
+    state = instance.highlight_transition
+    state.active, state.reference, state.lift, state.gamma_mix = True, 70, 1, 1
+    instance.reset_highlights()
+    assert instance.highlight_transition is state
+    assert (state.active, state.reference, state.lift, state.gamma_mix) == (True, 70, 1, 1)
+
+
+def test_ceiling_probe_does_not_initialize_the_live_legacy_gain_policy():
+    instance = controller('exposure_legacy_autogain')
+    instance.compare_highlights(HighlightMeasurement(.8, 2, 70), 1, 0)
+    assert instance._gain_step is None and instance.auto_gain_step_list is None
+    assert instance._expUtils.EXPOSURE_NEXT == instance._expUtils.GAIN_NEXT == 0

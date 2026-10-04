@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from indi_allsky import asi676mc, constants
-from indi_allsky.highlight import HighlightMeasurement, compensate, measure
+from indi_allsky.highlight import HighlightMeasurement, HighlightTransition, compensate, measure
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch_x2
 from indi_allsky.stretch.mode3_adaptive_mtf import IndiAllSky_Mode3_Adaptive_MTF_Stretch
@@ -149,10 +149,15 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     config = {'HIGHLIGHT_PROTECTION': {'ENABLE': enabled}, 'IMAGE_SAVE_FITS': fits_mode != 'off',
               'IMAGE_SAVE_FITS_PRE_DARK': fits_mode == 'pre_dark'}
     original_config = deepcopy(config)
-    controller = SimpleNamespace(hist_adu=[21, 23],
+    controller = SimpleNamespace(hist_adu=[21, 23], highlight_transition=HighlightTransition(),
                                  compare_highlights=Mock(side_effect=lambda *args: events.append('highlight_control') or (20, 20)),
                                  compare_exposure=Mock(side_effect=lambda *args: events.append('ordinary_control') or (60, 60)),
                                  reset_highlights=Mock())
+    controller.highlight_transition.active = True
+    controller.highlight_transition.reference = 70
+    controller.highlight_transition.lift = .5
+    controller.highlight_transition.gamma_mix = 1
+    controller.highlight_transition.trusted = True
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
@@ -176,7 +181,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     if active:
         expected += ['calibrated_adu', 'highlight_control']
     expected += ['stack', 'denoise']
-    if active or repaired:
+    if enabled and not focus and not excluded:
         expected.append('compensate')
     expected += ['stretch', 'convert']
     if not excluded and not repaired and not active:
@@ -185,12 +190,19 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     assert controller.compare_highlights.call_count == int(active)
     assert controller.compare_exposure.call_count == int(not excluded and not repaired and not active)
     assert controller.reset_highlights.call_count == int(enabled and not focus and (excluded or repaired))
+    assert processor.highlight_transition is controller.highlight_transition
+    assert not processor.highlight_transition.trusted  # spy does not observe a capture
+    if enabled and not focus:
+        assert processor.highlight_transition.active
+        assert processor.highlight_transition.lift == .5
+    else:
+        assert processor.highlight_transition.__dict__ == HighlightTransition().__dict__
     if active:
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
         assert controller.compare_highlights.call_args.kwargs == {}
         assert namespace['adu'] == namespace['adu_average'] == 20
         assert 'Highlight shadow lift applied: 1.250 stops' in caplog.text
-    if active or repaired:
+    if enabled and not focus and not excluded:
         processor.compensate_highlights.assert_called_once_with(60)
     if repaired or excluded:
         assert namespace['adu_average'] == 22
@@ -218,6 +230,7 @@ def highlight_processor():
     processor.max_bit_depth = 16
     processor.night_av = [False, False]
     processor.config = {'TARGET_ADU_DAY': 80, 'HIGHLIGHT_PROTECTION': {'MAX_BOOST': 2}}
+    processor.highlight_transition = HighlightTransition()
     return processor
 
 
@@ -234,6 +247,9 @@ def test_highlight_gamma_toggle_and_profile_transitions(highlight_processor, sha
     # Reuse the processor and LUT through on/off, night, day and moon transitions.
     for enabled in (False, True, False, True):
         processor.config['HIGHLIGHT_PROTECTION']['ENABLE'] = enabled
+        # Verify settled endpoints; the transition itself is tested separately.
+        processor.highlight_transition.active = True
+        processor.highlight_transition.gamma_mix = 1.0
         for night, moon in ((False, False), (True, False), (True, True), (False, False)):
             processor.night_av = [night, moon]
             processor.image = np.full(shape, 64, dtype=np.uint8)
@@ -269,6 +285,8 @@ def test_highlight_gamma_missing_zero_or_disabled_preserves_normal_processing(hi
 
 def test_highlight_gamma_overrides_unity_standard_gamma(highlight_processor):
     processor = highlight_processor
+    processor.highlight_transition.active = True
+    processor.highlight_transition.gamma_mix = 1.0
     processor.focus_mode = False
     processor._gamma_lut = None
     processor.config = {'USE_NIGHT_COLOR': False, 'GAMMA_CORRECTION_DAY': 1,
@@ -276,6 +294,53 @@ def test_highlight_gamma_overrides_unity_standard_gamma(highlight_processor):
     processor.image = np.array([[0, 64, 255]], dtype=np.uint8)
     processor.apply_gamma_correction()
     np.testing.assert_array_equal(processor.image, [[0, 127, 255]])
+
+
+def test_enabled_but_unneeded_gamma_is_normal_and_entry_is_bounded(highlight_processor):
+    processor = highlight_processor
+    processor.focus_mode = False
+    processor._gamma_lut = None
+    processor.config = {'USE_NIGHT_COLOR': False, 'GAMMA_CORRECTION_DAY': 1.565,
+                        'HIGHLIGHT_PROTECTION': {'ENABLE': True, 'GAMMA_DAY': 1.85}}
+    source = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    processor.image = source.copy()
+    processor.apply_gamma_correction()
+    normal = processor.image.copy()
+    assert processor._gamma_lut_gamma == 1.565
+    processor.highlight_transition.observe(HighlightMeasurement(2, 4, 80), 80, 10, {}, False, False, False)
+    for _ in range(40):
+        processor.image = source.copy()
+        processor.apply_gamma_correction()
+        assert np.abs(processor.image.astype(int) - normal).max() <= 2
+        normal = processor.image.astype(int)
+    assert processor._gamma_lut_gamma == 1.85
+
+
+@pytest.mark.parametrize('altitude', [-12, -9, -6])
+@pytest.mark.parametrize('mix', [0, .5, 1])
+def test_optional_twilight_blend_supplies_both_gamma_endpoints(highlight_processor, altitude, mix):
+    twilight = pytest.importorskip('indi_allsky.twilight')
+    processor = highlight_processor
+    profile = twilight.TwilightTransition({
+        'TWILIGHT_TRANSITION': {'ENABLE': True}, 'USE_NIGHT_COLOR': False,
+        'GAMMA_CORRECTION_DAY': 1.565, 'GAMMA_CORRECTION': .87,
+        'HIGHLIGHT_PROTECTION': {'ENABLE': True, 'GAMMA_DAY': 1.85, 'GAMMA': 0},
+    })
+    profile.apply(altitude)
+    processor.config = profile.config
+    processor.focus_mode = False
+    processor._gamma_lut = None
+    processor.highlight_transition.gamma_mix = mix
+    normal = processor.config['GAMMA_CORRECTION']
+    protected = processor.config['HIGHLIGHT_PROTECTION']['GAMMA']
+    gamma = normal if mix == 0 else protected if mix == 1 else 1 / ((1 - mix) / normal + mix / protected)
+    source = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    expected = (((source.astype(np.float32) / 255) ** (1 / gamma)) * 255).astype(np.uint8)
+    for night in (False, True):
+        processor.night_av[0] = night
+        processor.image = source.copy()
+        processor.apply_gamma_correction()
+        np.testing.assert_array_equal(processor.image, expected)
 
 
 def test_processor_meters_pre_dark_capture_with_calibrated_adu_not_stack(highlight_processor):
@@ -298,6 +363,8 @@ def test_processor_meters_pre_dark_capture_with_calibrated_adu_not_stack(highlig
     assert calibrated.full_next == measured.full_next and calibrated.any_next == measured.any_next
     assert calibrated.adu == pytest.approx(reference.opencv_data.mean() / 256)
     assert calibrated.adu != pytest.approx(processor.image.mean() / 256)
+    processor.highlight_transition.active = True
+    processor.highlight_transition.reference = 80
     assert processor.compensate_highlights(20) == 2.0
     assert np.all(processor.image == 8000)
     np.testing.assert_array_equal(raw, original)
@@ -419,6 +486,7 @@ def test_meter_calibration_and_lift_work_without_purple_repair(highlight_process
     processor.image = reference.opencv_data.copy()
     calibrated = processor.calibrate_highlights(metrics)
     assert calibrated.full == metrics.full
+    processor.highlight_transition.observe(calibrated, 80, 10, {}, False, False, False)
     assert 0 < processor.compensate_highlights(calibrated.adu) <= 2
     assert processor.image.dtype in (np.uint8, np.uint16)
 
@@ -441,6 +509,9 @@ def test_actual_purple_repair_retains_normal_metering_and_repaired_lift(highligh
         assert processor.measure_highlights().full == 0
     reference.opencv_data = processor._debayer(reference)
     processor.image = reference.opencv_data.copy()
+    # A repaired frame retains established protection, without arming it itself.
+    processor.highlight_transition.active = True
+    processor.highlight_transition.reference = 80
     assert processor.compensate_highlights(float(processor.image.mean()) / 256) == 2
     assert np.all(processor.image >= reference.opencv_data)
 

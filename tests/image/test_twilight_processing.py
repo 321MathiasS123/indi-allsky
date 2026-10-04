@@ -304,6 +304,12 @@ def test_optional_highlight_rendering_uses_same_blended_targets(processor, trans
     p = processor({'TWILIGHT_TRANSITION': {'ENABLE': transition_enabled},
                    'GAMMA_CORRECTION_DAY': 2.0, 'GAMMA_CORRECTION': 1.5,
                    'HIGHLIGHT_PROTECTION': {'ENABLE': highlight_enabled, 'GAMMA_DAY': 0, 'GAMMA': .8}})
+    if hasattr(highlight, 'HighlightTransition'):
+        # Test established protection; engagement is covered by highlight tests.
+        p.highlight_transition = highlight.HighlightTransition()
+        p.highlight_transition.active = True
+        p.highlight_transition.reference = 75 if transition_enabled else 100
+        p.highlight_transition.gamma_mix = 1
     original = p.image.copy()
     gamma = (1.4 if transition_enabled else .8) if highlight_enabled else (1.75 if transition_enabled else 1.5)
     p.apply_gamma_correction()

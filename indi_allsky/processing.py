@@ -1644,13 +1644,14 @@ class ImageProcessor(object):
 
     def compensate_highlights(self, adu):
         """Lift the rendered frame/stack and return the applied lift in stops."""
-        from .highlight import compensate, shadow_boost
+        from .highlight import compensate
 
         i_ref = self.getLatestImage()
         target = self.config['TARGET_ADU' if self.night_av[constants.NIGHT_NIGHT] else 'TARGET_ADU_DAY']
         max_boost = self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0)
+        target = self.highlight_transition.render_target(adu, target, max_boost)
         self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target, max_boost)
-        return math.log2(shadow_boost(adu, target, max_boost))
+        return self.highlight_transition.lift
 
 
     def calculate_8bit_adu(self):
@@ -2678,13 +2679,15 @@ class ImageProcessor(object):
 
 
         highlight_config = self.config.get('HIGHLIGHT_PROTECTION', {})
-        if highlight_config.get('ENABLE', False):
-            # Zero inherits the normal profile. The override follows the feature
-            # toggle, not this frame's clipping, to avoid gamma switching per frame.
+        transition = getattr(self, 'highlight_transition', None)
+        if highlight_config.get('ENABLE', False) and transition is not None:
+            # Zero inherits the normal profile. Fade between the selected
+            # profile endpoints only while protection is needed or releasing.
             key = 'GAMMA' if self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT] else 'GAMMA_DAY'
             highlight_gamma = float(highlight_config.get(key, 0.0))
-            if highlight_gamma > 0.0:
-                GAMMA_CORRECTION = highlight_gamma
+            GAMMA_CORRECTION = transition.gamma(GAMMA_CORRECTION, highlight_gamma or GAMMA_CORRECTION)
+            logger.info('Highlight rendering: %s; lift %.3f stops; gamma %.4f; trusted capture: %s',
+                        transition.phase, transition.lift, GAMMA_CORRECTION, transition.trusted)
 
 
         if GAMMA_CORRECTION == 1.0:

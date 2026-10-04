@@ -6,7 +6,7 @@ import math
 from ..twilight import runtime_weight
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
-from ..highlight import exposure_decision
+from ..highlight import MAX_EXPOSURE_INCREASE, HighlightTransition, exposure_decision
 
 
 logger = logging.getLogger('indi_allsky')
@@ -29,6 +29,7 @@ class IndiAllSky_Exposure_Base(object):
         self.hist_adu = []
         # Populated from camera metadata only for discrete ISO switch controls.
         self.gain_values = []
+        self.highlight_transition = HighlightTransition()
         self.reset_highlights()
 
 
@@ -188,13 +189,12 @@ class IndiAllSky_Exposure_Base(object):
             self.reset_highlights()
         self._highlight_mode = mode
         scale, reason = exposure_decision(measurement, target, deviation, settings)
+        # This also covers recovery limited to the shadow floor by prediction.
+        predicted_block = (measurement.adu < target - deviation
+                           and (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
+                                or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4)))
         if scale > 1.0:
-            pending_exposure = self._expUtils.EXPOSURE_NEXT
-            pending_gain = self._expUtils.GAIN_NEXT
-            if (self.exposure_min <= pending_exposure <= self.exposure_max
-                    and self.gain_min <= pending_gain <= self.gain_max
-                    and (not math.isclose(exposure, pending_exposure, rel_tol=0, abs_tol=0.0000005)
-                         or not math.isclose(gain, pending_gain, rel_tol=0, abs_tol=0.0005))):
+            if self._highlight_request_pending(exposure, gain):
                 # A capture already in flight can predate the latest request.
                 # Wait for its result before recovering, rather than undoing
                 # that request or compounding it. Compare at shared-storage
@@ -225,10 +225,29 @@ class IndiAllSky_Exposure_Base(object):
             self._set_exposure(exposure, gain, exposure * scale, highlight=True)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
+        # Dry-run the same mode policy, ISO selection and storage rounding used
+        # by real requests. Copy local policy state so a probe cannot initialize
+        # the legacy gain ladder earlier than a real adjustment would.
+        next_exposure, next_gain, _, _ = copy.copy(self)._calculate_exposure(exposure, gain, exposure * MAX_EXPOSURE_INCREASE, highlight=True)
+        ceiling = next_exposure <= exposure + 0.0000005 and next_gain <= gain + 0.0005
+        self.highlight_transition.observe(measurement, target, deviation, settings,
+                                          self._highlight_request_pending(exposure, gain), ceiling, predicted_block)
+        logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
+                    self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
         return measurement.adu, measurement.adu
 
 
-    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
+    def _highlight_request_pending(self, exposure, gain):
+        pending_exposure = self._expUtils.EXPOSURE_NEXT
+        pending_gain = self._expUtils.GAIN_NEXT
+        return (self.exposure_min <= pending_exposure <= self.exposure_max
+                and self.gain_min <= pending_gain <= self.gain_max
+                and (not math.isclose(exposure, pending_exposure, rel_tol=0, abs_tol=0.0000005)
+                     or not math.isclose(gain, pending_gain, rel_tol=0, abs_tol=0.0005)))
+
+
+    def _calculate_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
+        """Map a request to achievable settings without publishing it."""
         next_exposure, next_gain, exposure_delta, gain_delta = self.adjust_exposure_gain(current_exposure, current_gain, next_exposure)
 
 
@@ -274,6 +293,11 @@ class IndiAllSky_Exposure_Base(object):
             exposure_delta = next_exposure - current_exposure
             gain_delta = next_gain - current_gain
 
+        return next_exposure, next_gain, exposure_delta, gain_delta
+
+
+    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
+        next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
 
         # Binning
         if self.night_av[constants.NIGHT_NIGHT]:

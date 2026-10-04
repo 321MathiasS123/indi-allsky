@@ -1,4 +1,5 @@
 """Optional highlight metering and a bounded, colour-preserving shadow lift."""
+import math
 from typing import NamedTuple
 
 import cv2
@@ -21,6 +22,106 @@ class HighlightMeasurement(NamedTuple):
     adu: float
     full_next: float = 0.0
     any_next: float = 0.0
+
+
+class HighlightTransition:
+    """Retain protection through recovery, with a separate rendering envelope.
+
+    This state survives the exposure controller's short-lived correction history.
+    Only trusted captures advance it; elapsed time and camera hangs do not.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.active = False
+        self.trusted = False
+        self.reference = None
+        self.lift = 0.0
+        self.gamma_mix = 0.0
+        self.reason = 'ordinary rendering'
+
+    @property
+    def phase(self):
+        return 'protected' if self.active else ('releasing' if self.lift or self.gamma_mix else 'normal')
+
+    def observe(self, measurement, target, deviation, settings, pending, ceiling, predicted_block):
+        """Decide activity from the calibrated capture, never a rendered stack."""
+        self.trusted = True
+        full_low = settings.get('FULL_TARGET', 0.8) - settings.get('FULL_DEV', 0.2)
+        any_low = settings.get('ANY_TARGET', 2.0) - settings.get('ANY_DEV', 0.4)
+        needed = measurement.full > full_low or measurement.any > any_low or (predicted_block and not ceiling)
+        headroom = (measurement.full_next is not None and measurement.any_next is not None
+                    and measurement.full_next <= full_low and measurement.any_next <= any_low)
+        clear = measurement.full <= full_low * 0.9 and measurement.any <= any_low * 0.9
+        if needed:
+            if not self.active:
+                # Start from the current appearance, including a partial release.
+                self.reference = None
+            self.active = True
+            self.reason = 'clipping protection needed'
+        elif self.active:
+            if pending:
+                self.reason = 'await pending exposure/gain'
+            elif not clear or not (ceiling or headroom):
+                self.reason = 'await highlight headroom'
+            elif measurement.adu < target - deviation and not ceiling:
+                self.reason = 'await ordinary ADU recovery'
+            else:
+                self.active = False
+                self.reason = 'ordinary exposure recovered' if not ceiling else 'achievable exposure/gain ceiling'
+
+    @staticmethod
+    def _approach(value, target, cap, epsilon):
+        difference = target - value
+        if abs(difference) <= epsilon:
+            return target
+        return value + max(-cap, min(cap, difference * 0.5))
+
+    def render_target(self, adu, target, max_boost):
+        """Ease appearance, but immediately compensate actual exposure cuts."""
+        adu = max(adu, 0.1)
+        if self.active:
+            if self.trusted:
+                if self.reference is None:
+                    # A returning highlight during release must not snap an
+                    # already brightened scene down to target in one frame.
+                    self.reference = adu * 2 ** self.lift if self.lift else min(target, adu)
+                # Ease the brightness reference, not the compensating gain: a
+                # slow gain ramp would leave dark dips during exposure cuts.
+                if abs(math.log2(target / self.reference)) <= 0.001:
+                    self.reference = target
+                else:
+                    self.reference = 2 ** self._approach(math.log2(self.reference), math.log2(target), 0.04, 0.001)
+            if self.reference is not None:
+                self.lift = min(max_boost, math.log2(shadow_boost(adu, self.reference, max_boost)))
+                return self.reference
+        elif self.trusted:
+            if self.reference is not None:
+                # Account for the exposure recovery in this first release frame
+                # before fading; otherwise the preceding darker frame's lift
+                # would over-brighten it. Later frames only fade the extra lift.
+                self.lift = min(max_boost, math.log2(shadow_boost(adu, self.reference, max_boost)))
+                self.reference = None
+            # Release extra processing without chasing natural sky changes.
+            self.lift = self._approach(self.lift, 0.0, 0.04, 0.002)
+        self.lift = min(self.lift, max_boost)
+        return adu * 2 ** self.lift
+
+    def gamma(self, normal, protected):
+        """Blend power exponents, retaining exact ordinary/protected endpoints."""
+        difference = abs(1.0 / protected - 1.0 / normal)
+        if self.trusted:
+            if difference < 1e-9:
+                self.gamma_mix = float(self.active)
+            else:
+                self.gamma_mix = self._approach(self.gamma_mix, float(self.active), 0.01 / difference, 0.0002 / difference)
+        if self.gamma_mix == 0.0:
+            return normal
+        if self.gamma_mix == 1.0:
+            return protected
+        return 1.0 / ((1 - self.gamma_mix) / normal + self.gamma_mix / protected)
 
 
 def measure(data, mask, bit_depth, threshold=99.0):
