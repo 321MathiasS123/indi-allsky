@@ -1,23 +1,22 @@
 {% extends 'base.html' %}
 
-{% block title %}{{ website_title }}: {{ page_title }}{% endblock %}
-
 {% block content %}
 <div class="tw:p-4 tw:flex tw:flex-col tw:gap-4 tw:w-full">
     <form id="custom-keogram-form" class="tw:bg-base-200 tw:p-4 tw:rounded-[var(--radius-box)]">
         <p class="tw:text-sm tw:mb-4">Create a keogram from saved images across day and night. Times use the camera's local clock{% if camera_timezone %} ({{ camera_timezone }}){% endif %}.</p>
+        {# Server-rendered permissions also keep the form disabled before JS loads. #}
         <fieldset id="custom-keogram-fields" {% if not can_generate %}disabled{% endif %} class="tw:flex tw:flex-wrap tw:items-end tw:gap-4">
             <div class="tw:flex tw:flex-col tw:gap-2">
                 <label for="keogram-start" class="tw:text-sm tw:font-semibold">Start</label>
-                <input id="keogram-start" name="start" type="datetime-local" required step="60" value="{{ range_start }}" class="tw:input tw:input-bordered tw:bg-base-100">
+                <input id="keogram-start" name="start" type="datetime-local" required step="60" value="{{ range_start }}" class="tw:input tw:bg-base-100">
             </div>
             <div class="tw:flex tw:flex-col tw:gap-2">
                 <label for="keogram-end" class="tw:text-sm tw:font-semibold">End</label>
-                <input id="keogram-end" name="end" type="datetime-local" required step="60" value="{{ range_end }}" class="tw:input tw:input-bordered tw:bg-base-100">
+                <input id="keogram-end" name="end" type="datetime-local" required step="60" value="{{ range_end }}" class="tw:input tw:bg-base-100">
             </div>
             <button type="submit" class="tw:btn tw:btn-primary">Generate Keogram</button>
         </fieldset>
-        <p class="tw:text-xs tw:text-base-content/70 tw:mt-4">Uses your saved keogram rotation, crop, scale and time labels. Up to 20,000 images per export. Original images must still be saved on this server; excluded images are omitted.</p>
+        <p class="tw:text-xs tw:text-base-content/70 tw:mt-4">Uses your saved keogram rotation, crop, scale and time labels. Up to {{ '{:,}'.format(max_frames) }} images per export. Original images must still be saved on this server; excluded images are omitted.</p>
         {% if not local_indi_allsky %}
         <p class="tw:text-warning tw:mt-4">Open this page on the camera's capture server to generate a custom keogram.</p>
         {% elif not can_generate %}
@@ -26,6 +25,7 @@
     </form>
 
     <p id="custom-keogram-status" role="status" aria-live="polite" class="tw:text-sm"></p>
+    {# This scratch preview is deliberately separate from the saved daily keograms. #}
     <div id="custom-keogram-result" hidden>
         <div class="tw:flex tw:flex-wrap tw:items-center tw:gap-4 tw:mb-4">
             <a id="custom-keogram-download" class="tw:btn tw:btn-neutral" download>Download</a>

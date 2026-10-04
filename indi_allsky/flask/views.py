@@ -597,9 +597,11 @@ class CustomKeogramView(TemplateView):
 
     def get_context(self):
         context = super(CustomKeogramView, self).get_context()
+        # Match the camera's capture dates rather than the browser's timezone.
         context['range_end'] = self.camera_now.strftime('%Y-%m-%dT%H:%M')
         context['range_start'] = (self.camera_now - timedelta(hours=6)).strftime('%Y-%m-%dT%H:%M')
         context['camera_timezone'] = getattr(self.camera, 'tz', None)
+        context['max_frames'] = customKeogram.MAX_FRAMES
         context['local_indi_allsky'] = self.local_indi_allsky
         context['can_generate'] = self.camera.id > 0 and self.local_indi_allsky and (self.login_disabled or current_user.is_admin)
         return context
@@ -610,6 +612,7 @@ class AjaxCustomKeogramView(BaseView):
     decorators = [login_required]
 
     def dispatch_request(self):
+        # Apply the same permission to queueing, status, previews and downloads.
         if not (self.login_disabled or current_user.is_admin):
             return jsonify({'message': 'Sign in as an administrator to create custom keograms.'}), 403
 
@@ -624,6 +627,7 @@ class AjaxCustomKeogramView(BaseView):
             IndiAllSkyDbTaskQueueTable.id == task_id,
             IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO,
         ).first()
+        # A task ID must identify this feature and the selected camera.
         if (not task or not isinstance(task.data, dict)
                 or task.data.get('action') != 'generateCustomKeogram'
                 or task.data.get('kwargs', {}).get('camera_id') != camera_id):
@@ -637,6 +641,7 @@ class AjaxCustomKeogramView(BaseView):
             'end': task.data['kwargs']['end'],
         })
         if task.state == TaskQueueState.SUCCESS:
+            # Resolve only the server-owned task filename, never a request path.
             path = customKeogram.output_path(app.config['INDI_ALLSKY_IMAGE_FOLDER'], task.id)
             if not path.is_file():
                 return jsonify({'message': 'This temporary preview has expired. Generate it again.'}), 410
@@ -668,14 +673,18 @@ class AjaxCustomKeogramView(BaseView):
         camera = IndiAllSkyDbCameraTable.query.filter(IndiAllSkyDbCameraTable.id == camera_id).first()
         if not camera:
             return jsonify({'message': 'The selected camera is no longer available.'}), 404
+        # Remote camera records can exist here without their original images.
         if not camera.local:
             return jsonify({'message': 'Open this page on the camera\'s capture server to generate a custom keogram.'}), 400
 
         count = customKeogram.image_query(IndiAllSkyDbImageTable, camera_id, start, end).count()
         if not count:
             return jsonify({'message': 'No saved images were found in this range. Excluded images are not used.'}), 400
-        if count > customKeogram.MAX_FRAMES:
-            return jsonify({'message': 'This range has too many images. Choose a shorter range (up to 20,000 images).'}), 400
+        try:
+            customKeogram.validate_frame_count(count)
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
+        # The existing video worker handles the expensive work outside HTTP.
         task = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO, state=TaskQueueState.MANUAL, priority=100,
             data={

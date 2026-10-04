@@ -1550,10 +1550,10 @@ class VideoWorker(Process):
 
 
     def generateCustomKeogram(self, task, **kwargs):
-        task.setRunning()
         outfile = customKeogram.output_path(self.image_dir, task.id)
 
         def progress(result):
+            # Reassign JSON so SQLAlchemy persists updates for the polling UI.
             task.data = dict(task.data, custom_keogram=dict(
                 task.data.get('custom_keogram', {}), **result,
             ))
@@ -1566,15 +1566,19 @@ class VideoWorker(Process):
             ).one()
             entries = customKeogram.image_query(IndiAllSkyDbImageTable, camera.id, start, end)
             count = entries.count()
-            if count > customKeogram.MAX_FRAMES:
-                raise ValueError('This range has too many images. Choose a shorter range (up to 20,000 images).')
+            # Capture/retention may have changed the range since it was queued.
+            customKeogram.validate_frame_count(count)
             progress({'total': count})
             # Fetch rows before progress commits so no streaming database cursor is held open.
             result = customKeogram.generate(self.config, camera, entries.all(), outfile, progress)
         except Exception as e:
             logger.exception('Custom keogram generation failed')
             db.session.rollback()
-            outfile.unlink(missing_ok=True)
+            try:
+                outfile.unlink(missing_ok=True)
+            except OSError:
+                # Cleanup must not hide the failure or stop the shared worker.
+                logger.warning('Unable to remove custom keogram: %s', outfile, exc_info=True)
             message = str(e) if isinstance(e, ValueError) else 'Unable to create the keogram. Check the worker log for details.'
             task.setFailed(message[:255])
             return

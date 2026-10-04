@@ -8,7 +8,6 @@ function initCustomKeogram(options) {
     const status = document.getElementById('custom-keogram-status');
     const result = document.getElementById('custom-keogram-result');
     const image = document.getElementById('custom-keogram-image');
-    let timer;
 
     function message(text, error) {
         status.textContent = text;
@@ -16,28 +15,33 @@ function initCustomKeogram(options) {
     }
 
     function validate() {
+        // Compare camera-local input directly; UTC conversion would shift it.
         end.setCustomValidity(end.value && start.value && end.value <= start.value
             ? 'The end must be later than the start.' : '');
     }
     start.addEventListener('input', validate);
     end.addEventListener('input', validate);
     form.addEventListener('invalid', function (event) {
+        // Native required/date checks can prevent the submit handler from firing.
         message(event.target.validationMessage, true);
     }, true);
 
     async function jsonRequest(url, settings) {
         const response = await fetch(url, Object.assign({signal: AbortSignal.timeout(15000)}, settings));
         if (response.redirected) {
+            // A followed login redirect would otherwise look like a successful fetch.
             const error = new Error('Your session has expired. Reload this page and sign in again.');
             error.terminal = true;
             throw error;
         }
-        const data = await response.json();
+        // Proxy and permission errors may be HTML; preserve their HTTP status.
+        const data = await response.json().catch(() => null);
         if (!response.ok) {
-            const error = new Error(data.message || 'The request failed. Please try again.');
+            const error = new Error((data && data.message) || 'The request failed. Please try again.');
             error.terminal = response.status >= 400 && response.status < 500 && response.status !== 429;
             throw error;
         }
+        if (!data || typeof data !== 'object') throw new Error('Invalid server response. Please try again.');
         return data;
     }
 
@@ -76,8 +80,10 @@ function initCustomKeogram(options) {
             retry = !error.terminal;
             message(retry ? 'Could not read progress. Retrying automatically…' : error.message, true);
         } finally {
+            // One polling chain, scheduled after completion, also retries timeouts/5xx.
+            // The disabled form prevents another job until this chain has finished.
             fields.disabled = retry || !options.enabled;
-            if (retry) timer = setTimeout(function () { poll(taskId); }, 3000);
+            if (retry) setTimeout(function () { poll(taskId); }, 3000);
         }
     }
 
@@ -86,9 +92,10 @@ function initCustomKeogram(options) {
         if (!options.enabled || fields.disabled) return;
         validate();
         if (!form.reportValidity()) return;
-        clearTimeout(timer);
         fields.disabled = true;
         result.hidden = true;
+        // A late load from the previous preview must not reveal it for this job.
+        image.onload = image.onerror = null;
         message('Submitting keogram…', false);
         try {
             const data = await jsonRequest(options.endpoint, {
@@ -100,6 +107,7 @@ function initCustomKeogram(options) {
             const url = new URL(window.location.href);
             url.searchParams.set('task_id', data.task_id);
             url.searchParams.set('camera_id', options.cameraId);
+            // Reloading resumes the same queued job instead of creating another.
             window.history.replaceState(null, '', url);
             await poll(data.task_id);
         } catch (error) {
@@ -110,10 +118,9 @@ function initCustomKeogram(options) {
 
     const params = new URL(window.location.href).searchParams;
     const taskId = Number(params.get('task_id'));
+    // Changing cameras must not resume the previous camera's export.
     if (options.enabled && Number.isInteger(taskId) && taskId > 0 && Number(params.get('camera_id')) === options.cameraId) {
         fields.disabled = true;
         poll(taskId);
     }
 }
-
-if (typeof module !== 'undefined') module.exports = {initCustomKeogram};

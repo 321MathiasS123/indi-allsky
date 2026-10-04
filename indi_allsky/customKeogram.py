@@ -4,16 +4,18 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 import numpy
 
 from .keogram import KeogramGenerator
 
 
+# Bound the width of the in-memory keogram, including during direct worker use.
 MAX_FRAMES = 20000
 
 
 def parse_range(start, end):
+    """Keep datetime-local input in the same wall-clock time as capture dates."""
     try:
         start_date = datetime.strptime(start, '%Y-%m-%dT%H:%M')
         end_date = datetime.strptime(end, '%Y-%m-%dT%H:%M')
@@ -25,7 +27,8 @@ def parse_range(start, end):
 
 
 def image_query(model, camera_id, start, end):
-    # Capture dates are stored as camera-local wall times, including day/night.
+    # Inclusive endpoints deliberately cross the usual dayDate/night boundary.
+    # The ID breaks ties when multiple frames have the same capture timestamp.
     return model.query.filter(
         model.camera_id == camera_id,
         model.createDate >= start,
@@ -35,7 +38,13 @@ def image_query(model, camera_id, start, end):
 
 
 def output_path(image_dir, task_id):
+    # Task IDs isolate exports; existing scratch cleanup expires their previews.
     return Path(image_dir).joinpath('scratch', 'custom_keogram_{0:d}.jpg'.format(task_id))
+
+
+def validate_frame_count(count):
+    if count > MAX_FRAMES:
+        raise ValueError('This range has too many images. Choose a shorter range (up to {0:,} images).'.format(MAX_FRAMES))
 
 
 def generate(config, camera, entries, outfile, progress):
@@ -51,12 +60,12 @@ def generate(config, camera, entries, outfile, progress):
     result = {'frames': 0, 'skipped': 0, 'resized': 0, 'first': None, 'last': None}
     image_shape = None
     for index, entry in enumerate(entries, start=1):
-        if index > MAX_FRAMES:
-            raise ValueError('This range has too many images. Choose a shorter range (up to 20,000 images).')
+        validate_frame_count(index)
         try:
             with Image.open(entry.getFilesystemPath()) as source:
                 data = cv2.cvtColor(numpy.array(source.convert('RGB')), cv2.COLOR_RGB2BGR)
-        except (OSError, UnidentifiedImageError):
+        except OSError:
+            # Retention may remove originals after the request has been queued.
             result['skipped'] += 1
         else:
             if image_shape is None:
@@ -78,6 +87,7 @@ def generate(config, camera, entries, outfile, progress):
             result['frames'] += 1
             result['last'] = entry.createDate.isoformat(sep=' ', timespec='seconds')
 
+        # Throttle database writes while counting unreadable frames as progress.
         if index % 25 == 0:
             progress(dict(result))
 

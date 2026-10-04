@@ -26,6 +26,7 @@ CONFIG = {'KEOGRAM_ANGLE': 0, 'KEOGRAM_H_SCALE': 100, 'KEOGRAM_V_SCALE': 100,
 
 
 def load_nodes(path, names, namespace):
+    # Load real view code without importing Linux-only camera/D-Bus services.
     tree = ast.parse(path.read_text(encoding='utf-8'))
     tree.body = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in names]
     exec(compile(tree, str(path), 'exec'), namespace)
@@ -33,6 +34,7 @@ def load_nodes(path, names, namespace):
 
 @pytest.fixture
 def environment(tmp_path):
+    # Each test owns its database/session, including under pytest-xdist.
     db = SQLAlchemy()
     path = ROOT / 'indi_allsky/flask/models.py'
     tree = ast.parse(path.read_text(encoding='utf-8'))
@@ -55,6 +57,7 @@ def environment(tmp_path):
     app.add_url_rule('/ajax/custom_keogram', 'indi_allsky.ajax_custom_keogram_view',
                      handler.dispatch_request, methods=['GET', 'POST'])
     path = ROOT / 'indi_allsky/video.py'
+    # Keep the worker action intact while omitting process/hardware startup.
     worker_tree = ast.parse(path.read_text(encoding='utf-8'))
     worker_node = next(node for node in worker_tree.body if isinstance(node, ast.ClassDef) and node.name == 'VideoWorker')
     worker_node.bases = []
@@ -91,17 +94,19 @@ def add_image(env, hour, *, night=False, camera_id=1, exclude=False, size=(64, 6
 
 
 def submit(env, **kwargs):
-    return env.client.post('/ajax/custom_keogram', json=dict(
-        camera_id=1, start='2026-10-01T15:00', end='2026-10-01T22:00', **kwargs))
+    return env.client.post('/ajax/custom_keogram', json={
+        'camera_id': 1, 'start': '2026-10-01T15:00', 'end': '2026-10-01T22:00', **kwargs})
 
 
 def status(env, task_id, **kwargs):
-    return env.client.get('/ajax/custom_keogram', query_string=dict(task_id=task_id, camera_id=1, **kwargs))
+    return env.client.get('/ajax/custom_keogram', query_string={'task_id': task_id, 'camera_id': 1, **kwargs})
 
 
 def run_job(env, response):
     task_id = response.json['task_id']
     task = env.db.session.get(env.models['IndiAllSkyDbTaskQueueTable'], task_id)
+    # The worker dispatcher marks tasks running before calling their action.
+    task.setRunning()
     env.worker.generateCustomKeogram(task, **task.data['kwargs'])
     return task_id, task
 
@@ -181,11 +186,46 @@ def test_shape_change_reports_failure_and_removes_partial_output(environment):
     assert not customKeogram.output_path(env.path, task_id).exists()
 
 
+@pytest.mark.parametrize('cleanup_denied', [False, True])
+def test_write_failure_is_reported_even_if_cleanup_fails(environment, monkeypatch, cleanup_denied, caplog):
+    env = environment
+    add_image(env, 15)
+    response = submit(env)
+    outfile = customKeogram.output_path(env.path, response.json['task_id'])
+
+    def interrupted_write(generator, path, camera):
+        path.write_bytes(b'partial image')
+        raise OSError('Interrupted image write')
+
+    monkeypatch.setattr(customKeogram.KeogramGenerator, 'finalize', interrupted_write)
+    if cleanup_denied:
+        original_unlink = Path.unlink
+
+        def denied_unlink(path, **kwargs):
+            if path == outfile:
+                raise PermissionError('File is busy')
+            return original_unlink(path, **kwargs)
+
+        monkeypatch.setattr(Path, 'unlink', denied_unlink)
+    task_id, task = run_job(env, response)
+    assert task.state.name == 'FAILED'
+    assert 'Check the worker log' in task.result
+    assert outfile.exists() == cleanup_denied
+    assert 'Interrupted image write' in caplog.text
+    if cleanup_denied:
+        assert 'Unable to remove custom keogram' in caplog.text
+    # A leftover partial file must never be offered as a successful preview.
+    preview = status(env, task_id, image=1)
+    assert preview.mimetype == 'application/json'
+    assert preview.json['state'] == 'FAILED'
+    assert 'image_url' not in preview.json
+
+
 def test_wrong_camera_other_task_and_expired_preview(environment):
     env = environment
     add_image(env, 15)
     task_id, task = run_job(env, submit(env))
-    assert env.client.get('/ajax/custom_keogram', query_string={'task_id': task_id, 'camera_id': 2}).status_code == 404
+    assert status(env, task_id, camera_id=2).status_code == 404
     assert status(env, 1000).status_code == 404
     path = customKeogram.output_path(env.path, task_id)
     path.unlink()
@@ -201,7 +241,9 @@ def test_frame_limit_checked_before_queue_and_in_worker(environment, monkeypatch
     add_image(env, 16)
     queued = submit(env)
     monkeypatch.setattr(customKeogram, 'MAX_FRAMES', 1)
-    assert submit(env).status_code == 400
+    rejected = submit(env)
+    assert rejected.status_code == 400
+    assert 'up to 1 images' in rejected.json['message']
     _, task = run_job(env, queued)
     assert task.state.name == 'FAILED'
 
@@ -225,6 +267,7 @@ def test_generator_preserves_chronological_pixels_and_all_frames(tmp_path):
 
 
 def test_custom_keogram_javascript():
+    # Include executable browser behavior tests in the shared pytest/npm suite.
     node = shutil.which('node')
     assert node is not None, 'Node.js is required to run the custom keogram tests'
     result = subprocess.run([node, '--test', str(Path(__file__).with_name('custom_keogram.test.cjs'))],
