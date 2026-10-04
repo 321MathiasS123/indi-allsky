@@ -24,6 +24,7 @@ from ..flask import create_app
 
 #from .. import constants
 from ..utils import IndiAllSkyExposureUtils
+from ..gain import gain_quantum, quantize_gain
 
 from ..exceptions import TimeOutException
 from ..exceptions import CameraException
@@ -634,6 +635,8 @@ class IndiClient(PyIndi.BaseClient):
         ccdinfo = dict()
 
         ctl_CCD_EXPOSURE = self.get_control(self.ccd_device, 'CCD_EXPOSURE', 'number')
+        # Advertising an exposure property does not imply it accepts commands.
+        ccdinfo['EXPOSURE_CONTROL'] = ctl_CCD_EXPOSURE.getPermission() != PyIndi.IP_RO
         ccdinfo['CCD_EXPOSURE'] = dict()
         for i in ctl_CCD_EXPOSURE:
             ccdinfo['CCD_EXPOSURE'][i.getName()] = {
@@ -1081,6 +1084,7 @@ class IndiClient(PyIndi.BaseClient):
         self.exposure = exposure
         self.sqm_exposure = sqm_exposure
 
+        gain = self.normalize_gain(gain)
 
         if self.gain != gain:
             self.setCcdGain(gain)
@@ -1190,7 +1194,7 @@ class IndiClient(PyIndi.BaseClient):
             'indi_canon_ccd',
             'indi_nikon_ccd',
             'indi_pentax_ccd',
-            'indin_sony_ccd',
+            'indi_sony_ccd',
         ]:
             gain_ctl = self.get_control(self.ccd_device, 'CCD_ISO', 'switch')
 
@@ -1219,6 +1223,8 @@ class IndiClient(PyIndi.BaseClient):
                     'current' : 0,  # this should not matter
                     'min'     : min(gain_list),
                     'max'     : max(gain_list),
+                    # Pass supported ISOs to the image worker's exposure controller.
+                    'values'  : gain_list,
                     'step'    : None,
                     'format'  : '',
                 }
@@ -1261,13 +1267,22 @@ class IndiClient(PyIndi.BaseClient):
             'max'     : gain_ctl[index].max,
             'step'    : gain_ctl[index].step,
             'format'  : gain_ctl[index].format,
+            'quantum' : gain_quantum(indi_exec),
         }
 
         #logger.info('Gain Info: %s', pformat(gain_info))
         return gain_info
 
 
+    def normalize_gain(self, gain):
+        return quantize_gain(gain, gain_quantum(self.ccd_device.getDriverExec()), self.__canon_gain_to_iso)
+
+
     def setCcdGain(self, new_gain):
+        requested_gain = new_gain
+        new_gain = self.normalize_gain(new_gain)
+        if new_gain != requested_gain:
+            logger.info('Requested gain %.3f mapped to supported gain %.3f', requested_gain, new_gain)
         logger.warning('Setting CCD gain to %0.3f', new_gain)
         indi_exec = self.ccd_device.getDriverExec()
 
@@ -1340,12 +1355,9 @@ class IndiClient(PyIndi.BaseClient):
         ]:
             logger.info('Mapping gain to ISO for libgphoto device')
 
-            try:
-                gain_switch = self.__canon_gain_to_iso[int(new_gain)]
-                logger.info('Setting ISO switch: %s', gain_switch)
-            except KeyError:
-                logger.error('Canon ISO not found for %s, using ISO 100', str(new_gain))
-                gain_switch = 'ISO1'
+            # normalize_gain resolved the supported ISO before command/logging.
+            gain_switch = self.__canon_gain_to_iso[new_gain]
+            logger.info('Setting ISO switch: %s', gain_switch)
 
             gain_config = {
                 'SWITCHES' : {

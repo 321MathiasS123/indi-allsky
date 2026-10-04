@@ -25,6 +25,7 @@ from . import camera as camera_module
 
 from .utils import IndiAllSkyDateCalcs
 from .utils import IndiAllSkyExposureUtils
+from .gain import quantize_gain
 
 from .flask.models import TaskQueueQueue
 from .flask.models import TaskQueueState
@@ -988,6 +989,19 @@ class CaptureWorker(Process):
         # get CCD information
         ccd_info = self.indiclient.getCcdInfo()
 
+        # Interface overrides cover passive/download cameras; the INDI property
+        # permission covers read-only drivers. Direct capture interfaces default
+        # to commandable. Lack of gain control alone must not disable protection.
+        exposure_control = (getattr(self.indiclient, 'exposure_control', True)
+                            and ccd_info.get('EXPOSURE_CONTROL', True))
+        if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False) and not exposure_control:
+            message = 'Highlight protection is inactive: this camera interface cannot command exposure. Normal processing will be used.'
+            logger.warning(message)
+            self._miscDb.addNotification(
+                NotificationCategory.GENERAL, 'highlight_control_unavailable', message,
+                expire=timedelta(hours=24),
+            )
+
 
         if self.config.get('CFA_PATTERN'):
             cfa_pattern = self.config['CFA_PATTERN']
@@ -1072,6 +1086,10 @@ class CaptureWorker(Process):
                 # from friendly labels and historical aliases. Camera-specific
                 # tools use this value as their authoritative persisted gate.
                 'detected_name': self.camera_name,
+                # The image worker runs separately and cannot query the live driver.
+                'exposure_control': exposure_control,
+                'gain_values': ccd_info.get('GAIN_INFO', {}).get('values', []),
+                'gain_quantum': ccd_info.get('GAIN_INFO', {}).get('quantum', 0.0),
             },
         }
 
@@ -1502,6 +1520,9 @@ class CaptureWorker(Process):
         logger.info('Default CCD exposure: %0.6f', ccd_exposure_default)
 
 
+        # Seed pending/current with the same command the camera will receive.
+        gain_info = ccd_info.get('GAIN_INFO', {})
+        ccd_gain_default = quantize_gain(ccd_gain_default, gain_info.get('quantum', 0.0), gain_info.get('values', []))
         self._expUtils.GAIN_CURRENT = ccd_gain_default
         self._expUtils.GAIN_NEXT = ccd_gain_default
 
