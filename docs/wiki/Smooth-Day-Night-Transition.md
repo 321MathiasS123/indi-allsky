@@ -1,7 +1,7 @@
 # Smooth day/night transition
 
-Enable **Smooth day/night transition** under **Location → Night & Moon Mode
-Thresholds**. It is disabled by default.
+Enable **Smooth day/night transition** in its own **Location → Smooth Day/Night
+Transition** box. It is disabled by default.
 
 The existing **Sun altitude** is the day endpoint. **Full night settings at Sun
 elevation** is the night endpoint and must be lower. With the default −6° and
@@ -30,9 +30,16 @@ is shown if the Sun keeps moving in one direction through the solar cycle.
   their existing gain policy and receive the changing target/minimum exposure.
 - Capture interval, excluding dedicated SQM exposures and focus mode.
 - Manual white balance, midtone white balance, gamma, saturation and sharpening.
-- Automatic white balance, denoising, green removal, stretching, grayscale and
-  contrast enhancement. Effects are faded using the same captured frame; no
-  images from different capture times are blended.
+- Automatic white balance, stretching, grayscale and contrast enhancement.
+  Effects are faded using the same captured frame; no images from different
+  capture times are blended.
+- Denoising runs once with the nearer endpoint's algorithm, strength and options.
+  Green removal also runs once with the nearer algorithm; its continuous midtone
+  setting is blended. Above 50% night settings the night profile is selected;
+  at or below 50% the day profile is selected. With −6°/−12° endpoints, this
+  switches at −9°: night denoising during the first half of the morning blend,
+  then day denoising. Evening reverses this selection. Partial summer nights
+  that never reach 50% night settings retain the day algorithms.
 
 **Use Night Color Settings** keeps its existing meaning: when enabled, those
 color settings remain the night settings throughout the day. Turn it off to
@@ -72,8 +79,9 @@ containing only the two endpoint gains can select higher-gain darks during
 twilight; verify the matched dark frames and provide suitable calibration
 coverage before relying on the ramp. Calibration is not synthesized or disabled.
 
-Different day/night denoisers or green-removal algorithms can require two
-processing passes during twilight. Check processing time on the capture host.
+Each filter runs at most once per frame. Different discrete algorithms or
+denoising strengths can produce a visible change at the midpoint; using matching
+day/night settings avoids that change.
 Automatic exposure still reacts to clouds and changing illumination; enabling
 the transition does not guarantee a flicker-free video under every condition.
 

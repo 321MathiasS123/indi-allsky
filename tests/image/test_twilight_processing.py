@@ -80,33 +80,91 @@ def test_stretch_and_contrast_fade_same_frame(processor, bits, altitude):
     numpy.testing.assert_array_equal(p.image, cv2.addWeighted(original, 1 - w, full_contrast, w, 0))
 
 
-@pytest.mark.parametrize('algorithm_day,algorithm_night', [('', 'gaussian_blur'), ('median_blur', 'gaussian_blur')])
-def test_different_denoisers_use_fixed_endpoints_without_mutating_shared_state(processor, algorithm_day, algorithm_night):
+@pytest.mark.parametrize('algorithm_day,algorithm_night', [('', 'gaussian_blur'), ('median_blur', ''),
+                                                        ('median_blur', 'gaussian_blur'), ('gaussian_blur', 'gaussian_blur')])
+@pytest.mark.parametrize('altitude,night', [(-5, False), (-6, False), (-8, False), (-9, False),
+                                          (-9.001, True), (-10, True), (-12, True), (-13, True)])
+def test_denoising_uses_nearest_endpoint_once(processor, monkeypatch, algorithm_day, algorithm_night, altitude, night):
     p = processor({'IMAGE_DENOISE_DAY': algorithm_day, 'IMAGE_DENOISE': algorithm_night,
-                   'IMAGE_DENOISE_STRENGTH_DAY': 1, 'IMAGE_DENOISE_STRENGTH': 4})
+                   'IMAGE_DENOISE_STRENGTH_DAY': 1, 'IMAGE_DENOISE_STRENGTH': 4}, altitude)
     original = p.image.copy()
     config_before = deepcopy(p.config)
-    day = IndiAllskyDenoise(p.twilight.endpoint_config(False), [0, 0])
-    night = IndiAllskyDenoise(p.twilight.endpoint_config(True), [1, 0])
-    d = getattr(day, algorithm_day)(original.copy()) if algorithm_day else original
-    n = getattr(night, algorithm_night)(original.copy())
+    calls = []
+    def record_filter(obj, image):
+        calls.append(obj.config['IMAGE_DENOISE_STRENGTH'])
+        return image + 1
+    for algorithm in ('median_blur', 'gaussian_blur'):
+        monkeypatch.setattr(IndiAllskyDenoise, algorithm, record_filter)
     p.denoise()
-    numpy.testing.assert_array_equal(p.image, cv2.addWeighted(d, .5, n, .5, 0))
+    active = algorithm_night if night else algorithm_day
+    assert calls == ([4 if night else 1] if active else [])
+    numpy.testing.assert_array_equal(p.image, original + 1 if active else original)
     assert p.config == config_before
     assert p.night_av == [1, 0]
 
 
-def test_scnr_changes_continuously_when_binary_mode_is_unchanged(processor):
-    p = processor({'SCNR_ALGORITHM': 'green_mtf', 'SCNR_ALGORITHM_DAY': '', 'SCNR_MTF_MIDTONES': .7})
+@pytest.mark.parametrize('shared', [False, True])
+def test_identical_denoise_endpoints_match_one_real_pass_through_dawn_and_dusk(processor, monkeypatch, shared):
+    p = processor({'IMAGE_DENOISE_DAY': 'gaussian_blur', 'IMAGE_DENOISE': 'gaussian_blur',
+                   'IMAGE_DENOISE_STRENGTH_DAY': 2, 'IMAGE_DENOISE_STRENGTH': 2, 'USE_NIGHT_COLOR': shared})
     original = p.image.copy()
+    algorithm = IndiAllskyDenoise.gaussian_blur
+    expected = algorithm(IndiAllskyDenoise(p.twilight.endpoint_config(True), [1, 0]), original.copy())
+    calls = Mock()
+    def wrapped(obj, image):
+        calls()
+        return algorithm(obj, image)
+    monkeypatch.setattr(IndiAllskyDenoise, 'gaussian_blur', wrapped)
+    altitudes = (-13, -10, -9.001, -9, -8, -5, -8, -9, -10, -8, -5)
+    for altitude in altitudes:
+        p.twilight.apply(altitude)
+        p.image = original.copy()
+        p.denoise()
+        numpy.testing.assert_array_equal(p.image, expected)
+    assert calls.call_count == len(altitudes)
+
+
+def test_shared_night_color_does_not_select_day_denoising(processor, monkeypatch):
+    p = processor({'USE_NIGHT_COLOR': True, 'IMAGE_DENOISE_DAY': 'median_blur',
+                   'IMAGE_DENOISE': 'gaussian_blur'}, -6)
+    night = Mock(return_value=p.image)
+    day = Mock(return_value=p.image)
+    monkeypatch.setattr(IndiAllskyDenoise, 'gaussian_blur', night)
+    monkeypatch.setattr(IndiAllskyDenoise, 'median_blur', day)
+    p.denoise()
+    night.assert_called_once()
+    day.assert_not_called()
+
+
+def test_green_removal_selects_one_algorithm_and_blends_midtones_without_stale_cache(processor, monkeypatch):
+    p = processor({'SCNR_ALGORITHM': 'green_mtf', 'SCNR_ALGORITHM_DAY': 'green_mtf',
+                   'SCNR_MTF_MIDTONES': .7, 'SCNR_MTF_MIDTONES_DAY': .55})
+    original = p.image.copy()
+    algorithm = IndiAllskyScnr.green_mtf
+    calls = Mock()
+    def wrapped(obj, image):
+        calls()
+        return algorithm(obj, image)
+    monkeypatch.setattr(IndiAllskyScnr, 'green_mtf', wrapped)
+    altitudes = (-12, -10, -9, -8, -6, -8, -9, -10, -12)
+    for altitude in altitudes:
+        p.twilight.apply(altitude)
+        p.image = original.copy()
+        expected_config = dict(p.config, USE_NIGHT_COLOR=True)
+        expected = algorithm(IndiAllskyScnr(expected_config, p.night_av), original.copy())
+        p.scnr()
+        numpy.testing.assert_array_equal(p.image, expected)
+    assert calls.call_count == len(altitudes)
+
+
+@pytest.mark.parametrize('altitude,expected', [(-12, 'night'), (-9.001, 'night'), (-9, 'day'), (-6, 'day')])
+def test_different_green_removal_algorithms_choose_nearest_endpoint(processor, monkeypatch, altitude, expected):
+    p = processor({'SCNR_ALGORITHM': 'green_mtf', 'SCNR_ALGORITHM_DAY': 'maximum_neutral'}, altitude)
+    calls = []
+    monkeypatch.setattr(IndiAllskyScnr, 'green_mtf', lambda obj, im: calls.append('night') or im)
+    monkeypatch.setattr(IndiAllskyScnr, 'maximum_neutral', lambda obj, im: calls.append('day') or im)
     p.scnr()
-    midpoint = p.image.copy()
-    p.twilight.apply(-12)
-    p.image = original.copy()
-    p.scnr()
-    full = p.image.copy()
-    assert not numpy.array_equal(full, original)
-    numpy.testing.assert_array_equal(midpoint, cv2.addWeighted(original, .5, full, .5, 0))
+    assert calls == [expected]
 
 
 def test_white_balance_cache_follows_effective_parameters_in_both_directions(processor):

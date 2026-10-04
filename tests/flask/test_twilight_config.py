@@ -60,9 +60,12 @@ def test_defaults_and_controls_use_existing_save_registry(form_class):
         assert not form.TWILIGHT_TRANSITION__ENABLE.data
         assert form.TWILIGHT_TRANSITION__NIGHT_ALT.data == -12
         template = (ROOT / 'templates/config/location.html').read_text(encoding='utf-8')
-        start = template.index('                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">')
-        end = template.index('                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-3', start)
+        start = template.index('        <!-- Smooth Day/Night Transition Card -->')
+        end = template.index('        <!-- VirtualSky Configuration Card -->', start)
         html = Environment(autoescape=True).from_string(template[start:end]).render(form_config=form, twilight_forecast=None)
+        assert 'Smooth Day/Night Transition</span>' in html
+        assert 'id="NIGHT_SUN_ALT_DEG"' not in html
+        assert 'TWILIGHT_TRANSITION__' not in template[:start]
         registry = (ROOT / 'templates/config.html').read_text(encoding='utf-8')
         for name in ('TWILIGHT_TRANSITION__ENABLE', 'TWILIGHT_TRANSITION__NIGHT_ALT'):
             assert f'id="{name}"' in html
@@ -136,7 +139,7 @@ def test_near_complete_polar_forecast_is_still_labeled_partial(form_class):
         form = form_class(data={'NIGHT_SUN_ALT_DEG': -6})
         template = (ROOT / 'templates/config/location.html').read_text(encoding='utf-8')
         start = template.index('                {% if twilight_forecast %}')
-        end = template.index('                <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-3', start)
+        end = template.index('        <!-- VirtualSky Configuration Card -->', start)
         forecast = dict(minimum=.99, maximum=.99999, lowest_altitude=-11.99, reversal_utc=None)
         html = Environment(autoescape=True).from_string(template[start:end]).render(form_config=form, twilight_forecast=forecast)
         assert 'partial transition' in html

@@ -2130,30 +2130,25 @@ class ImageProcessor(object):
         if self.focus_mode:
             return True
         original = self.image
-        results = []
-        for night in (False, True):
-            if weight == (0 if night else 1):
-                results.append(None)
-                continue
-            key = (name, night)
-            if key not in self._twilight_filters:
-                self._twilight_filters[key] = filter_class(self.twilight.endpoint_config(night), self.night_av)
-            filter_o = self._twilight_filters[key]
-            algorithm = filter_o.config.get(algorithm_key)
-            if not algorithm:
-                results.append(original)
-                continue
-            try:
-                results.append(getattr(filter_o, algorithm)(original.copy()))
-            except AttributeError:
-                logger.error('Unknown %s algorithm: %s', name, algorithm)
-                results.append(original)
-        if weight == 0:
-            self.image = results[0]
-        elif weight == 1:
-            self.image = results[1]
-        else:
-            self.image = cv2.addWeighted(results[0], 1 - weight, results[1], weight, 0)
+        # Algorithms and denoise strength levels are discrete. Select the
+        # nearest endpoint, including its options, and process this frame once.
+        night = weight > 0.5
+        key = (name, night)
+        if key not in self._twilight_filters:
+            self._twilight_filters[key] = filter_class(self.twilight.endpoint_config(night), self.night_av)
+        filter_o = self._twilight_filters[key]
+        algorithm = filter_o.config.get(algorithm_key)
+        if not algorithm:
+            return True
+        if name == 'scnr':
+            midtones = self.config['SCNR_MTF_MIDTONES']
+            if filter_o.config.get('SCNR_MTF_MIDTONES') != midtones:
+                filter_o.config['SCNR_MTF_MIDTONES'] = midtones
+                filter_o._mtf_lut = None
+        try:
+            self.image = getattr(filter_o, algorithm)(original)
+        except AttributeError:
+            logger.error('Unknown %s algorithm: %s', name, algorithm)
         if name == 'scnr':
             gray = getattr(self.getLatestImage(), 'twilight_grayscale', 0.0)
             if gray:
