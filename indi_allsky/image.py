@@ -85,6 +85,7 @@ class ImageWorker(Process):
         sensors_user_av,
         night_av,
         astro_av,
+        processing_allowance=None,
     ):
         super(ImageWorker, self).__init__()
 
@@ -105,6 +106,7 @@ class ImageWorker(Process):
         self.sensors_user_av = sensors_user_av
         self.night_av = night_av
         self.astro_av = astro_av
+        self.processing_allowance = processing_allowance
 
         self.filename_t = 'ccd{0:d}_{1:s}.{2:s}'
 
@@ -371,6 +373,7 @@ class ImageWorker(Process):
 
 
         processing_start = time.time()
+        watchdog_processing_start = time.monotonic()
 
 
         ### simulate performance degradation
@@ -869,6 +872,11 @@ class ImageWorker(Process):
 
 
         latest_file, new_filename = self.write_img(self.image_processor.image, i_ref, camera, jpeg_exif=jpeg_exif)
+
+        if latest_file and self.processing_allowance is not None:
+            # Include writing latest in the allowance, without changing the
+            # existing process_elapsed metric stored with archived images.
+            self.processing_allowance.record(time.monotonic() - watchdog_processing_start)
 
         if new_filename:
             self.start_image_save_post_hook(new_filename, exposure, gain, binning)
