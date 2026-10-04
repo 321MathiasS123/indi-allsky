@@ -150,6 +150,50 @@
             </div>
         </div>
 
+        <!-- Highlight Protection Card -->
+        <div id="highlight-protection-settings" class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
+            <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
+                <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-widest tw:text-base-content/50">Highlight Protection</span>
+                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4">
+                    <div>
+                        <span class="tw:text-sm tw:font-bold">{{ form_config.HIGHLIGHT_PROTECTION__ENABLE.label.text }}</span>
+                        <p class="tw:text-xs tw:text-base-content/70">Limit the largest connected bright patches and lift darker areas using your existing image settings. Applies to day, night and moon mode. Disable and reload to restore normal ADU control and processing.</p>
+                    </div>
+                    {{ form_config.HIGHLIGHT_PROTECTION__ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                </div>
+                <div id="HIGHLIGHT_PROTECTION__ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <div class="tw:grid tw:grid-cols-1 sm:tw:grid-cols-2 tw:gap-4">
+                    {% for field in [form_config.HIGHLIGHT_PROTECTION__FULL_TARGET, form_config.HIGHLIGHT_PROTECTION__FULL_DEV, form_config.HIGHLIGHT_PROTECTION__ANY_TARGET, form_config.HIGHLIGHT_PROTECTION__ANY_DEV, form_config.HIGHLIGHT_PROTECTION__THRESHOLD, form_config.HIGHLIGHT_PROTECTION__MAX_BOOST, form_config.HIGHLIGHT_PROTECTION__GAMMA, form_config.HIGHLIGHT_PROTECTION__GAMMA_DAY] %}
+                    <div class="tw:flex tw:flex-col tw:gap-1">
+                        <label for="{{ field.id }}" class="tw:text-xs tw:font-bold">{{ field.label.text }}</label>
+                        {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                        <div id="{{ field.id }}-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <p class="tw:text-xs tw:text-base-content/70">Shadow lift and highlight gamma engage smoothly when clipping exceeds either lower limit or blocks a needed exposure increase. They remain active while exposure recovers, then fade back to ordinary rendering once both patches have clear headroom and ordinary brightness or the achievable exposure/gain ceiling is reached. A clear sky that never needs protection keeps normal rendering. Set highlight gamma to 0 to keep normal gamma, or 1 for no gamma correction. Day/night selection follows the existing color profile, including Use Night Color Settings. Disabling highlight protection immediately restores normal processing. Your normal gamma values are kept unchanged.</p>
+                <p class="tw:text-xs tw:text-base-content/70">Areas are percentages of the Detection Mask, or the ADU ROI/FoV when no mask is set. All-channel counts white clipping; any-channel includes it and coloured clipping. Each measures its largest connected patch. For monochrome images both measure the same patch. Target 0.8 with deviation 0.2 holds between 0.6% and 1.0%. Either upper limit reduces exposure; both lower limits allow recovery toward the ordinary ADU target. Requests use the selected exposure/gain mode.</p>
+                <p class="tw:text-xs tw:text-base-content/70">The clipping threshold is measured before dark calibration and stretching, as a percentage of the configured image bit depth's full scale. Start at 99%. Maximum shadow lift uses calibrated brightness and limits how far it may fall below the ordinary ADU target; 2 stops permits up to 4× compensation. Exposure/gain limits or this lift limit can prevent meeting the highlight targets. Every usable frame is evaluated. Clipping corrections taper smoothly to zero at the upper limits, with reductions capped at 20%. Correction strength grows gradually as camera settings take effect. Brightness recovery stays capped at 10%. When enabled, capture adjustments are sent before stacking and image enhancement to reduce delay. When disabled, ordinary exposure control keeps its original timing and behavior. Purple-frame repair is not required. When enabled, detected purple frames hold exposure/gain; repaired images retain the last trusted protection state. Existing save and reload behavior is unchanged.</p>
+                <p class="tw:text-xs tw:text-base-content/70">Requires an interface that can command camera exposure. Passive INDI, downloaded images and read-only exposure controls automatically use normal processing, with a log entry and notification. Discrete ISO and microsecond exposure steps may exceed the proportional adjustment limits when no smaller hardware step is available.</p>
+                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:border-t tw:border-base-300 tw:pt-4">
+                    <span class="tw:text-sm tw:font-bold">{{ form_config.HIGHLIGHT_PROTECTION__OUTPUT_ENABLE.label.text }}</span>
+                    {{ form_config.HIGHLIGHT_PROTECTION__OUTPUT_ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                </div>
+                <div id="HIGHLIGHT_PROTECTION__OUTPUT_ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <div class="tw:grid tw:grid-cols-1 sm:tw:grid-cols-2 tw:gap-4">
+                    {% for field in [form_config.HIGHLIGHT_PROTECTION__OUTPUT_FULL_TARGET, form_config.HIGHLIGHT_PROTECTION__OUTPUT_FULL_DEV, form_config.HIGHLIGHT_PROTECTION__OUTPUT_ANY_TARGET, form_config.HIGHLIGHT_PROTECTION__OUTPUT_ANY_DEV] %}
+                    <div class="tw:flex tw:flex-col tw:gap-1">
+                        <label for="{{ field.id }}" class="tw:text-xs tw:font-bold">{{ field.label.text }}</label>
+                        {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                        <div id="{{ field.id }}-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <p class="tw:text-xs tw:text-base-content/70">Requires highlight protection above. Off by default to preserve existing results. Measures the enhanced image before logos, labels, final resizing and compression, using the rotated/cropped Detection Mask or ADU ROI/FoV. Near-white means all channels at least 240/255; any-channel means at least one at 250/255. Each measures its largest connected patch. These output percentages are separate from raw clipping and are not a prediction of exact JPEG values. Monochrome uses the same two brightness thresholds.</p>
+                <p class="tw:text-xs tw:text-base-content/70">Either upper output limit engages a slow additional exposure constraint; both lower limits release it and restore the normal bounded highlight recovery. Extra reductions are capped at 2%; recovery remains capped at 10%, subject to camera steps. Near maximum shadow lift, proportional recovery keeps a small brightness reserve to avoid repeated dimming and rescue steps. Raw cuts remain immediate. The ordinary brightness ceiling, maximum shadow lift and camera limits still apply, so output targets are not guaranteed. Shadow lift and highlight gamma use the same smooth engagement. Mixed-exposure or repaired stacks and stale results cannot trigger extra cuts. Capture logs show output patch sizes and the reason for each request. Turning this check off leaves raw highlight protection enabled.</p>
+            </div>
+        </div>
+
         <!-- CLAHE Contrast & Histogram Stretch Card -->
         <div class="tw:card tw:bg-base-200 tw:border tw:border-base-300 tw:rounded-[var(--radius-box)] shadow-sm">
             <div class="tw:card-body tw:p-6 tw:flex tw:flex-col tw:gap-4">
