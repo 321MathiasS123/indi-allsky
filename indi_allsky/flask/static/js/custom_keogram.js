@@ -8,6 +8,8 @@ function initCustomKeogram(options) {
     const status = document.getElementById('custom-keogram-status');
     const result = document.getElementById('custom-keogram-result');
     const image = document.getElementById('custom-keogram-image');
+    const range = document.getElementById('custom-keogram-range');
+    let previewTaskId = null;
 
     function message(text, error) {
         status.textContent = text;
@@ -45,28 +47,52 @@ function initCustomKeogram(options) {
         return data;
     }
 
+    function showPreview(data) {
+        if (!data) {
+            previewTaskId = null;
+            image.onload = image.onerror = null;
+            result.hidden = true;
+            return;
+        }
+        if (previewTaskId === data.task_id) return;
+        previewTaskId = data.task_id;
+        image.onload = function () {
+            // Caption the displayed image, independently of the editable form dates.
+            range.textContent = 'Shown keogram: ' + data.start.replace('T', ' ') + ' to ' +
+                data.end.replace('T', ' ') + " (camera's local time). Images: " + data.first + ' to ' + data.last + '.';
+            document.getElementById('custom-keogram-open').href = data.image_url;
+            document.getElementById('custom-keogram-download').href = data.image_url + '&download=1';
+            result.hidden = false;
+        };
+        image.onerror = function () {
+            previewTaskId = null;
+            result.hidden = true;
+            message('The preview could not be loaded. Reload this page to try again.', true);
+        };
+        image.src = data.image_url;
+    }
+
     async function poll(taskId) {
         let retry = false;
         try {
             const url = new URL(options.endpoint, window.location.href);
-            url.searchParams.set('task_id', taskId);
+            if (taskId) url.searchParams.set('task_id', taskId);
             url.searchParams.set('camera_id', options.cameraId);
             const data = await jsonRequest(url);
-            if (!data || !['MANUAL', 'QUEUED', 'RUNNING', 'SUCCESS', 'FAILED', 'EXPIRED'].includes(data.state)) {
+            if (!['EMPTY', 'MANUAL', 'QUEUED', 'RUNNING', 'SUCCESS', 'FAILED', 'EXPIRED'].includes(data.state)) {
                 throw new Error('Invalid status response.');
             }
+            showPreview(data.preview);
+            if (data.state === 'EMPTY') {
+                message('', false);
+                return;
+            }
+            taskId = data.task_id;
             start.value = data.start;
             end.value = data.end;
             if (data.state === 'SUCCESS') {
-                if (!data.image_url) throw new Error('Missing keogram preview.');
-                image.onload = function () { result.hidden = false; };
-                image.onerror = function () {
-                    message('The preview could not be loaded. Reload this page to try again.', true);
-                };
-                image.src = data.image_url;
-                document.getElementById('custom-keogram-open').href = data.image_url;
-                document.getElementById('custom-keogram-download').href = data.image_url + '&download=1';
-                message(data.message + ' Images: ' + data.first + ' to ' + data.last + '.' +
+                if (!data.preview) throw new Error('Missing keogram preview.');
+                message(data.message +
                     (data.resized ? ' ' + data.resized + ' images resized to match the first frame.' : ''), false);
             } else if (data.state === 'FAILED' || data.state === 'EXPIRED') {
                 message(data.state === 'EXPIRED' ? 'This job expired. Generate the keogram again.' : data.message, true);
@@ -93,9 +119,7 @@ function initCustomKeogram(options) {
         validate();
         if (!form.reportValidity()) return;
         fields.disabled = true;
-        result.hidden = true;
-        // A late load from the previous preview must not reveal it for this job.
-        image.onload = image.onerror = null;
+        // Keep the previous image and its caption visible while generating.
         message('Submitting keogram…', false);
         try {
             const data = await jsonRequest(options.endpoint, {
@@ -104,11 +128,6 @@ function initCustomKeogram(options) {
                 body: JSON.stringify({camera_id: options.cameraId, start: start.value, end: end.value})
             });
             if (!Number.isInteger(data.task_id) || data.task_id <= 0) throw new Error('Invalid generation response.');
-            const url = new URL(window.location.href);
-            url.searchParams.set('task_id', data.task_id);
-            url.searchParams.set('camera_id', options.cameraId);
-            // Reloading resumes the same queued job instead of creating another.
-            window.history.replaceState(null, '', url);
             await poll(data.task_id);
         } catch (error) {
             fields.disabled = !options.enabled;
@@ -116,11 +135,9 @@ function initCustomKeogram(options) {
         }
     });
 
-    const params = new URL(window.location.href).searchParams;
-    const taskId = Number(params.get('task_id'));
-    // Changing cameras must not resume the previous camera's export.
-    if (options.enabled && Number.isInteger(taskId) && taskId > 0 && Number(params.get('camera_id')) === options.cameraId) {
+    // Recover from the server even after navigating away or losing browser history.
+    if (options.enabled) {
         fields.disabled = true;
-        poll(taskId);
+        poll();
     }
 }

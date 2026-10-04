@@ -621,43 +621,78 @@ class AjaxCustomKeogramView(BaseView):
 
         task_id = request.args.get('task_id', type=int)
         camera_id = request.args.get('camera_id', type=int)
-        if not task_id or not 0 < task_id <= 2147483647 or not camera_id or not 0 < camera_id <= 2147483647:
+        if (not camera_id or not 0 < camera_id <= 2147483647
+                or ('task_id' in request.args and (not task_id or not 0 < task_id <= 2147483647))):
             return jsonify({'message': 'Choose a valid camera and custom keogram.'}), 400
-        task = IndiAllSkyDbTaskQueueTable.query.filter(
-            IndiAllSkyDbTaskQueueTable.id == task_id,
+        # Bind status and saved previews to this feature and the selected camera.
+        tasks = IndiAllSkyDbTaskQueueTable.query.filter(
             IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO,
-        ).first()
-        # A task ID must identify this feature and the selected camera.
-        if (not task or not isinstance(task.data, dict)
-                or task.data.get('action') != 'generateCustomKeogram'
-                or task.data.get('kwargs', {}).get('camera_id') != camera_id):
+            IndiAllSkyDbTaskQueueTable.data['action'].as_string() == 'generateCustomKeogram',
+            IndiAllSkyDbTaskQueueTable.data['kwargs']['camera_id'].as_integer() == camera_id,
+        )
+        image_dir = app.config['INDI_ALLSKY_IMAGE_FOLDER']
+        version = customKeogram.preview_version(image_dir, camera_id)
+        preview_task = tasks.filter(
+            IndiAllSkyDbTaskQueueTable.state == TaskQueueState.SUCCESS,
+            IndiAllSkyDbTaskQueueTable.data['custom_keogram']['file_mtime_ns'].as_string() == version,
+        ).first() if version else None
+        preview = None
+        if preview_task:
+            preview = self.task_result(preview_task)
+            preview['image_url'] = url_for('indi_allsky.ajax_custom_keogram_view',
+                                           task_id=preview_task.id, camera_id=camera_id, image=1)
+
+        if task_id:
+            task = tasks.filter(IndiAllSkyDbTaskQueueTable.id == task_id).first()
+        else:
+            # A fresh visit recovers an unfinished job and the last completed image,
+            # without depending on browser storage or a bookmarked task URL.
+            task = tasks.filter(IndiAllSkyDbTaskQueueTable.state.in_(
+                (TaskQueueState.MANUAL, TaskQueueState.QUEUED, TaskQueueState.RUNNING),
+            )).order_by(IndiAllSkyDbTaskQueueTable.id.desc()).first() or preview_task
+            if not task:
+                return jsonify({'state': 'EMPTY', 'preview': None})
+        if not task:
             return jsonify({'message': 'This custom keogram is no longer available. Generate it again.'}), 404
 
-        result = dict(task.data.get('custom_keogram', {}))
-        result.update({
-            'state': task.state.name,
-            'message': task.result or 'Waiting for the image worker.',
-            'start': task.data['kwargs']['start'],
-            'end': task.data['kwargs']['end'],
-        })
+        result = self.task_result(task)
+        result['preview'] = preview
         if task.state == TaskQueueState.SUCCESS:
-            # Resolve only the server-owned task filename, never a request path.
-            path = customKeogram.output_path(app.config['INDI_ALLSKY_IMAGE_FOLDER'], task.id)
-            if not path.is_file():
-                return jsonify({'message': 'This temporary preview has expired. Generate it again.'}), 410
+            if not preview_task or preview_task.id != task.id:
+                return jsonify({'message': 'This preview has expired or been replaced. Reopen Custom Keogram to see the latest image.'}), 410
             if request.args.get('image'):
+                # Hold the checked file open: a concurrent replacement must not
+                # change which image is sent under this range's download name.
+                try:
+                    image_file = customKeogram.preview_path(image_dir, camera_id).open('rb')
+                except FileNotFoundError:
+                    return jsonify({'message': 'This temporary preview has expired.'}), 410
+                if str(os.fstat(image_file.fileno()).st_mtime_ns) != version:
+                    image_file.close()
+                    return jsonify({'message': 'This preview has been replaced. Reopen Custom Keogram to see the latest image.'}), 410
                 return send_file(
-                    path, mimetype='image/jpeg',
+                    image_file, mimetype='image/jpeg',
                     as_attachment=request.args.get('download') == '1',
+                    # The retained filename is fixed; the download gets its range.
                     download_name='keogram_{0}_{1}.jpg'.format(
                         task.data['kwargs']['start'].replace(':', ''),
                         task.data['kwargs']['end'].replace(':', ''),
                     ),
                     max_age=0,
                 )
-            result['image_url'] = url_for('indi_allsky.ajax_custom_keogram_view',
-                                         task_id=task.id, camera_id=camera_id, image=1)
+            result['image_url'] = preview['image_url']
         return jsonify(result)
+
+    def task_result(self, task):
+        result = dict(task.data.get('custom_keogram', {}))
+        result.update({
+            'task_id': task.id,
+            'state': task.state.name,
+            'message': task.result or 'Waiting for the image worker.',
+            'start': task.data['kwargs']['start'],
+            'end': task.data['kwargs']['end'],
+        })
+        return result
 
     def queue_keogram(self):
         data = request.get_json(silent=True)
