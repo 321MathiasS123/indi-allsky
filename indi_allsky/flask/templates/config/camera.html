@@ -115,7 +115,7 @@
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.CCD_EXPOSURE_TIMEOUT.label.text }}</span>
                         {{ form_config.CCD_EXPOSURE_TIMEOUT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
-                        <span class="tw:text-[0.625rem] tw:text-base-content/40">Maximum seconds before aborting a stalled exposure.</span>
+                        <span class="tw:text-[0.625rem] tw:text-base-content/40">0 = automatic: twice the longer of the current exposure or capture interval, plus the longest processing time from the last 10 frames (10 seconds until measured). A positive value sets a fixed timeout in seconds, allowing scheduled gaps. Checked every second; aborts and restarts capture if no frame arrives.</span>
                         <div id="CCD_EXPOSURE_TIMEOUT-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                 </div>

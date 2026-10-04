@@ -229,8 +229,8 @@ def CCD_EXPOSURE_TIMEOUT_validator(form, field):
     if not isinstance(field.data, int):
         raise ValidationError('Please enter valid number')
 
-    if field.data < 120:
-        raise ValidationError('Timeout must be 120 or more')
+    if field.data < 0:
+        raise ValidationError('Timeout must be 0 (automatic) or more')
 
 
 def EXPOSURE_PERIOD_validator(form, field):

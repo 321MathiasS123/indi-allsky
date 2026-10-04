@@ -31,6 +31,7 @@ from . import constants
 
 from .exceptions import TimeOutException
 from .exceptions import ConfigSaveException
+from .capture_watchdog import CaptureWatchdog, FrameDeadline, ProcessingAllowance
 
 from .flask import create_app
 from .flask import db
@@ -244,6 +245,8 @@ class IndiAllSky(object):
         self.capture_q = Queue()
         self.capture_error_q = Queue()
         self.capture_worker = None
+        self.capture_watchdog = None
+        self.processing_allowance = ProcessingAllowance()
         self.capture_worker_idx = 0
 
         self.image_q = Queue()
@@ -448,9 +451,14 @@ class IndiAllSky(object):
     def _startCaptureWorker(self):
         from .capture import CaptureWorker
 
+        timed_out = False
         if self.capture_worker:
             if self.capture_worker.is_alive():
                 return
+
+            if self.capture_watchdog:
+                self.capture_watchdog.stop()
+                timed_out = self.capture_watchdog.timed_out
 
             try:
                 capture_error, capture_traceback = self.capture_error_q.get_nowait()
@@ -463,6 +471,7 @@ class IndiAllSky(object):
         self.capture_worker_idx += 1
 
         logger.info('Starting Capture-%d worker', self.capture_worker_idx)
+        frame_deadline = FrameDeadline(self.config.get('CCD_EXPOSURE_TIMEOUT', 330), self.processing_allowance)
         self.capture_worker = CaptureWorker(
             self.capture_worker_idx,
             self.config,
@@ -479,8 +488,20 @@ class IndiAllSky(object):
             self.sensors_user_av,
             self.night_av,
             self.astro_av,
+            frame_deadline=frame_deadline,
         )
         self.capture_worker.start()
+        self.capture_watchdog = CaptureWatchdog(self.capture_worker, frame_deadline)
+        self.capture_watchdog.start()
+
+        if timed_out:
+            with app.app_context():
+                self._miscDb.addNotification(
+                    NotificationCategory.CAMERA,
+                    'last_frame',
+                    'Camera frame deadline expired. Capture worker restarted.',
+                    expire=timedelta(minutes=60),
+                )
 
 
     def _stopCaptureWorker(self):
@@ -488,6 +509,8 @@ class IndiAllSky(object):
             return
 
         if not self.capture_worker.is_alive():
+            if self.capture_watchdog:
+                self.capture_watchdog.stop()
             return
 
         if self._terminate:
@@ -498,6 +521,8 @@ class IndiAllSky(object):
 
         self.capture_q.put({'stop' : True})
         self.capture_worker.join()
+        if self.capture_watchdog:
+            self.capture_watchdog.stop()
 
 
     def _startImageWorker(self):
@@ -532,6 +557,7 @@ class IndiAllSky(object):
             self.sensors_user_av,
             self.night_av,
             self.astro_av,
+            processing_allowance=self.processing_allowance,
         )
         self.image_worker.start()
 

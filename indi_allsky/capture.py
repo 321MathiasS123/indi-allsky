@@ -22,6 +22,7 @@ import queue
 
 from . import constants
 from . import camera as camera_module
+from .capture_watchdog import CaptureTimeoutError, FrameArrivalQueue, FrameDeadline
 
 from .utils import IndiAllSkyDateCalcs
 from .utils import IndiAllSkyExposureUtils
@@ -219,6 +220,7 @@ class CaptureWorker(Process):
         sensors_user_av,
         night_av,
         astro_av,
+        frame_deadline=None,
     ):
 
         super(CaptureWorker, self).__init__()
@@ -283,7 +285,7 @@ class CaptureWorker(Process):
         self.sqm_tasks_offset = self.config.get('CAMERA_SQM', {}).get('EXPOSURE_PERIOD', 900)
         self.sqm_tasks_time = now_time + min(300, self.sqm_tasks_offset)  # take SQM exposure 5 minutes (or less) after starting
 
-        self.exposure_timeout = self.config.get('CCD_EXPOSURE_TIMEOUT', 330)
+        self.frame_deadline = frame_deadline or FrameDeadline(self.config.get('CCD_EXPOSURE_TIMEOUT', 330))
 
 
         if self.config['IMAGE_FOLDER']:
@@ -323,17 +325,27 @@ class CaptureWorker(Process):
         raise TimeOutException()
 
 
+    def frame_timeout_handler(self, signum, frame):
+        raise CaptureTimeoutError('Camera frame deadline expired; aborting exposure and restarting capture')
+
+
     def run(self):
         # setup signal handling after detaching from the main process
         signal.signal(signal.SIGHUP, self.sighup_handler_worker)
         signal.signal(signal.SIGTERM, self.sigterm_handler_worker)
         signal.signal(signal.SIGINT, self.sigint_handler_worker)
         signal.signal(signal.SIGALRM, self.sigalarm_handler_worker)
+        signal.signal(signal.SIGUSR1, self.frame_timeout_handler)
 
 
         ### use this as a method to log uncaught exceptions
         try:
-            self.saferun()
+            try:
+                self.saferun()
+            except CaptureTimeoutError:
+                self.indiclient.abortCcdExposure()
+                self.indiclient.disconnectServer()
+                raise
         except Exception as e:
             tb = traceback.format_exc()
             self.error_q.put((str(e), tb))
@@ -366,10 +378,8 @@ class CaptureWorker(Process):
 
         camera_ready_time = time.time()
         camera_ready = False
-        exposure_aborted = False
         last_camera_ready = False
         exposure_state = 'unset'
-        next_check_exposure_state = time.time() + self.exposure_timeout
 
         self.reconfigure_camera = True  # reconfigure on first run
 
@@ -419,6 +429,9 @@ class CaptureWorker(Process):
 
 
             self.detectNight()
+
+            if self.config.get('CAPTURE_PAUSE') or (not self.night and not self.config.get('DAYTIME_CAPTURE')):
+                self.frame_deadline.suspend()
 
 
             with app.app_context():
@@ -573,23 +586,6 @@ class CaptureWorker(Process):
                     continue
 
 
-                # check exposure state every 5 minutes
-                if next_check_exposure_state < loop_start_time:
-                    next_check_exposure_state = time.time() + self.exposure_timeout
-
-                    camera_last_ready_s = int(loop_start_time - camera_ready_time)
-                    if camera_last_ready_s > self.exposure_timeout:
-                        self._miscDb.addNotification(
-                            NotificationCategory.CAMERA,
-                            'last_ready',
-                            'Camera last ready {0:d}s ago. Camera might be hung. Aborting exposure.'.format(camera_last_ready_s),
-                            expire=timedelta(minutes=60),
-                        )
-
-                        self.indiclient.abortCcdExposure()
-                        exposure_aborted = True
-
-
                 # Loop to run for 11 seconds (prime number)
                 loop_end = time.time() + 11
 
@@ -603,15 +599,7 @@ class CaptureWorker(Process):
                     last_camera_ready = camera_ready
 
 
-                    if not exposure_aborted:
-                        camera_ready, exposure_state = self.indiclient.getCcdExposureStatus()
-                    else:
-                        # Aborted exposure, bypass next checks
-                        exposure_aborted = False  # reset
-                        camera_ready = True
-                        exposure_state = 'Aborted'
-                        waiting_for_frame = False
-                        waiting_for_sqm_frame = False
+                    camera_ready, exposure_state = self.indiclient.getCcdExposureStatus()
 
 
                     if not camera_ready:
@@ -818,6 +806,11 @@ class CaptureWorker(Process):
                         else:
                             next_frame_time = frame_start_time + self.config['EXPOSURE_PERIOD_DAY'] + self.add_period_delay
 
+                        self.frame_deadline.schedule_next(
+                            time.monotonic() + max(0.0, next_frame_time - time.time()),
+                            max(0.0, next_frame_time - frame_start_time),
+                        )
+
                         logger.info('Total time since last exposure %0.4f s', total_elapsed)
 
 
@@ -832,7 +825,7 @@ class CaptureWorker(Process):
         # instantiate the client
         self.indiclient = camera_interface(
             self.config,
-            self.image_q,
+            FrameArrivalQueue(self.image_q, self.frame_deadline),
             self.position_av,
             self.exposure_av,
             self.gain_av,
@@ -2285,6 +2278,15 @@ class CaptureWorker(Process):
         # sqm used for an image taking at a specific exposure/gain for a controlled SQM measurement
         logger.info('Taking %0.6fs exposure (gain %0.3f / bin %d)', exposure, gain, binning)
 
+        if self.focus_mode:
+            period = self.config.get('FOCUS_DELAY', 4.0)
+        elif sqm_exposure:
+            period = 0.0
+        elif self.night:
+            period = self.config['EXPOSURE_PERIOD']
+        else:
+            period = self.config['EXPOSURE_PERIOD_DAY']
+        self.frame_deadline.begin_exposure(exposure, period + self.add_period_delay)
         self.indiclient.setCcdExposure(exposure, gain, binning, sync=sync, timeout=timeout, sqm_exposure=sqm_exposure)
 
 
