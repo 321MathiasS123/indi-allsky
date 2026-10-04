@@ -468,6 +468,7 @@ class ImageWorker(Process):
             and (i_ref.asi676mc_repair_result or {}).get('status') == 'repaired'
         )
         highlights = None
+        # Reconstructed highlights can be rendered, but cannot prove raw clipping.
         if (
             highlight_enabled
             and not highlight_repaired
@@ -621,6 +622,8 @@ class ImageWorker(Process):
         self.image_processor.denoise()
 
         if highlights is not None or highlight_repaired:
+            # Rendering uses the stack's own ADU. Capture control above uses the
+            # current frame, so older frames in a stack cannot skew its feedback.
             highlight_lift = self.image_processor.compensate_highlights(adu)
             if highlights is not None:
                 logger.info('Highlight shadow lift applied: %.3f stops', highlight_lift)
@@ -676,6 +679,7 @@ class ImageWorker(Process):
                     'Ignoring excluded ASI676MC frame for exposure control'
                 )
         elif highlights is not None:
+            # Reuse the early decision for telemetry; do not adjust exposure twice.
             adu, adu_average = highlight_adu, highlight_adu_average
         else:
             adu, adu_average = self.exposure_o.compare_exposure(

@@ -5415,6 +5415,8 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['TARGET_ADU_DAY']                       = int(request.json['TARGET_ADU_DAY'])
         self.indi_allsky_config['TARGET_ADU_DEV']                       = int(request.json['TARGET_ADU_DEV'])
         self.indi_allsky_config['TARGET_ADU_DEV_DAY']                   = int(request.json['TARGET_ADU_DEV_DAY'])
+        # Older open config pages omit these keys; preserve the saved feature
+        # settings rather than resetting them when such a page is submitted.
         self.indi_allsky_config.setdefault('HIGHLIGHT_PROTECTION', {}).update({
             key: convert(request.json['HIGHLIGHT_PROTECTION__' + key])
             for key, convert in (

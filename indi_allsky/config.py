@@ -156,6 +156,8 @@ class IndiAllSkyConfigBase(object):
         "TARGET_ADU_DEV"     : 10,
         "TARGET_ADU_DEV_DAY" : 20,
         "HIGHLIGHT_PROTECTION" : {
+            # Patch targets/deviations are mask-area percentage points. THRESHOLD
+            # is percent of pixel full scale; MAX_BOOST is stops. Gamma 0 inherits.
             "ENABLE" : False,
             "FULL_TARGET" : 0.8,
             "FULL_DEV" : 0.2,

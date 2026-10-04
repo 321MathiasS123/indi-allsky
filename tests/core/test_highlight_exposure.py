@@ -6,7 +6,7 @@ import numpy as np
 
 from indi_allsky import constants
 from indi_allsky import exposure as modes
-from indi_allsky.highlight import HighlightMeasurement, exposure_scale, exposure_decision, measure
+from indi_allsky.highlight import HighlightMeasurement, exposure_decision, measure
 
 
 @pytest.mark.parametrize('full,any_channel,adu,direction', [
@@ -18,23 +18,23 @@ from indi_allsky.highlight import HighlightMeasurement, exposure_scale, exposure
     (0, 0, 100, -1), (20, 30, 20, 0), (20, 30, 10, 1),
 ])
 def test_dual_deadband_and_shadow_floor(full, any_channel, adu, direction):
-    scale = exposure_scale(HighlightMeasurement(full, any_channel, adu), 80, 10, {})
+    scale = exposure_decision(HighlightMeasurement(full, any_channel, adu), 80, 10, {})[0]
     assert (scale > 1) - (scale < 1) == direction
     assert 0.8 <= scale <= 1.1
 
 
 def test_no_reduction_past_lift_limit_and_custom_settings():
-    assert exposure_scale(HighlightMeasurement(10, 20, 21), 80, 10, {}) == pytest.approx(20 / 21)
-    assert exposure_scale(HighlightMeasurement(0.8, 2, 80), 80, 10,
-                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1}) == pytest.approx(0.8)
-    assert exposure_scale(HighlightMeasurement(10, 20, 80), 80, 10, {'MAX_BOOST': 0}) == 1
+    assert exposure_decision(HighlightMeasurement(10, 20, 21), 80, 10, {})[0] == pytest.approx(20 / 21)
+    assert exposure_decision(HighlightMeasurement(0.8, 2, 80), 80, 10,
+                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1})[0] == pytest.approx(0.8)
+    assert exposure_decision(HighlightMeasurement(10, 20, 80), 80, 10, {'MAX_BOOST': 0})[0] == 1
 
 
 @pytest.mark.parametrize('adu,expected', [(69, 70 / 69), (69.99, 70 / 69.99),
                                          (70, 1), (80, 1), (90, 1),
                                          (90.01, 90 / 90.01), (91, 90 / 91)])
 def test_brightness_recovery_also_tapers_at_the_adu_band(adu, expected):
-    assert exposure_scale(HighlightMeasurement(0, 0, adu), 80, 10, {}) == pytest.approx(expected)
+    assert exposure_decision(HighlightMeasurement(0, 0, adu), 80, 10, {})[0] == pytest.approx(expected)
 
 
 MODE_NAMES = [name for name in dir(modes) if name.startswith('exposure_')]
@@ -280,7 +280,7 @@ def test_disabled_nonzero_gain_floor_matches_main(name, minimum, expected, missi
 def test_proportional_reduction_tapers_at_either_upper_limit(channel, ratio, expected):
     metrics = HighlightMeasurement(ratio if channel == 'full' else 0,
                                    ratio * 2.4 if channel == 'any' else 0, 80)
-    assert exposure_scale(metrics, 80, 10, {}) == pytest.approx(expected)
+    assert exposure_decision(metrics, 80, 10, {})[0] == pytest.approx(expected)
 
 
 @pytest.mark.parametrize('name', MODE_NAMES)

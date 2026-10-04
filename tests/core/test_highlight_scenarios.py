@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from indi_allsky.highlight import HighlightMeasurement, exposure_scale, measure
+from indi_allsky.highlight import HighlightMeasurement, exposure_decision, measure
 from test_highlight_exposure import MODE_NAMES, controller
 
 
@@ -16,7 +16,7 @@ def test_pre_dark_clipping_reduces_signal_when_calibration_hides_the_plateau(nam
     corrected = measure(raw, mask, 16)._replace(adu=old.adu)
     assert old.full == old.any == 0
     assert corrected.full == corrected.any == 2
-    assert exposure_scale(old, 70, 10, {}) == 1
+    assert exposure_decision(old, 70, 10, {})[0] == 1
     instance = controller(name)
     gain = instance.gain_min if name != 'exposure_basic' else instance.gain_max
     with caplog.at_level('INFO', logger='indi_allsky'):
@@ -105,9 +105,9 @@ def test_small_mean_noise_at_lift_limit_does_not_chase_each_frame():
 def test_shadow_floor_has_a_small_deadband(stops):
     floor = 80 / 2 ** stops
     for adu in (floor * 0.99, floor, floor * 1.01):
-        assert exposure_scale(HighlightMeasurement(5, 10, adu), 80, 10, {'MAX_BOOST': stops}) == 1
-    assert exposure_scale(HighlightMeasurement(5, 10, floor * 0.97), 80, 10, {'MAX_BOOST': stops}) > 1
-    assert exposure_scale(HighlightMeasurement(5, 10, floor * 1.03), 80, 10, {'MAX_BOOST': stops}) < 1
+        assert exposure_decision(HighlightMeasurement(5, 10, adu), 80, 10, {'MAX_BOOST': stops})[0] == 1
+    assert exposure_decision(HighlightMeasurement(5, 10, floor * 0.97), 80, 10, {'MAX_BOOST': stops})[0] > 1
+    assert exposure_decision(HighlightMeasurement(5, 10, floor * 1.03), 80, 10, {'MAX_BOOST': stops})[0] < 1
 
 
 def test_predictive_headroom_uses_largest_region_and_either_channel_limit():
@@ -117,12 +117,12 @@ def test_predictive_headroom_uses_largest_region_and_either_channel_limit():
     metrics = measure(data, mask, 16)
     assert metrics.full == metrics.any == metrics.full_next == 0
     assert metrics.any_next == 4
-    assert exposure_scale(metrics, 80, 10, {}) == 1
+    assert exposure_decision(metrics, 80, 10, {})[0] == 1
     data[20:40, 20:40] = 8000
     data[::5, ::5] = 60000  # same total, but isolated points do not block recovery
     metrics = measure(data, mask, 16)
     assert metrics.full_next == metrics.any_next == 0.01
-    assert exposure_scale(metrics, 80, 10, {}) == 1.1
+    assert exposure_decision(metrics, 80, 10, {})[0] == 1.1
 
 
 @pytest.mark.parametrize('minimum,maximum', [(0.001, 0.05), (30, 30)])

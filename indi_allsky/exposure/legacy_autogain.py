@@ -62,6 +62,8 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
 
     def adjust_exposure_gain(self, current_exposure, current_gain, next_exposure) -> tuple[float, float, float, float]:
         highlight_enabled = self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+        # Preserve direction before clamping: at the exposure ceiling a request
+        # for more signal may still need a gain increase.
         requested_exposure = next_exposure
         if isinstance(self.gain_step, type(None)):
             self.post_init()
@@ -110,6 +112,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
                 else:
                     # increase gain, maintain exposure
                     next_gain = self.auto_gain_step_list[auto_gain_idx + 1]
+                    # Moving exposure at the same time can undo the gain step.
                     next_exposure = current_exposure if highlight_enabled else min(current_exposure, self.auto_gain_exposure_cutoff_high)
                     exposure_delta = 0.0
                     gain_delta = next_gain - current_gain
@@ -171,6 +174,7 @@ class IndiAllSky_Exposure_Legacy_AutoGain(IndiAllSky_Exposure_Base):
         highlight_enabled = self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
         self.auto_gain_exposure_cutoff_high = self._expUtils.EXPOSURE_MAX - 0.5
         if highlight_enabled:
+            # The legacy half-second margin can exceed an entire daytime exposure.
             self.auto_gain_exposure_cutoff_high = max(
                 self.exposure_min,
                 self._expUtils.EXPOSURE_MAX - min(0.5, self._expUtils.EXPOSURE_MAX * 0.1),

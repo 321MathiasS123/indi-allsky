@@ -1,5 +1,6 @@
 """Exercise the real fields and validators without Linux D-Bus services."""
 import ast
+from decimal import Decimal
 import math
 import re
 from pathlib import Path
@@ -58,6 +59,26 @@ def test_highlight_gamma_accepts_inherit_unity_and_override(form_class, field, v
     with app.test_request_context():
         form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + field: value}))
         assert form.validate(), form.errors
+
+
+@pytest.mark.parametrize('values', [{}, {'FULL_TARGET': '0.6', 'FULL_DEV': '0.15',
+                                       'ANY_TARGET': '1.3', 'ANY_DEV': '0.25'}])
+def test_percentage_defaults_and_fine_tuning_fit_rendered_input_steps(form_class, values):
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + k: v for k, v in values.items()}))
+        assert form.validate(), form.errors
+        for key in ('FULL_TARGET', 'FULL_DEV', 'ANY_TARGET', 'ANY_DEV'):
+            field = form['HIGHLIGHT_PROTECTION__' + key]
+            attributes = dict(re.findall(r'(\w+)="([^"]*)"', str(field())))
+            # HTML number-input steps are anchored at min (or the initial value
+            # when there is no min), not necessarily zero. Server validation
+            # alone does not catch a browser's stepMismatch constraint.
+            base = Decimal(attributes.get('min', attributes.get('value', '0')))
+            assert (Decimal(str(field.data)) - base) % Decimal(attributes['step']) == 0
+            # Also permit subsequent edits to a different hundredth of a percent.
+            assert Decimal('0.01') % Decimal(attributes['step']) == 0
 
 
 def test_defaults_off_controls_render_and_use_existing_save_registry(form_class):

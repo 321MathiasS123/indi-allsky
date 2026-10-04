@@ -27,6 +27,7 @@ class IndiAllSky_Exposure_Base(object):
         self._target_adu_found = False
         self._current_adu_target = 0
         self.hist_adu = []
+        # Populated from camera metadata only for discrete ISO switch controls.
         self.gain_values = []
         self.reset_highlights()
 
@@ -165,6 +166,7 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def reset_highlights(self):
+        """Discard correction history after a mode change or unusable capture."""
         self._highlight_reduction = 0.0
         self._highlight_previous_reduction = 0.0
         self._highlight_sample = None
@@ -172,8 +174,10 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def compare_highlights(self, measurement, exposure, gain):
+        """Use this capture's actual settings, never an unapplied queued request."""
         night = self.night_av[constants.NIGHT_NIGHT]
         target = self.config['TARGET_ADU' if night else 'TARGET_ADU_DAY']
+        # Match normal ADU control's short-exposure deviation selection.
         deviation = (self.config.get('TARGET_ADU_DEV_DAY', 20) if exposure < 0.001
                      else self.config.get('TARGET_ADU_DEV', 10))
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
@@ -196,6 +200,8 @@ class IndiAllSky_Exposure_Base(object):
         else:
             self.reset_highlights()
         self.hist_adu = []
+        # Keep existing status/telemetry fields useful without the ADU history
+        # delay. The reason string and requested multiplier are logged once here.
         self._current_adu_target = measurement.adu
         self.target_adu_found = scale == 1.0
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
@@ -219,7 +225,8 @@ class IndiAllSky_Exposure_Base(object):
 
         if highlight:
             # ISO switches cannot accept the continuous gain requested by the
-            # controller. Preserve its signal change with exposure if possible.
+            # controller. ISO is linear in signal (unlike dB gain); compensate
+            # with exposure while retaining the selected mode's limits.
             values = [g for g in self.gain_values if g > 0 and self.gain_min <= g <= self.gain_max]
             if values:
                 signal = next_exposure * next_gain
@@ -232,11 +239,9 @@ class IndiAllSky_Exposure_Base(object):
                     # the hardware limit on smoothness; do not stall between ISOs.
                     current_signal = current_exposure * current_gain
                     direction = signal - current_signal
-                    directional = [g for g in values if
-                                   (min(self.exposure_max, max(self.exposure_min, signal / g)) * g - current_signal) * direction > 0]
-                    next_gain = min(directional or values, key=lambda g: abs(
-                        min(self.exposure_max, max(self.exposure_min, signal / g)) * g - signal))
-                    next_exposure = min(self.exposure_max, max(self.exposure_min, signal / next_gain))
+                    candidates = [(g, min(self.exposure_max, max(self.exposure_min, signal / g))) for g in values]
+                    directional = [(g, e) for g, e in candidates if (e * g - current_signal) * direction > 0]
+                    next_gain, next_exposure = min(directional or candidates, key=lambda pair: abs(pair[1] * pair[0] - signal))
 
             # Shared exposure storage uses whole microseconds. A fractional
             # increase must not truncate back to the same value indefinitely.
@@ -248,6 +253,8 @@ class IndiAllSky_Exposure_Base(object):
                 exposure_us = current_us - 1
             exposure_us = min(math.floor(self.exposure_max * 1000000),
                               max(math.ceil(self.exposure_min * 1000000), exposure_us))
+            # The shared setter truncates; avoid losing a microsecond to binary
+            # floating-point error when it converts seconds back to integers.
             next_exposure = math.nextafter(exposure_us / 1000000, math.inf)
             exposure_delta = next_exposure - current_exposure
             gain_delta = next_gain - current_gain

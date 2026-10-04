@@ -1604,6 +1604,7 @@ class ImageProcessor(object):
 
 
     def measure_highlights(self):
+        """Meter an independent pre-dark view, leaving saved image data untouched."""
         from .highlight import measure
 
         i_ref = self.getLatestImage()
@@ -1621,6 +1622,8 @@ class ImageProcessor(object):
                 data = cv2.cvtColor(data, self.__cfa_bgr_map[bayer_pattern])
         if self._adu_mask_dict[i_ref.binning] is None:
             self._generateAduMask(data, i_ref.binning)
+        # max_bit_depth already honours CCD_BIT_DEPTH or observed output range;
+        # FITS storage alone cannot distinguish native 12-bit from scaled 16-bit.
         bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
         return measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
                        self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
@@ -1639,6 +1642,7 @@ class ImageProcessor(object):
 
 
     def compensate_highlights(self, adu):
+        """Lift the rendered frame/stack and return the applied lift in stops."""
         from .highlight import compensate, shadow_boost
 
         i_ref = self.getLatestImage()
@@ -2663,6 +2667,8 @@ class ImageProcessor(object):
 
         highlight_config = self.config.get('HIGHLIGHT_PROTECTION', {})
         if highlight_config.get('ENABLE', False):
+            # Zero inherits the normal profile. The override follows the feature
+            # toggle, not this frame's clipping, to avoid gamma switching per frame.
             key = 'GAMMA' if self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT] else 'GAMMA_DAY'
             highlight_gamma = float(highlight_config.get(key, 0.0))
             if highlight_gamma > 0.0:

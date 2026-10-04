@@ -672,6 +672,7 @@ class IndiClient(PyIndi.BaseClient):
         ccdinfo = dict()
 
         ctl_CCD_EXPOSURE = self.get_control(self.ccd_device, 'CCD_EXPOSURE', 'number')
+        # Advertising an exposure property does not imply it accepts commands.
         ccdinfo['EXPOSURE_CONTROL'] = ctl_CCD_EXPOSURE.getPermission() != PyIndi.IP_RO
         ccdinfo['CCD_EXPOSURE'] = dict()
         for i in ctl_CCD_EXPOSURE:
@@ -1261,6 +1262,7 @@ class IndiClient(PyIndi.BaseClient):
                     'max'     : max(gain_list),
                     'step'    : None,
                     'format'  : '',
+                    # Pass supported ISOs to the image worker's exposure controller.
                     'values'  : gain_list,
                 }
             except ValueError:
@@ -1382,6 +1384,8 @@ class IndiClient(PyIndi.BaseClient):
         ]:
             logger.info('Mapping gain to ISO for libgphoto device')
 
+            # Resolve unsupported requests for every caller, and record the ISO
+            # actually sent so the next frame is not analysed using a fictitious gain.
             selected_gain = min(self.__canon_gain_to_iso, key=lambda g: abs(g - new_gain))
             if selected_gain != new_gain:
                 logger.warning('Requested ISO %s is unavailable; using ISO %s', new_gain, selected_gain)

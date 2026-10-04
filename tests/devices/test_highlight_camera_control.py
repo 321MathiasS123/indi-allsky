@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky'
 
 @pytest.fixture
 def client_class():
+    # Exercise real driver methods without importing native INDI or starting
+    # database services. Device calls below remain observable test doubles.
     tree = ast.parse((ROOT / 'camera/indi.py').read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiClient')
     cls.bases = []
@@ -106,7 +108,6 @@ def test_unsupported_camera_warns_and_disables_all_highlight_processing_only_at_
         worker.config['HIGHLIGHT_PROTECTION'] = dict(saved['HIGHLIGHT_PROTECTION'])
         exec(guard, namespace)
         assert worker.config['HIGHLIGHT_PROTECTION']['ENABLE'] is (enabled and control)
-    assert worker.config['HIGHLIGHT_PROTECTION']['ENABLE'] is (enabled and control)
     assert worker.config['HIGHLIGHT_PROTECTION']['GAMMA_DAY'] == 1.85
     assert worker.exposure_o.gain_values == [100, 200, 400]
     assert saved['HIGHLIGHT_PROTECTION']['ENABLE'] is enabled
