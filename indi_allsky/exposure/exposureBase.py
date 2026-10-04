@@ -188,6 +188,19 @@ class IndiAllSky_Exposure_Base(object):
             self.reset_highlights()
         self._highlight_mode = mode
         scale, reason = exposure_decision(measurement, target, deviation, settings)
+        if scale > 1.0:
+            pending_exposure = self._expUtils.EXPOSURE_NEXT
+            pending_gain = self._expUtils.GAIN_NEXT
+            if (self.exposure_min <= pending_exposure <= self.exposure_max
+                    and self.gain_min <= pending_gain <= self.gain_max
+                    and (not math.isclose(exposure, pending_exposure, rel_tol=0, abs_tol=0.0000005)
+                         or not math.isclose(gain, pending_gain, rel_tol=0, abs_tol=0.0005))):
+                # A capture already in flight can predate the latest request.
+                # Wait for its result before recovering, rather than undoing
+                # that request or compounding it. Compare at shared-storage
+                # precision; no assumptions about dB, ISO or fixed gain needed.
+                # Reductions remain immediate, and changed limits still apply.
+                scale, reason = 1.0, 'await pending exposure/gain'
         if reason in ('full clipping', 'any clipping', 'full+any clipping'):
             sample = (exposure, gain)
             if sample != self._highlight_sample:

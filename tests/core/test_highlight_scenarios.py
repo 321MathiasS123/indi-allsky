@@ -7,6 +7,45 @@ from test_highlight_exposure import MODE_NAMES, controller
 
 
 @pytest.mark.parametrize('name', MODE_NAMES)
+@pytest.mark.parametrize('delay', [0, 1, 3])
+def test_delayed_darkening_sky_recovers_without_alternating_signal(name, delay):
+    instance = controller(name)
+    if name.endswith('db_1_10'):
+        instance._expUtils.GAIN_MAX_NIGHT = 300
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    if name.endswith('iso'):
+        instance.gain_values = [100, 200, 400, 800]
+        gain = 200
+    initial = (15., gain)
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = initial
+    pending = [initial] * (delay + 1)
+
+    def signal(exposure, gain):
+        # Legacy gain units are camera-specific; on this simulated camera they
+        # behave as 0.1 dB. Other modes expose their actual gain conversion.
+        db = instance.gain2dB(gain) if hasattr(instance, 'gain2dB') else gain / 10
+        return exposure * 10 ** (db / 20)
+
+    reference = signal(*initial)
+    history, adus = [], []
+    for frame in range(160):
+        exposure, gain = pending.pop(0)
+        # Dim through the two-stop floor, then allow recovery to settle.
+        illumination = .97 ** min(frame, 30)
+        adu = 20 * illumination * signal(exposure, gain) / reference
+        instance.compare_highlights(HighlightMeasurement(0, 0, adu), exposure, gain)
+        pending.append((instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT))
+        history.append(signal(exposure, gain))
+        adus.append(adu)
+    assert np.all(np.diff(history) >= -1e-5)
+    assert history[-1] > history[0]
+    # Recovery reaches the ADU band or the actual exposure/gain ceiling.
+    if adus[-1] < 59.9:
+        assert exposure == pytest.approx(instance.exposure_max)
+        assert gain == pytest.approx(instance.gain_max)
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
 def test_pre_dark_clipping_reduces_signal_when_calibration_hides_the_plateau(name, caplog):
     raw = np.full((100, 100), 70 * 256 + 3000, dtype=np.uint16)
     raw[20:30, 20:40] = 65535
@@ -138,6 +177,10 @@ def test_legacy_gain_steps_keep_exposure_valid_and_do_not_reverse_direction(mini
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(low, abs=1e-6)
     assert instance._expUtils.GAIN_NEXT < gain
     high = instance.auto_gain_exposure_cutoff_high
+    # The next independent boundary case represents an applied capture, not
+    # an old frame arriving while the preceding reduction is still pending.
+    instance._expUtils.EXPOSURE_NEXT = high
+    instance._expUtils.GAIN_NEXT = gain
     instance.compare_highlights(HighlightMeasurement(0, 0, 10), high, gain)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(high, abs=1e-6)
     assert instance._expUtils.GAIN_NEXT > gain

@@ -89,7 +89,13 @@ def exposure_decision(measurement, target, deviation, settings):
 
     # Keep shadows within the permitted lift, including after a scene change.
     if adu < floor * 0.98:
-        return min(MAX_EXPOSURE_INCREASE, floor / adu), 'recover shadow floor'
+        recovery_target = floor
+        if under and measurement.full_next <= full_limit and measurement.any_next <= any_limit:
+            # With highlight headroom, recover toward the normal ADU band on
+            # both sides of the floor. A darker frame must not ask for less
+            # recovery merely because it crossed the maximum-lift boundary.
+            recovery_target = max(floor, target - deviation)
+        return min(MAX_EXPOSURE_INCREASE, recovery_target / adu), 'recover shadow floor'
     if full_over or any_over:
         # A small brightness deadband prevents chasing noise at the lift limit.
         if adu <= floor * 1.02:

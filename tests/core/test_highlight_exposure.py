@@ -313,3 +313,68 @@ def test_early_diagnostic_reports_decision_without_inventing_render_lift(caplog)
     assert 'reason: any clipping' in caplog.text
     assert 'shadow lift' not in caplog.text  # reported later from the rendered frame
     assert 'exposure request 0.938x' in caplog.text
+
+
+@pytest.mark.parametrize('target,stops', [(70, 2), (80, 2), (80, 1)])
+def test_unclipped_recovery_is_continuous_across_shadow_floor(target, stops):
+    boundary = target / 2 ** stops * .98
+    scales = [exposure_decision(HighlightMeasurement(0, 0, adu), target, 10,
+                               {'MAX_BOOST': stops})[0]
+              for adu in (boundary - .01, boundary, boundary + .01)]
+    assert scales == pytest.approx([1.1, 1.1, 1.1])
+
+
+@pytest.mark.parametrize('measurement', [
+    HighlightMeasurement(2, 3, 17),  # clipped now
+    HighlightMeasurement(.8, 2, 17),  # within the highlight deadband
+    HighlightMeasurement(0, 0, 17, 2, 3),  # next increase would clip
+])
+def test_recovery_only_aims_at_shadow_floor_without_highlight_headroom(measurement):
+    assert exposure_decision(measurement, 70, 10, {}) == (17.5 / 17, 'recover shadow floor')
+
+
+def test_delayed_sunset_gain_recovery_does_not_undo_newer_increase(caplog):
+    instance = controller('exposure_autogain_exp_prio_db_1_10')
+    instance._expUtils.GAIN_MAX_NIGHT = 300
+    instance._expUtils.EXPOSURE_NEXT = 30
+    instance._expUtils.GAIN_NEXT = 85.912
+    pending = instance._expUtils.GAIN_NEXT
+    with caplog.at_level('INFO', logger='indi_allsky'):
+        instance.compare_highlights(HighlightMeasurement(0, 0, 17.09), 30, 77.633)
+    assert instance._expUtils.GAIN_NEXT == pending
+    assert 'await pending exposure/gain' in caplog.text
+    # Recovery resumes as soon as a frame reflects the requested settings.
+    instance.compare_highlights(HighlightMeasurement(0, 0, 17.09), 30, pending)
+    assert instance._expUtils.GAIN_NEXT > pending
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_stale_recovery_waits_but_clipping_can_replace_a_pending_request(name):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    instance._expUtils.EXPOSURE_NEXT = .9
+    instance._expUtils.GAIN_NEXT = gain
+    instance.compare_highlights(HighlightMeasurement(0, 0, 30), 1, gain)
+    assert instance._expUtils.EXPOSURE_NEXT == .9  # do not undo a pending reduction either
+    instance._expUtils.EXPOSURE_NEXT = 1.1
+    instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+    assert instance._expUtils.EXPOSURE_NEXT < 1  # no wait for urgent reductions
+
+
+def test_stale_discrete_iso_recovery_waits_across_an_exposure_gain_tradeoff():
+    instance = controller('exposure_autogain_exp_prio_iso')
+    instance.gain_values = [100, 200, 400, 800]
+    instance.compare_highlights(HighlightMeasurement(0, 0, 30), 30, 400)
+    pending = instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT
+    assert pending[0] < 30 and pending[1] == 800
+    instance.compare_highlights(HighlightMeasurement(0, 0, 58), 30, 400)
+    assert (instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT) == pending
+
+
+def test_recovery_does_not_keep_a_pending_setting_outside_changed_limits():
+    instance = controller('exposure_basic', night=False)
+    instance._expUtils.EXPOSURE_NEXT = 30
+    instance._expUtils.GAIN_NEXT = 100
+    instance.compare_highlights(HighlightMeasurement(0, 0, 30), 1, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(1.1)
+    assert instance._expUtils.GAIN_NEXT == 0
