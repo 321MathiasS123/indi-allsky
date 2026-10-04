@@ -20,6 +20,8 @@ logger = logging.getLogger('indi_allsky')
 
 class IndiClientTestCameraBase(IndiClient):
 
+    exposure_control = False  # Exposure changes the wait time, not synthetic brightness.
+
     image_bit_depth = 16
 
 

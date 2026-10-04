@@ -207,7 +207,12 @@ class IndiAllSky_Exposure_AutoGain_ExposurePriority_dB_Base(IndiAllSky_Exposure_
 
         if self.dB2gain(next_gain_dB) < self.gain_min:
             # reduce gain, then reduce exposure
-            next_exposure = current_exposure * (10 ** ((self.gain2dB(self.gain_min) + next_gain_dB) / 20))  # next_gain_dB is negative
+            if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False):
+                # Only the gain reduction left over after reaching the floor
+                # belongs in exposure. Keep vanilla's calculation when disabled.
+                next_exposure = current_exposure * (10 ** ((next_gain_dB - self.gain2dB(self.gain_min)) / 20))
+            else:
+                next_exposure = current_exposure * (10 ** ((self.gain2dB(self.gain_min) + next_gain_dB) / 20))  # next_gain_dB is negative
 
             if next_exposure < self.exposure_min:
                 next_exposure = self.exposure_min
