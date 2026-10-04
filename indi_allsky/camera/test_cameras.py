@@ -20,6 +20,8 @@ logger = logging.getLogger('indi_allsky')
 
 class IndiClientTestCameraBase(IndiClient):
 
+    exposure_control = False
+
     image_bit_depth = 16
 
 
