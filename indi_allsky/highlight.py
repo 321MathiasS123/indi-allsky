@@ -24,6 +24,80 @@ class HighlightMeasurement(NamedTuple):
     any_next: float = 0.0
 
 
+class HighlightOutput:
+    """Slow, optional feedback from the last clean rendered image.
+
+    No accumulated correction: a stale render can hold recovery, but cannot
+    request another cut until a capture with the same settings is measured.
+    Raw protection and the shadow floor always retain priority.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.active = False
+        self.recovering = False
+        self.measurement = None
+        self.source = None
+        self.mode = None
+
+    def observe(self, measurement, exposure, gain, mode, settings):
+        if mode != self.mode:
+            self.reset()
+        self.mode = mode
+        self.measurement = measurement
+        self.source = (exposure, gain)
+        if measurement is None:
+            return
+        full = settings.get('OUTPUT_FULL_TARGET', 1.5)
+        full_dev = settings.get('OUTPUT_FULL_DEV', 0.5)
+        any_channel = settings.get('OUTPUT_ANY_TARGET', 2.5)
+        any_dev = settings.get('OUTPUT_ANY_DEV', 0.5)
+        if measurement.full > full + full_dev or measurement.any > any_channel + any_dev:
+            self.active = True
+            self.recovering = True
+        elif measurement.full < full - full_dev and measurement.any < any_channel - any_dev:
+            self.active = False
+
+    def constrain(self, scale, adu, target, deviation, exposure, gain, mode, settings):
+        """Only tighten the raw request; never chase a minimum clipped area."""
+        if not settings.get('OUTPUT_ENABLE', False) or mode != self.mode:
+            self.reset()
+            return scale, None
+        floor = target / 2 ** settings.get('MAX_BOOST', 2.0)
+        if adu < floor * 0.98:
+            return scale, None
+        if not self.active and adu >= target - deviation:
+            self.recovering = False
+        if not self.active and not self.recovering:
+            return scale, None
+        if self.measurement is None:
+            return (1.0, 'await trusted output') if scale > 1.0 else (scale, None)
+        matches = (math.isclose(exposure, self.source[0], rel_tol=0, abs_tol=0.0000005)
+                   and math.isclose(gain, self.source[1], rel_tol=0, abs_tol=0.0005))
+        if self.active:
+            limit = 1.0
+            reason = 'output deadband' if matches else 'await matching output exposure/gain'
+            if matches and adu > floor * 1.02:
+                excess = max(
+                    self.measurement.full / (settings.get('OUTPUT_FULL_TARGET', 1.5) + settings.get('OUTPUT_FULL_DEV', 0.5)) - 1,
+                    self.measurement.any / (settings.get('OUTPUT_ANY_TARGET', 2.5) + settings.get('OUTPUT_ANY_DEV', 0.5)) - 1,
+                    0.0,
+                )
+                limit = max(1 - min(0.02, 0.1 * excess), floor / max(adu, 0.1))
+                if limit < 1:
+                    reason = 'output bright patch'
+            elif adu <= floor * 1.02:
+                reason = 'output shadow floor'
+        else:
+            # Recovery also waits for rendered feedback. A 1% step traverses
+            # the output deadband gently without weakening faster raw cuts.
+            limit = 1.01 if matches else 1.0
+            reason = 'output recovery' if matches else 'await matching output exposure/gain'
+        return (limit, reason) if scale > limit else (scale, None)
+
+
 class HighlightTransition:
     """Retain protection through recovery, with a separate rendering envelope.
 
@@ -46,12 +120,12 @@ class HighlightTransition:
     def phase(self):
         return 'protected' if self.active else ('releasing' if self.lift or self.gamma_mix else 'normal')
 
-    def observe(self, measurement, target, deviation, settings, pending, ceiling, predicted_block):
+    def observe(self, measurement, target, deviation, settings, pending, ceiling, predicted_block, output_needed=False):
         """Decide activity from the calibrated capture, never a rendered stack."""
         self.trusted = True
         full_low = settings.get('FULL_TARGET', 0.8) - settings.get('FULL_DEV', 0.2)
         any_low = settings.get('ANY_TARGET', 2.0) - settings.get('ANY_DEV', 0.4)
-        needed = measurement.full > full_low or measurement.any > any_low or (predicted_block and not ceiling)
+        needed = output_needed or measurement.full > full_low or measurement.any > any_low or (predicted_block and not ceiling)
         headroom = (measurement.full_next is not None and measurement.any_next is not None
                     and measurement.full_next <= full_low and measurement.any_next <= any_low)
         clear = measurement.full <= full_low * 0.9 and measurement.any <= any_low * 0.9
@@ -60,7 +134,7 @@ class HighlightTransition:
                 # Start from the current appearance, including a partial release.
                 self.reference = None
             self.active = True
-            self.reason = 'clipping protection needed'
+            self.reason = 'output protection needed' if output_needed else 'clipping protection needed'
         elif self.active:
             if pending:
                 self.reason = 'await pending exposure/gain'
@@ -124,6 +198,32 @@ class HighlightTransition:
         return 1.0 / ((1 - self.gamma_mix) / normal + self.gamma_mix / protected)
 
 
+def _largest_patch(region, valid, count):
+    _, _, stats, _ = cv2.connectedComponentsWithStats(
+        (region & valid).astype(numpy.uint8), connectivity=8,
+    )
+    # Component zero is background; disconnected reflections do not add up.
+    return float(stats[1:, cv2.CC_STAT_AREA].max()) * 100 / count if len(stats) > 1 else 0.0
+
+
+def measure_rendered(data, mask):
+    """Near-white (all >= 240) and near-clipped (any >= 250) 8-bit patches.
+
+    These describe appearance, not sensor saturation. Meter before overlays
+    and compression; there is no linear exposure look-ahead for rendered data.
+    """
+    if mask is None or mask.shape != data.shape[:2]:
+        return None
+    valid = mask != 0
+    count = numpy.count_nonzero(valid)
+    if not count:
+        return None
+    lowest = data.min(axis=2) if data.ndim == 3 else data
+    highest = data.max(axis=2) if data.ndim == 3 else data
+    return HighlightMeasurement(_largest_patch(lowest >= 240, valid, count),
+                                _largest_patch(highest >= 250, valid, count), 0.0, None, None)
+
+
 def measure(data, mask, bit_depth, threshold=99.0):
     """Largest 8-connected patches, as percentages of the metering mask.
 
@@ -149,11 +249,7 @@ def measure(data, mask, bit_depth, threshold=99.0):
         mono = data
 
     def largest(region):
-        _, _, stats, _ = cv2.connectedComponentsWithStats(
-            (region & valid).astype(numpy.uint8), connectivity=8,
-        )
-        # Component zero is background; disconnected reflections do not add up.
-        return float(stats[1:, cv2.CC_STAT_AREA].max()) * 100 / count if len(stats) > 1 else 0.0
+        return _largest_patch(region, valid, count)
 
     adu = cv2.mean(mono, mask=valid.astype(numpy.uint8))[0] / (1 << (bit_depth - 8))
     cutoff = maximum * threshold / 100.0

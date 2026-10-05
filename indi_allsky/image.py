@@ -474,6 +474,7 @@ class ImageWorker(Process):
         self.exposure_o.highlight_transition.trusted = False
         if not highlight_enabled:
             self.exposure_o.highlight_transition.reset()
+            self.exposure_o.highlight_output.reset()
         highlight_repaired = (
             highlight_enabled
             and (i_ref.asi676mc_repair_result or {}).get('status') == 'repaired'
@@ -799,6 +800,23 @@ class ImageWorker(Process):
 
 
         self.image_processor.apply_image_circle_mask(i_ref.binning)
+
+
+        if highlights is not None and self.config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False):
+            # Record output feedback for the next early control pass. Never
+            # publish a second, late exposure command for this same capture.
+            output = self.image_processor.measure_output_highlights()
+            trusted_output = self.image_processor.highlight_output_trusted()
+            if output is None:
+                # A missing ROI must not leave a stale output constraint latched.
+                self.exposure_o.highlight_output.reset()
+            else:
+                self.exposure_o.highlight_output.observe(
+                    output if trusted_output else None, exposure, gain, tuple(self.night_av),
+                    self.config['HIGHLIGHT_PROTECTION'])
+                logger.info('Highlight output: frame %s; exposure %.6fs @ gain %.3f; near-white (all >=240) %.3f%%; near-clip (any >=250) %.3f%%; feedback %s',
+                            i_ref.exp_date.isoformat(), exposure, gain, output.full, output.any,
+                            'usable' if trusted_output else 'held: mixed/repaired stack')
 
 
         self.image_processor.realtimeKeogramUpdate()

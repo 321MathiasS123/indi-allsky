@@ -7,7 +7,7 @@ from ..twilight import runtime_weight
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
 from ..gain import gain_limits, quantize_gain
-from ..highlight import MAX_EXPOSURE_INCREASE, HighlightTransition, exposure_decision
+from ..highlight import MAX_EXPOSURE_INCREASE, HighlightOutput, HighlightTransition, exposure_decision
 
 
 logger = logging.getLogger('indi_allsky')
@@ -32,6 +32,7 @@ class IndiAllSky_Exposure_Base(object):
         self.gain_values = []
         self.gain_quantum = 0.0
         self.highlight_transition = HighlightTransition()
+        self.highlight_output = HighlightOutput()
         self.reset_highlights()
 
 
@@ -51,6 +52,7 @@ class IndiAllSky_Exposure_Base(object):
 
     def compare_exposure(self, adu, exposure, gain):
         self.reset_highlights()
+        self.highlight_output.reset()
         if adu <= 0.0:
             # ensure we do not divide by zero
             logger.warning('Zero average, setting a default of 0.1')
@@ -223,6 +225,10 @@ class IndiAllSky_Exposure_Base(object):
             adu_scale = max(0.9, (target + deviation) / measurement.adu)
             if adu_scale < scale:
                 scale, reason = adu_scale, reason + ' + ADU above band'
+        scale, output_reason = self.highlight_output.constrain(
+            scale, measurement.adu, target, deviation, exposure, gain, mode, settings)
+        if output_reason:
+            reason += ' + ' + output_reason
         self.hist_adu = []
         # Keep existing status/telemetry fields useful without the ADU history
         # delay. The reason string and requested multiplier are logged once here.
@@ -242,7 +248,8 @@ class IndiAllSky_Exposure_Base(object):
         logger.info('Highlight preview result (not sent to camera): %.6fs @ gain %.3f', next_exposure, next_gain)
         ceiling = next_exposure <= exposure + 0.0000005 and next_gain <= gain + 0.0005
         self.highlight_transition.observe(measurement, target, deviation, settings,
-                                          self._highlight_request_pending(exposure, gain), ceiling, predicted_block)
+                                          self._highlight_request_pending(exposure, gain), ceiling, predicted_block,
+                                          output_needed=self.highlight_output.active)
         logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
                     self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
         return measurement.adu, measurement.adu

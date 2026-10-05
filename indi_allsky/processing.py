@@ -1,4 +1,5 @@
 import io
+import copy
 import re
 from pathlib import Path
 from datetime import datetime
@@ -1640,6 +1641,58 @@ class ImageProcessor(object):
         bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
         adu = cv2.mean(data, mask=self._adu_mask_dict[i_ref.binning])[0] / (1 << (bit_depth - 8))
         return measurement._replace(adu=adu)
+
+
+    def measure_output_highlights(self):
+        """Meter enhanced pixels in the transformed ADU mask, before overlays.
+
+        Reuse the actual geometry methods on a shallow processor copy; rotating
+        a mask must never rotate the real image twice or modify saved data.
+        """
+        from .highlight import measure_rendered
+
+        i_ref = self.getLatestImage()
+        mask = self._adu_mask_dict[i_ref.binning]
+        if mask is None:
+            return None
+        geometry = ('IMAGE_ROTATE', 'IMAGE_ROTATE_ANGLE', 'IMAGE_ROTATE_KEEP_SIZE',
+                    'IMAGE_FLIP_V', 'IMAGE_FLIP_H', 'IMAGE_CROP_IMAGE_CIRCLE',
+                    'LENS_IMAGE_CIRCLE', 'LENS_OFFSET_X', 'LENS_OFFSET_Y', 'DETECT_DRAW')
+        key = (id(mask), i_ref.binning, tuple(self.config.get(k) for k in geometry),
+               tuple(self.config.get('IMAGE_CROP_ROI') or ()))
+        if getattr(self, '_highlight_output_mask_key', None) != key:
+            view = copy.copy(self)
+            view.image = numpy.where(mask != 0, 255, 0).astype(numpy.uint8)
+            if self.config.get('DETECT_DRAW'):
+                # The debug detection label is drawn earlier than enhancement.
+                # Exclude its footprint rather than metering artificial text.
+                marks = self._draw.main(numpy.zeros_like(i_ref.opencv_data, dtype=numpy.uint8), i_ref.binning)
+                view.image[numpy.any(marks != 0, axis=2) if marks.ndim == 3 else marks != 0] = 0
+            view.rotate_90()
+            view.rotate_angle()
+            view.flip_v()
+            view.flip_h()
+            view.crop_image()
+            # Exclude interpolated mask edges rather than expanding the ROI.
+            self._highlight_output_mask = (view.image == 255).astype(numpy.uint8)
+            self._highlight_output_mask_key = key
+        result = measure_rendered(self.image, self._highlight_output_mask)
+        if result is None:
+            logger.warning('Highlight output unavailable: empty or mismatched metering mask')
+        return result
+
+
+    def highlight_output_trusted(self):
+        """A stack mixing capture settings cannot describe one exposure's look."""
+        i_ref = self.getLatestImage()
+        return all(
+            (ref.asi676mc_repair_result or {}).get('status') != 'repaired'
+            and math.isclose(ref.exposure, i_ref.exposure, rel_tol=0, abs_tol=0.0000005)
+            and math.isclose(ref.gain, i_ref.gain, rel_tol=0, abs_tol=0.0005)
+            and ref.binning == i_ref.binning
+            for ref in self.image_list if ref is not None
+            and not asi676mc.excluded_from_downstream_measurements(ref.asi676mc_repair_result)
+        )
 
 
     def compensate_highlights(self, adu):

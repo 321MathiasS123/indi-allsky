@@ -167,6 +167,12 @@ class IndiAllSkyConfigBase(object):
             "MAX_BOOST" : 2.0,
             "GAMMA" : 0.0,
             "GAMMA_DAY" : 0.0,
+            # Optional rendered-output guard; old installations keep raw-only control.
+            "OUTPUT_ENABLE" : False,
+            "OUTPUT_FULL_TARGET" : 1.5,
+            "OUTPUT_FULL_DEV" : 0.5,
+            "OUTPUT_ANY_TARGET" : 2.5,
+            "OUTPUT_ANY_DEV" : 0.5,
         },
         "ADU_ROI" : [],
         "ADU_FOV_DIV" : 4,

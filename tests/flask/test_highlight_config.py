@@ -41,6 +41,8 @@ def form_class():
     ('MAX_BOOST', ''), ('FULL_TARGET', '0'),
     ('GAMMA', '-0.1'), ('GAMMA_DAY', '-1'), ('GAMMA', 'nan'),
     ('GAMMA_DAY', 'inf'), ('GAMMA_DAY', ''),
+    ('OUTPUT_FULL_TARGET', 'nan'), ('OUTPUT_ANY_TARGET', '0'),
+    ('OUTPUT_FULL_DEV', '1.5'), ('OUTPUT_ANY_DEV', '-1'), ('OUTPUT_ANY_DEV', 'inf'),
 ])
 def test_invalid_settings_rejected(form_class, field, value):
     app = Flask(__name__)
@@ -69,7 +71,8 @@ def test_percentage_defaults_and_fine_tuning_fit_rendered_input_steps(form_class
     with app.test_request_context():
         form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + k: v for k, v in values.items()}))
         assert form.validate(), form.errors
-        for key in ('FULL_TARGET', 'FULL_DEV', 'ANY_TARGET', 'ANY_DEV'):
+        for key in ('FULL_TARGET', 'FULL_DEV', 'ANY_TARGET', 'ANY_DEV',
+                    'OUTPUT_FULL_TARGET', 'OUTPUT_FULL_DEV', 'OUTPUT_ANY_TARGET', 'OUTPUT_ANY_DEV'):
             field = form['HIGHLIGHT_PROTECTION__' + key]
             attributes = dict(re.findall(r'(\w+)="([^"]*)"', str(field())))
             # HTML number-input steps are anchored at min (or the initial value
@@ -88,6 +91,7 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
         form = form_class()
         assert form.validate(), form.errors
         assert not form.HIGHLIGHT_PROTECTION__ENABLE.data
+        assert not form.HIGHLIGHT_PROTECTION__OUTPUT_ENABLE.data
         assert form.HIGHLIGHT_PROTECTION__GAMMA.data == 0
         assert form.HIGHLIGHT_PROTECTION__GAMMA_DAY.data == 0
         template = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
@@ -103,7 +107,7 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
             assert f'id="{field.id}-error"' in html
             assert registry.count("'" + field.id + "'") == 1
             # Moving a settings box must not leave a second copy of its controls.
-            assert len(re.findall(r'form_config\.' + field.id + r'\b', template)) == (2 if field.id.endswith('__ENABLE') else 1)
+            assert len(re.findall(r'form_config\.' + field.id + r'\b', template)) == (2 if field.id.endswith('ENABLE') else 1)
 
 
 def test_settings_round_trip_through_real_config_view_assignments(form_class):
@@ -124,6 +128,7 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
     view = SimpleNamespace(indi_allsky_config=config)
     payload = eval(load, {'self': view})
     payload.update(HIGHLIGHT_PROTECTION__ENABLE=True, HIGHLIGHT_PROTECTION__FULL_TARGET=0.9,
+                   HIGHLIGHT_PROTECTION__OUTPUT_ENABLE=True, HIGHLIGHT_PROTECTION__OUTPUT_ANY_DEV=0.25,
                    HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85)
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-highlight-fields', 'exec'),
          {'self': view, 'request': SimpleNamespace(json=payload)})

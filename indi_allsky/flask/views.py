@@ -4463,6 +4463,11 @@ class ConfigView(FormView):
             'HIGHLIGHT_PROTECTION__MAX_BOOST' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0),
             'HIGHLIGHT_PROTECTION__GAMMA'     : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA', 0.0),
             'HIGHLIGHT_PROTECTION__GAMMA_DAY' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA_DAY', 0.0),
+            'HIGHLIGHT_PROTECTION__OUTPUT_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False),
+            'HIGHLIGHT_PROTECTION__OUTPUT_FULL_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_FULL_TARGET', 1.5),
+            'HIGHLIGHT_PROTECTION__OUTPUT_FULL_DEV' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_FULL_DEV', 0.5),
+            'HIGHLIGHT_PROTECTION__OUTPUT_ANY_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ANY_TARGET', 2.5),
+            'HIGHLIGHT_PROTECTION__OUTPUT_ANY_DEV' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ANY_DEV', 0.5),
             'ADU_FOV_DIV'                    : str(self.indi_allsky_config.get('ADU_FOV_DIV', 4)),  # string in form, int in config
             'SQM_FOV_DIV'                    : str(self.indi_allsky_config.get('SQM_FOV_DIV', 4)),  # string in form, int in config
             'DETECT_STARS'                   : self.indi_allsky_config.get('DETECT_STARS', True),
@@ -5568,6 +5573,8 @@ class AjaxConfigView(BaseView):
                 ('ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
                 ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),
                 ('GAMMA', float), ('GAMMA_DAY', float),
+                ('OUTPUT_ENABLE', bool), ('OUTPUT_FULL_TARGET', float), ('OUTPUT_FULL_DEV', float),
+                ('OUTPUT_ANY_TARGET', float), ('OUTPUT_ANY_DEV', float),
             )
             if 'HIGHLIGHT_PROTECTION__' + key in request.json
         })

@@ -1,3 +1,4 @@
+import copy
 from copy import deepcopy
 from datetime import datetime
 import ast
@@ -13,7 +14,7 @@ import numpy as np
 import pytest
 
 from indi_allsky import asi676mc, constants
-from indi_allsky.highlight import HighlightMeasurement, HighlightTransition, compensate, measure
+from indi_allsky.highlight import HighlightMeasurement, HighlightOutput, HighlightTransition, compensate, measure, measure_rendered
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch_x2
 from indi_allsky.stretch.mode3_adaptive_mtf import IndiAllSky_Mode3_Adaptive_MTF_Stretch
@@ -151,7 +152,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     config = {'HIGHLIGHT_PROTECTION': {'ENABLE': enabled}, 'IMAGE_SAVE_FITS': fits_mode != 'off',
               'IMAGE_SAVE_FITS_PRE_DARK': fits_mode == 'pre_dark'}
     original_config = deepcopy(config)
-    controller = SimpleNamespace(hist_adu=[21, 23], highlight_transition=HighlightTransition(),
+    controller = SimpleNamespace(hist_adu=[21, 23], highlight_transition=HighlightTransition(), highlight_output=HighlightOutput(),
                                  compare_highlights=Mock(side_effect=lambda *args: events.append('highlight_control') or (20, 20)),
                                  compare_exposure=Mock(side_effect=lambda *args: events.append('ordinary_control') or (60, 60)),
                                  reset_highlights=Mock())
@@ -222,12 +223,14 @@ def highlight_processor():
     cls.body = [n for n in cls.body if
                 (isinstance(n, ast.FunctionDef) and n.name in (
                     'measure_highlights', 'calibrate_highlights', 'compensate_highlights', '_generateAduMask',
+                    'measure_output_highlights', 'highlight_output_trusted',
+                    'rotate_90', '_rotate_90', 'rotate_angle', '_rotate_angle', 'flip_v', 'flip_h', '_flip', 'crop_image', '_crop_image',
                     'correct_asi676mc_frame', '_set_asi676mc_repair_result', '_debayer',
                     'apply_gamma_correction', '_apply_gamma_correction'))
                 or (isinstance(n, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id in ('__cfa_bgr_map', '__cfa_gray_map') for t in n.targets))]
     namespace = dict(__package__='indi_allsky', constants=constants, numpy=np, cv2=cv2,
-                     logger=logging.getLogger(__name__), math=math, asi676mc=asi676mc)
+                     logger=logging.getLogger(__name__), math=math, asi676mc=asi676mc, copy=copy)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), 'processing-highlight-methods', 'exec'), namespace)
     processor = namespace['ImageProcessor']()
     processor.max_bit_depth = 16
@@ -235,6 +238,102 @@ def highlight_processor():
     processor.config = {'TARGET_ADU_DAY': 80, 'HIGHLIGHT_PROTECTION': {'MAX_BOOST': 2}}
     processor.highlight_transition = HighlightTransition()
     return processor
+
+
+@pytest.mark.parametrize('binning', [1, 2])
+@pytest.mark.parametrize('geometry', [
+    {}, {'IMAGE_ROTATE': 'ROTATE_90_CLOCKWISE'},
+    {'IMAGE_FLIP_H': True, 'IMAGE_FLIP_V': True},
+    {'IMAGE_ROTATE_ANGLE': -3, 'IMAGE_ROTATE_KEEP_SIZE': True},
+    {'IMAGE_ROTATE_ANGLE': 30, 'IMAGE_ROTATE_KEEP_SIZE': False},
+    {'IMAGE_CROP_ROI': [4, 6, 50, 52]},
+    {'IMAGE_CROP_IMAGE_CIRCLE': True, 'LENS_IMAGE_CIRCLE': 40, 'LENS_OFFSET_X': 2, 'LENS_OFFSET_Y': -2},
+])
+def test_output_mask_follows_geometry_without_changing_image_or_source_mask(highlight_processor, geometry, binning):
+    p = highlight_processor
+    p.config.update(geometry)
+    ref = SimpleNamespace(binning=binning)
+    p.getLatestImage = lambda: ref
+    mask = np.zeros((60, 80), np.uint8)
+    mask[12:40, 10:36] = 255
+    original = mask.copy()
+    p._adu_mask_dict = {binning: mask}
+    p.image = np.repeat(mask[:, :, None], 3, axis=2)
+    p.rotate_90()
+    p.rotate_angle()
+    p.flip_v()
+    p.flip_h()
+    p.crop_image()
+    rendered = p.image.copy()
+    identity = p.image
+    output = p.measure_output_highlights()
+    assert output.full == output.any == 100
+    assert p.image is identity
+    np.testing.assert_array_equal(p.image, rendered)
+    np.testing.assert_array_equal(mask, original)
+    cached = p._highlight_output_mask
+    assert p.measure_output_highlights() == output
+    assert p._highlight_output_mask is cached
+    p._adu_mask_dict[binning] = np.ones_like(mask) * 255
+    assert p.measure_output_highlights().full < 100  # mask replacement invalidates cache
+
+
+@pytest.mark.parametrize('mono', [False, True])
+def test_output_meter_excludes_detection_text_and_unusable_masks(highlight_processor, mono):
+    p = highlight_processor
+    p.config['DETECT_DRAW'] = True
+    p.getLatestImage = lambda: SimpleNamespace(binning=1, opencv_data=np.zeros((40, 40) if mono else (40, 40, 3), np.uint8))
+    mask = np.ones((40, 40), np.uint8) * 255
+    p._adu_mask_dict = {1: mask}
+
+    def draw(data, binning):
+        data[:20] = 200
+        return data
+
+    p._draw = SimpleNamespace(main=draw)
+    p.image = np.zeros((40, 40, 3), np.uint8)
+    p.image[:20] = 255  # rendered annotation became white through enhancement
+    assert p.measure_output_highlights().full == 0
+    p.image = np.zeros((20, 20, 3), np.uint8)
+    assert p.measure_output_highlights() is None
+    p._adu_mask_dict[1] = None
+    assert p.measure_output_highlights() is None
+
+
+@pytest.mark.parametrize('change,trusted', [({}, True), ({'exposure': .9}, False),
+    ({'gain': 1}, False), ({'binning': 2}, False),
+    ({'asi676mc_repair_result': {'status': 'repaired'}}, False),
+    ({'asi676mc_repair_result': {'status': 'excluded'}, 'exposure': .9}, True)])
+def test_output_feedback_waits_for_matching_trusted_stack(highlight_processor, change, trusted):
+    p = highlight_processor
+    ref = SimpleNamespace(exposure=1., gain=0, binning=1, asi676mc_repair_result=None)
+    old = SimpleNamespace(**dict(vars(ref), **change))
+    p.getLatestImage = lambda: ref
+    p.image_list = [ref, old, None]
+    assert p.highlight_output_trusted() is trusted
+
+
+@pytest.mark.parametrize('valid_raw', [False, True])
+@pytest.mark.parametrize('output_enabled', [False, True])
+@pytest.mark.parametrize('trusted', [False, True])
+@pytest.mark.parametrize('valid_output', [False, True])
+def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_enabled, trusted, valid_output):
+    source = (Path(__file__).resolve().parents[2] / 'indi_allsky/image.py').read_text(encoding='utf-8')
+    section = textwrap.dedent(source[source.index('        if highlights is not None and self.config.get'):
+                                     source.index('        self.image_processor.realtimeKeogramUpdate()')])
+    assert source.index('self.image_processor.colormap()') < source.index(section.splitlines()[0].strip())
+    assert source.index(section.splitlines()[0].strip()) < source.index('self.image_processor.apply_logo_overlay(')
+    state = HighlightOutput()
+    controller = SimpleNamespace(highlight_output=state)  # no command methods available
+    result = HighlightMeasurement(2.5, 4, 0)
+    processor = SimpleNamespace(measure_output_highlights=Mock(return_value=result if valid_output else None),
+                                highlight_output_trusted=Mock(return_value=trusted))
+    worker = SimpleNamespace(config={'HIGHLIGHT_PROTECTION': {'OUTPUT_ENABLE': output_enabled}},
+                             exposure_o=controller, image_processor=processor, night_av=[True, False])
+    exec(section, dict(self=worker, highlights=result if valid_raw else None, exposure=1., gain=0,
+                       i_ref=SimpleNamespace(exp_date=datetime(2026, 10, 5)), logger=logging.getLogger(__name__)))
+    assert processor.measure_output_highlights.call_count == int(valid_raw and output_enabled)
+    assert state.active is (valid_raw and output_enabled and trusted and valid_output)
 
 
 @pytest.mark.parametrize('shared_color', [False, True, None])
