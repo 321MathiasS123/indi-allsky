@@ -216,6 +216,13 @@ class IndiAllSky_Exposure_Base(object):
             scale = 1.0 - reduction
         else:
             self.reset_highlights()
+        # Crossing a clipping limit must not weaken an ADU correction. Apply
+        # this after clipping's smoothing so the ordinary brightness ceiling
+        # still wins when it calls for the stronger (bounded) reduction.
+        if measurement.adu > target + deviation:
+            adu_scale = max(0.9, (target + deviation) / measurement.adu)
+            if adu_scale < scale:
+                scale, reason = adu_scale, reason + ' + ADU above band'
         self.hist_adu = []
         # Keep existing status/telemetry fields useful without the ADU history
         # delay. The reason string and requested multiplier are logged once here.
@@ -230,7 +237,9 @@ class IndiAllSky_Exposure_Base(object):
         # Dry-run the same mode policy, ISO selection and storage rounding used
         # by real requests. Copy local policy state so a probe cannot initialize
         # the legacy gain ladder earlier than a real adjustment would.
+        logger.info('Highlight preview only (not sent to camera): testing +10% exposure headroom')
         next_exposure, next_gain, _, _ = copy.copy(self)._calculate_exposure(exposure, gain, exposure * MAX_EXPOSURE_INCREASE, highlight=True)
+        logger.info('Highlight preview result (not sent to camera): %.6fs @ gain %.3f', next_exposure, next_gain)
         ceiling = next_exposure <= exposure + 0.0000005 and next_gain <= gain + 0.0005
         self.highlight_transition.observe(measurement, target, deviation, settings,
                                           self._highlight_request_pending(exposure, gain), ceiling, predicted_block)
@@ -319,7 +328,25 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
+        reducing = next_exposure < current_exposure
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
+
+        if highlight and reducing and self._highlight_request_pending(current_exposure, current_gain):
+            pending_exposure = self._expUtils.EXPOSURE_NEXT
+            pending_gain = self.effective_gain(self._expUtils.GAIN_NEXT)
+            # An older frame's "reduction" can still raise a newer request.
+            # Compare achieved signal using the selected mode's gain model;
+            # discrete ISO may trade lower gain for a longer exposure. Fixed
+            # and legacy modes do not exchange exposure for gain on this path.
+            if hasattr(self, 'gain2dB'):
+                gain_change = self.gain2dB(next_gain) - self.gain2dB(pending_gain)
+                weaker = math.log(next_exposure / pending_exposure) + gain_change * math.log(10) / 20 > 1e-9
+            else:
+                weaker = next_exposure > pending_exposure + 0.0000005 or next_gain > pending_gain + 0.0005
+            if weaker:
+                logger.info('Highlight reduction held: keeping stronger pending %.6fs @ gain %.3f; source %.6fs @ gain %.3f',
+                            pending_exposure, pending_gain, current_exposure, current_gain)
+                return
 
         # Binning
         if self.night_av[constants.NIGHT_NIGHT]:

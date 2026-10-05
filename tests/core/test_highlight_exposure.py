@@ -438,3 +438,98 @@ def test_ceiling_probe_does_not_initialize_the_live_legacy_gain_policy():
     instance.compare_highlights(HighlightMeasurement(.8, 2, 70), 1, 0)
     assert instance._gain_step is None and instance.auto_gain_step_list is None
     assert instance._expUtils.EXPOSURE_NEXT == instance._expUtils.GAIN_NEXT == 0
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_ceiling_probe_logs_are_explicitly_bracketed_as_not_sent(name, caplog):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    with caplog.at_level('INFO', logger='indi_allsky'):
+        instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+    messages = [r.getMessage() for r in caplog.records]
+    start = next(i for i, m in enumerate(messages) if m.startswith('Highlight preview only (not sent to camera)'))
+    end = next(i for i, m in enumerate(messages) if m.startswith('Highlight preview result (not sent to camera)'))
+    assert start < end
+    assert all(start < i < end for i, m in enumerate(messages) if 'Auto-Gain increasing' in m)
+    assert not any('New calculated exposure' in m for m in messages[start:end + 1])
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_stale_weaker_reduction_keeps_pending_settings_and_deltas(name, caplog):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .85, gain
+    instance._expUtils.EXPOSURE_DELTA = -.15
+    before = list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)
+    with caplog.at_level('INFO', logger='indi_allsky'):
+        instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+    assert (list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)) == before
+    assert 'keeping stronger pending' in caplog.text
+    # Once the requested settings appear in a capture, adjustment resumes.
+    instance.compare_highlights(HighlightMeasurement(3, 8, 70), .85, gain)
+    assert instance._expUtils.EXPOSURE_NEXT < .85
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_stale_stronger_reduction_can_replace_pending_settings(name):
+    instance = controller(name)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .99, gain
+    instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(.9)
+
+
+@pytest.mark.parametrize('current,pending', [(194, 192), (160, 157)])
+def test_integer_gain_reduction_cannot_recreate_sunrise_reversals(current, pending):
+    instance = controller('exposure_autogain_exp_prio_db_1_10')
+    instance.gain_quantum = 1
+    instance._expUtils.GAIN_MAX_NIGHT = 300
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = 30, pending
+    # A small reduction of the stale capture rounds to pending + 1 or + 2.
+    instance._set_exposure(30, current, 29.7, highlight=True)
+    assert instance._expUtils.GAIN_NEXT == pending
+    assert instance._expUtils.EXPOSURE_NEXT == 30
+
+
+@pytest.mark.parametrize('pending,requested_exposure,held', [((30, 200), 18, True), ((17, 400), 12, False)])
+def test_pending_iso_reductions_compare_signal_across_gain_exposure_tradeoffs(pending, requested_exposure, held):
+    instance = controller('exposure_autogain_exp_prio_iso')
+    instance.gain_values = [100, 200, 400, 800]
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = pending
+    instance._set_exposure(20, 400, requested_exposure, highlight=True)
+    result = instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT
+    if held:
+        assert result == pending
+    else:
+        assert result[0] > pending[0] and result[1] < pending[1]
+        assert result[0] * result[1] < pending[0] * pending[1]
+
+
+def test_pending_reduction_outside_new_mode_limits_is_not_retained():
+    instance = controller('exposure_basic', night=False)
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .85, 100
+    instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, 0)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(.9)
+    assert instance._expUtils.GAIN_NEXT == 0
+
+
+@pytest.mark.parametrize('clipping', [HighlightMeasurement(1.001, 0, 100), HighlightMeasurement(0, 2.401, 100)])
+def test_crossing_clipping_band_never_weakens_bounded_adu_reduction(clipping):
+    instance = controller('exposure_basic', night=False)
+    instance._expUtils.EXPOSURE_NEXT = 1
+    instance.compare_highlights(clipping, 1, 0)
+    # Clipping alone, with temporal damping, would reduce by less than 0.1%.
+    # The ordinary excessive-ADU reduction still calls for the full 10%.
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(.9)
+
+
+def test_observed_sunrise_clipping_entry_retains_the_adu_ceiling():
+    instance = controller('exposure_autogain_exp_prio_db_1_10')
+    instance.config['TARGET_ADU'] = 70.48
+    instance.config['HIGHLIGHT_PROTECTION'].update(FULL_TARGET=.6, FULL_DEV=.15, ANY_TARGET=1.3, ANY_DEV=.25)
+    instance.gain_quantum = 1
+    instance._expUtils.GAIN_MAX_NIGHT = 300
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = 30, 157
+    instance.compare_highlights(HighlightMeasurement(.778, 1.248, 87.11), 30, 160)
+    assert instance._expUtils.GAIN_NEXT == 153  # was 159, undoing the pending 157
+    assert instance._expUtils.EXPOSURE_NEXT == 30

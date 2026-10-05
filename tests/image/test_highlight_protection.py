@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime
 import ast
 import logging
 import math
@@ -124,7 +125,8 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     metered = enabled and not focus and not excluded and not repaired
     active = metered and meter_valid
     events = []
-    reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0)
+    reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0,
+                                exp_date=datetime(2026, 10, 5, 7, 0, 14))
 
     def repair(ref):
         events.append('purple_check')
@@ -198,6 +200,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     else:
         assert processor.highlight_transition.__dict__ == HighlightTransition().__dict__
     if active:
+        assert 'Highlight control source: frame 2026-10-05T07:00:14; exposure 0.010000s @ gain 0.000' in caplog.text
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
         assert controller.compare_highlights.call_args.kwargs == {}
         assert namespace['adu'] == namespace['adu_average'] == 20

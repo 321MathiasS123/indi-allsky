@@ -508,6 +508,8 @@ class ImageWorker(Process):
             # Publish capture settings as soon as calibrated brightness is
             # available; stacking and rendering must not delay this request.
             highlights = self.image_processor.calibrate_highlights(highlights)
+            logger.info('Highlight control source: frame %s; exposure %.6fs @ gain %.3f',
+                        i_ref.exp_date.isoformat(), exposure, gain)
             highlight_adu, highlight_adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
 
 

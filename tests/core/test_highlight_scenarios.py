@@ -7,6 +7,42 @@ from test_highlight_exposure import MODE_NAMES, controller
 
 
 @pytest.mark.parametrize('name', MODE_NAMES)
+@pytest.mark.parametrize('delay', [0, 1, 3])
+def test_brightening_dawn_cannot_turn_stale_reductions_into_signal_increases(name, delay):
+    instance = controller(name)
+    if name.endswith('db_1_10'):
+        instance.gain_quantum = 1
+        instance._expUtils.GAIN_MAX_NIGHT = 300
+    if name.endswith('iso'):
+        instance.gain_values = [100, 200, 400, 800]
+    initial = (30., instance.gain_max)
+    pending = [initial] * (delay + 1)
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = initial
+
+    def signal(exposure, gain):
+        # Legacy gain has no declared units; this test camera uses 0.1 dB.
+        db = instance.gain2dB(gain) if hasattr(instance, 'gain2dB') else gain / 10
+        return exposure * 10 ** (db / 20)
+
+    reference = signal(*initial)
+    history = []
+    for frame in range(120):
+        exposure, gain = pending.pop(0)
+        adu = 80 * 1.04 ** frame * signal(exposure, gain) / reference
+        # Cross the clipping boundary after ADU already requires a reduction,
+        # matching the ordering in the observed sunrise reversal.
+        full = max(0, (adu - 82) * .17)
+        instance.compare_highlights(HighlightMeasurement(full, full * 2, adu), exposure, gain)
+        requested = instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT
+        pending.append(requested)
+        history.append(signal(*requested))
+        assert instance.exposure_min <= requested[0] <= instance.exposure_max
+        assert instance.gain_min <= requested[1] <= instance.gain_max
+    assert np.all(np.diff(history) <= 1e-5)
+    assert history[-1] < history[0]
+
+
+@pytest.mark.parametrize('name', MODE_NAMES)
 @pytest.mark.parametrize('delay', [0, 1])
 def test_bright_cloud_then_clear_sky_retains_protection_through_recovery_and_releases(name, delay):
     instance = controller(name)
