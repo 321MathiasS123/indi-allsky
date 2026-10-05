@@ -199,7 +199,9 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
         assert processor.highlight_transition.active
         assert processor.highlight_transition.lift == .5
     else:
-        assert processor.highlight_transition.__dict__ == HighlightTransition().__dict__
+        disabled = HighlightTransition()
+        disabled.reset()
+        assert processor.highlight_transition.__dict__ == disabled.__dict__
     if active:
         assert 'Highlight control source: frame 2026-10-05T07:00:14; exposure 0.010000s @ gain 0.000' in caplog.text
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
@@ -409,6 +411,7 @@ def test_enabled_but_unneeded_gamma_is_normal_and_entry_is_bounded(highlight_pro
     processor.apply_gamma_correction()
     normal = processor.image.copy()
     assert processor._gamma_lut_gamma == 1.565
+    processor.highlight_transition.observe(HighlightMeasurement(0, 0, 80), 80, 10, {}, False, False, False)
     processor.highlight_transition.observe(HighlightMeasurement(2, 4, 80), 80, 10, {}, False, False, False)
     for _ in range(40):
         processor.image = source.copy()

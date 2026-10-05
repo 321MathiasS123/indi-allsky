@@ -107,8 +107,11 @@ class HighlightTransition:
 
     def __init__(self):
         self.reset()
+        self._startup = True
 
     def reset(self):
+        # Disabling protection must retain gradual engagement when re-enabled.
+        self._startup = False
         self.active = False
         self.trusted = False
         self.reference = None
@@ -145,6 +148,15 @@ class HighlightTransition:
             else:
                 self.active = False
                 self.reason = 'ordinary exposure recovered' if not ceiling else 'achievable exposure/gain ceiling'
+
+        if self._startup:
+            # A restarted worker may inherit an already reduced exposure. Seed
+            # compensation once from its first trusted capture, not from zero.
+            # A clear first capture consumes this too, so later entry still eases.
+            if self.active:
+                self.reference = target
+                self.gamma_mix = 1.0
+            self._startup = False
 
     @staticmethod
     def _approach(value, target, cap, epsilon):

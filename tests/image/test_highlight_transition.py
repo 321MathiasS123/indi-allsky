@@ -37,6 +37,23 @@ def test_unclipped_startup_never_invents_lift_or_gamma(adu, ceiling):
         assert state.phase == 'normal' and state.lift == 0
 
 
+@pytest.mark.parametrize('untrusted_frames', [0, 3])
+@pytest.mark.parametrize('max_boost', [0, .5, 2])
+@pytest.mark.parametrize('normal,protected', [(1.565, 1.85), (.87, .87)])
+def test_restart_uses_first_trusted_frame_without_rebuilding_compensation(untrusted_frames, max_boost, normal, protected):
+    state = HighlightTransition()
+    for _ in range(untrusted_frames):
+        assert state.render_target(25, 80, max_boost) == 25
+        assert state.gamma(normal, protected) == normal
+    # Actual first capture after the 2026-10-05 09:20 restart: exposure and
+    # calibrated brightness held steady, but the lost lift darkened the JPEG.
+    measurement = HighlightMeasurement(.393, 1.201, 35.71, .453, 1.590)
+    state.observe(measurement, 80, 10, SETTINGS, False, False, True)
+    assert state.render_target(35.71, 80, max_boost) == 80
+    assert state.lift == pytest.approx(min(max_boost, math.log2(80 / 35.71)))
+    assert state.gamma(normal, protected) == protected
+
+
 @pytest.mark.parametrize('full,any_clip,expected', [(0, 0, False), (.44, 1.05, False),
                                                   (.451, 0, True), (0, 1.051, True)])
 def test_either_lower_limit_engages_without_aiming_to_create_clipping(full, any_clip, expected):
@@ -87,6 +104,7 @@ def test_safe_release_reaches_exact_ordinary_endpoint_with_bounded_steps(ceiling
 
 def test_entry_compensates_exposure_cuts_immediately_and_reentry_is_continuous():
     state = HighlightTransition()
+    observe(state)  # Already running normally when the highlight appears.
     previous_reference = 61
     for adu in (61, 55, 49, 43, 38):
         observe(state, adu=adu, full=2)
@@ -139,4 +157,7 @@ def test_zero_limits_and_master_reset_have_exact_neutral_state():
     assert state.phase == 'normal' and not state.trusted
     assert state.render_target(30, 70, 2) == 30
     assert state.gamma(1.565, 1.85) == 1.565
-    assert state.__dict__ == HighlightTransition().__dict__
+    # Turning the feature back on must still ease in, not act like a restart.
+    observe(state, adu=30, full=2)
+    assert 0 < math.log2(state.render_target(30, 70, 2) / 30) <= .040000001
+    assert 1.565 < state.gamma(1.565, 1.85) < 1.85
