@@ -37,7 +37,6 @@ class HighlightOutput:
 
     def reset(self):
         self.active = False
-        self.recovering = False
         self.measurement = None
         self.source = None
         self.mode = None
@@ -56,8 +55,9 @@ class HighlightOutput:
         any_dev = settings.get('OUTPUT_ANY_DEV', 0.5)
         if measurement.full > full + full_dev or measurement.any > any_channel + any_dev:
             self.active = True
-            self.recovering = True
         elif measurement.full < full - full_dev and measurement.any < any_channel - any_dev:
+            # Release the extra constraint as soon as output has headroom.
+            # Waiting for normal ADU first can strand a fading sky at max lift.
             self.active = False
 
     def constrain(self, scale, adu, target, deviation, exposure, gain, mode, settings):
@@ -65,36 +65,33 @@ class HighlightOutput:
         if not settings.get('OUTPUT_ENABLE', False) or mode != self.mode:
             self.reset()
             return scale, None
-        floor = target / 2 ** settings.get('MAX_BOOST', 2.0)
-        if adu < floor * 0.98:
+        if not self.active:
             return scale, None
-        if not self.active and adu >= target - deviation:
-            self.recovering = False
-        if not self.active and not self.recovering:
-            return scale, None
+        limit = 1.0
         if self.measurement is None:
-            return (1.0, 'await trusted output') if scale > 1.0 else (scale, None)
-        matches = (math.isclose(exposure, self.source[0], rel_tol=0, abs_tol=0.0000005)
-                   and math.isclose(gain, self.source[1], rel_tol=0, abs_tol=0.0005))
-        if self.active:
-            limit = 1.0
+            reason = 'await trusted output'
+        else:
+            matches = (math.isclose(exposure, self.source[0], rel_tol=0, abs_tol=0.0000005)
+                       and math.isclose(gain, self.source[1], rel_tol=0, abs_tol=0.0005))
             reason = 'output deadband' if matches else 'await matching output exposure/gain'
-            if matches and adu > floor * 1.02:
+            if matches:
                 excess = max(
                     self.measurement.full / (settings.get('OUTPUT_FULL_TARGET', 1.5) + settings.get('OUTPUT_FULL_DEV', 0.5)) - 1,
                     self.measurement.any / (settings.get('OUTPUT_ANY_TARGET', 2.5) + settings.get('OUTPUT_ANY_DEV', 0.5)) - 1,
                     0.0,
                 )
-                limit = max(1 - min(0.02, 0.1 * excess), floor / max(adu, 0.1))
+                limit = 1 - min(0.02, 0.1 * excess)
                 if limit < 1:
                     reason = 'output bright patch'
-            elif adu <= floor * 1.02:
-                reason = 'output shadow floor'
-        else:
-            # Recovery also waits for rendered feedback. A 1% step traverses
-            # the output deadband gently without weakening faster raw cuts.
-            limit = 1.01 if matches else 1.0
-            reason = 'output recovery' if matches else 'await matching output exposure/gain'
+        # Keep one maximum recovery step of brightness above the lift floor.
+        # Taper cuts into proportional recovery instead of switching from hold
+        # to a 10% rescue below the floor. Trusted raw ADU supplies this reserve,
+        # even when output feedback is stale; raw/pending limits still win.
+        floor = target / 2 ** settings.get('MAX_BOOST', 2.0)
+        reserve = min(target, floor * MAX_EXPOSURE_INCREASE)
+        floor_limit = min(MAX_EXPOSURE_INCREASE, reserve / max(adu, 0.1))
+        if floor_limit > limit:
+            limit, reason = floor_limit, 'output shadow reserve'
         return (limit, reason) if scale > limit else (scale, None)
 
 

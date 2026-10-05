@@ -55,18 +55,70 @@ def test_output_hysteresis_does_not_aim_for_clipping():
     state.observe(HighlightMeasurement(.9, 2.5, 0), 1., 0, MODE, SETTINGS)
     assert state.active  # both lower limits required
     state.observe(HighlightMeasurement(0, 0, 0), 1., 0, MODE, SETTINGS)
-    assert not state.active and request(state)[0] == 1.01
+    assert not state.active and request(state)[0] == 1.1
     assert request(state, adu=75) == (1.1, None)
-    assert not state.recovering
 
 
 def test_output_tapers_and_never_weakens_raw_or_floor_corrections():
     state = output_state(2.1, 2)
     assert request(state)[0] == pytest.approx(.995)
     assert request(state, scale=.85)[0] == .85
-    assert request(state, adu=20)[0] == 1
+    assert request(state, adu=20)[0] == 1.1
     assert request(state, adu=10) == (1.1, None)
     assert request(state, adu=20.5)[0] >= 20 / 20.5
+
+
+@pytest.mark.parametrize('adu', [19.38, 19.81, 19.95, 40, 60])
+@pytest.mark.parametrize('exposure', [1., 1.01])
+def test_clear_output_releases_recovery_even_below_normal_adu(adu, exposure):
+    state = output_state()
+    state.observe(HighlightMeasurement(0, 1.442, 0), 1., 0, MODE, SETTINGS)
+    # The 18:30 sunset was already safely below both output lower limits.
+    # Its old recovery latch still held or allowed only 1%, until ADU < 19.6.
+    assert request(state, adu=adu, exposure=exposure) == (1.1, None)
+
+
+@pytest.mark.parametrize('feedback', ['matching', 'stale', 'untrusted'])
+@pytest.mark.parametrize('max_boost', [0, .05, .5, 2, 4])
+def test_output_floor_recovery_is_continuous_and_preserves_raw_limits(feedback, max_boost):
+    state = output_state()
+    if feedback == 'untrusted':
+        state.observe(None, 1, 0, MODE, SETTINGS)
+    exposure = .98 if feedback == 'stale' else 1.
+    settings = dict(SETTINGS, MAX_BOOST=max_boost)
+    floor = 80 / 2 ** max_boost
+    adus = np.linspace(floor * .9, floor * 1.2, 301)
+    scales = [request(state, adu=adu, exposure=exposure, settings=settings)[0] for adu in adus]
+    # A tiny ADU change must not alternate holding and 10% rescue requests.
+    assert max(abs(np.diff(scales))) < .002
+    assert np.all(np.diff(scales) <= 1e-12)
+    for adu in adus[::30]:
+        assert request(state, scale=.85, adu=adu, exposure=exposure, settings=settings)[0] == .85
+    if feedback != 'matching':
+        assert min(scales) >= 1  # invalid/stale output never adds a cut
+
+
+@pytest.mark.parametrize('delay,fade', [(0, .94), (1, .98), (3, .99)])
+@pytest.mark.parametrize('name', MODE_NAMES)
+def test_fading_sky_keeps_lift_reserve_despite_persistent_output_clipping(name, delay, fade):
+    instance = controller(name)
+    instance.config['HIGHLIGHT_PROTECTION'].update(SETTINGS)
+    gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
+    instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .1, gain
+    pending = [(.1, gain)] * (delay + 1)
+    rendered = []
+    for frame in range(80):
+        exposure, gain = pending.pop(0)
+        adu = 35 * fade ** frame * exposure / .1
+        instance.compare_highlights(HighlightMeasurement(0, 0, adu), exposure, gain)
+        pending.append((instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT))
+        state = instance.highlight_transition
+        state.render_target(adu, 70, 2)
+        rendered.append(adu * 2 ** state.lift)
+        # Persistent red-channel pressure, as in the observed 19:05 sunset.
+        instance.highlight_output.observe(HighlightMeasurement(0, 6.2, 0), exposure, gain, MODE, SETTINGS)
+    assert min(rendered[-30:]) >= 70 * .995
+    assert max(abs(np.diff(rendered[-30:]))) < .01
 
 
 def test_stale_settings_hold_recovery_without_compounding_a_cut():
