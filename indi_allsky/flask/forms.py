@@ -882,15 +882,19 @@ def NIGHT_SUN_ALT_DEG_validator(form, field):
         raise ValidationError('Sun altitude must be less than 90')
 
 
-def TWILIGHT_NIGHT_ALT_validator(form, field):
+def TWILIGHT_DAY_ALT_validator(form, field):
     if field.data is None or not math.isfinite(field.data) or not -90 <= field.data <= 90:
         raise ValidationError('Please enter a finite Sun elevation between -90 and 90 degrees')
-    # Disabled transitions may retain endpoints incompatible with the current
-    # mode threshold; they must be valid before enabling the feature again.
+
+
+def TWILIGHT_NIGHT_ALT_validator(form, field):
+    TWILIGHT_DAY_ALT_validator(form, field)
+    # Disabled transitions may retain an unordered interval; it must be valid
+    # before enabling the feature again. The mode threshold is independent.
     if form.TWILIGHT_TRANSITION__ENABLE.data:
-        start = form.NIGHT_SUN_ALT_DEG.data
+        start = form.TWILIGHT_TRANSITION__DAY_ALT.data
         if start is None or not math.isfinite(start) or field.data >= start:
-            raise ValidationError('Full night elevation must be below the day/night Sun altitude')
+            raise ValidationError('Full night elevation must be below the full day elevation')
 
 
 def NIGHT_MOONMODE_ALT_DEG_validator(form, field):
@@ -4725,6 +4729,7 @@ class IndiAllskyConfigForm(FlaskForm):
     CLAHE_GRIDSIZE                   = IntegerField('CLAHE Grid Size', validators=[CLAHE_GRIDSIZE_validator])
     NIGHT_SUN_ALT_DEG                = FloatField('Sun altitude', validators=[NIGHT_SUN_ALT_DEG_validator])
     TWILIGHT_TRANSITION__ENABLE      = BooleanField('Smooth day/night transition')
+    TWILIGHT_TRANSITION__DAY_ALT     = FloatField('Full day settings at Sun elevation (°)', default=-6.0, validators=[TWILIGHT_DAY_ALT_validator], widget=NumberInput(step=0.1))
     TWILIGHT_TRANSITION__NIGHT_ALT   = FloatField('Full night settings at Sun elevation (°)', default=-12.0, validators=[TWILIGHT_NIGHT_ALT_validator], widget=NumberInput(step=0.1))
     NIGHT_MOONMODE_ALT_DEG           = FloatField('Moonmode Moon Altitude', validators=[NIGHT_MOONMODE_ALT_DEG_validator])
     NIGHT_MOONMODE_PHASE             = FloatField('Moonmode Moon Phase', validators=[NIGHT_MOONMODE_PHASE_validator])

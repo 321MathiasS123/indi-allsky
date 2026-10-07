@@ -245,11 +245,16 @@
                 </div>
                 <div id="TWILIGHT_TRANSITION__ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
                 <div class="tw:flex tw:flex-col tw:gap-1">
+                    <label for="TWILIGHT_TRANSITION__DAY_ALT" class="tw:text-xs">{{ form_config.TWILIGHT_TRANSITION__DAY_ALT.label.text }}</label>
+                    {{ form_config.TWILIGHT_TRANSITION__DAY_ALT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                    <div id="TWILIGHT_TRANSITION__DAY_ALT-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                </div>
+                <div class="tw:flex tw:flex-col tw:gap-1">
                     <label for="TWILIGHT_TRANSITION__NIGHT_ALT" class="tw:text-xs">{{ form_config.TWILIGHT_TRANSITION__NIGHT_ALT.label.text }}</label>
                     {{ form_config.TWILIGHT_TRANSITION__NIGHT_ALT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
                     <div id="TWILIGHT_TRANSITION__NIGHT_ALT-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
                 </div>
-                <p class="tw:text-xs tw:text-base-content/60">When enabled, image settings begin changing at the Sun altitude in Night & Moon Mode Thresholds above and reach full night settings at this lower elevation (normally −12°). Morning reverses the transition. Summer nights that do not reach it use a partial blend. Capture and file day/night boundaries stay at the existing Sun altitude.</p>
+                <p class="tw:text-xs tw:text-base-content/60">Evening blends from the full day elevation to the full night elevation; morning follows the same curve in reverse. Choose both endpoints to set the timing and length, for example 0° to −12° or −3° to −9°. The night elevation must be lower. Summer nights that do not reach it use a partial blend. Operational day/night mode and file boundaries stay at the Sun altitude in Night & Moon Mode Thresholds above.</p>
                 <p class="tw:text-xs tw:text-base-content/60">For the smoothest result, use matching day/night binning and camera formats. Intermediate gains need suitable dark frames. Automatic gain retains its selected strategy; legacy gain steps, stacking and Moon Mode switches can still produce visible changes.</p>
                 <p class="tw:text-xs tw:text-base-content/60">Continuous settings blend once per frame. Denoising and other discrete algorithms use the nearer day or night profile, switching at the halfway point of the blend.</p>
                 {% if twilight_forecast %}

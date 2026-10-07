@@ -35,7 +35,7 @@ from ..capture_health import capture_health_status
 from ..capture_health import capture_stale_seconds
 from ..capture_health import parse_capture_error
 from ..capture_health import CAPTURE_PIPELINE_ERROR_STATE
-from ..twilight import transition_forecast
+from ..twilight import day_altitude, transition_forecast
 from .. import customKeogram
 from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
@@ -4506,6 +4506,7 @@ class ConfigView(FormView):
             'CLAHE_GRIDSIZE'                 : self.indi_allsky_config.get('CLAHE_GRIDSIZE', 8),
             'NIGHT_SUN_ALT_DEG'              : '{0:+0.1f}'.format(self.indi_allsky_config.get('NIGHT_SUN_ALT_DEG', -6.0)),
             'TWILIGHT_TRANSITION__ENABLE'    : self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False),
+            'TWILIGHT_TRANSITION__DAY_ALT'    : day_altitude(self.indi_allsky_config),
             'TWILIGHT_TRANSITION__NIGHT_ALT'  : self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),
             'NIGHT_MOONMODE_ALT_DEG'         : '{0:+0.1f}'.format(self.indi_allsky_config.get('NIGHT_MOONMODE_ALT_DEG', 5.0)),
             'NIGHT_MOONMODE_PHASE'           : self.indi_allsky_config.get('NIGHT_MOONMODE_PHASE', 50.0),
@@ -5375,9 +5376,12 @@ class AjaxConfigView(BaseView):
     def dispatch_request(self):
         form_data = dict(request.json)
         # Older clients omit these controls; validate the values they will retain.
-        for key, default in (('ENABLE', False), ('NIGHT_ALT', -12.0)):
+        for key, default in (('ENABLE', False),
+                             ('DAY_ALT', form_data.get('NIGHT_SUN_ALT_DEG', self.indi_allsky_config.get('NIGHT_SUN_ALT_DEG', -6.0))),
+                             ('NIGHT_ALT', -12.0)):
+            saved = self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get(key, default)
             form_data.setdefault('TWILIGHT_TRANSITION__' + key,
-                                 self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get(key, default))
+                                 default if key == 'DAY_ALT' and saved is None else saved)
         form_config = IndiAllskyConfigForm(data=form_data)
         previous_syncapi = dict(self.indi_allsky_config.get('SYNCAPI', {}))
 
@@ -5618,7 +5622,7 @@ class AjaxConfigView(BaseView):
         # Omitted fields are retained rather than reset by older clients.
         self.indi_allsky_config.setdefault('TWILIGHT_TRANSITION', {}).update({
             key: convert(request.json['TWILIGHT_TRANSITION__' + key])
-            for key, convert in (('ENABLE', bool), ('NIGHT_ALT', float))
+            for key, convert in (('ENABLE', bool), ('DAY_ALT', float), ('NIGHT_ALT', float))
             if 'TWILIGHT_TRANSITION__' + key in request.json
         })
         self.indi_allsky_config['NIGHT_MOONMODE_ALT_DEG']               = float(request.json['NIGHT_MOONMODE_ALT_DEG'])

@@ -297,6 +297,20 @@ def test_ingestion_midpoint_survives_clock_fallback_and_unknown_readout(processo
     assert p.twilight.update.call_args.args[0] == expected
 
 
+@pytest.mark.parametrize('start,end', [(0, -12), (-3, -9)])
+@pytest.mark.parametrize('night', [False, True])
+def test_gamma_follows_custom_interval_across_operational_mode_switch(processor, start, end, night):
+    for altitude, gamma in [(start, 1.565), ((start + end) / 2, 1.2175), (end, .87)]:
+        p = processor({'TWILIGHT_TRANSITION': {'ENABLE': True, 'DAY_ALT': start, 'NIGHT_ALT': end},
+                       'NIGHT_SUN_ALT_DEG': -6, 'GAMMA_CORRECTION_DAY': 1.565,
+                       'GAMMA_CORRECTION': .87}, altitude)
+        p.night_av[0] = night
+        original = p.image.copy()
+        p.apply_gamma_correction()
+        lut = (((numpy.arange(256, dtype=numpy.float32) / 255) ** (1 / gamma)) * 255).astype(numpy.uint8)
+        numpy.testing.assert_array_equal(p.image, lut[original])
+
+
 @pytest.mark.parametrize('transition_enabled', [False, True])
 @pytest.mark.parametrize('highlight_enabled', [False, True])
 def test_optional_highlight_rendering_uses_same_blended_targets(processor, transition_enabled, highlight_enabled):

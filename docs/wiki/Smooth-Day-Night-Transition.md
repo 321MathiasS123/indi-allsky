@@ -3,11 +3,17 @@
 Enable **Smooth day/night transition** in its own **Location → Smooth Day/Night
 Transition** box. It is disabled by default.
 
-The existing **Sun altitude** is the day endpoint. **Full night settings at Sun
-elevation** is the night endpoint and must be lower. With the default −6° and
-−12°, evening settings move from day to night between civil and nautical dusk;
-morning follows the same curve backwards. A smooth S-shaped curve eases both
-ends of the transition.
+Set **Full day settings at Sun elevation** and **Full night settings at Sun
+elevation** independently. The night endpoint must be lower; both accept −90°
+to +90°. Evening blends from the day endpoint to the night endpoint; morning
+follows the same smooth S-shaped curve backwards. For example, 0° to −12° gives
+a wider interval than −3° to −9°. These endpoints also control ordinary gamma
+and any installed highlight-protection gamma overrides.
+
+The operational day/night **Sun altitude** stays separate. Existing configurations
+continue using that altitude as the day endpoint until a separate value is saved.
+The usual −6°/−12° interval therefore stays unchanged on update. The form shows
+the inherited endpoint; saving it makes that value independent of the mode threshold.
 
 The blend follows solar elevation, so its duration changes with location and
 season. If a summer night only reaches part of the interval, the settings stop

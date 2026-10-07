@@ -20,7 +20,7 @@ from multiprocessing import Process
 #from threading import Thread
 
 from . import constants
-from .twilight import capture_period, exposure_minimum, interpolate, night_weight
+from .twilight import capture_period, day_altitude, exposure_minimum, interpolate, night_weight
 from . import camera as camera_module
 from .capture_watchdog import CaptureTimeoutError, FrameArrivalQueue, FrameDeadline
 
@@ -1542,7 +1542,7 @@ class CaptureWorker(Process):
             # Startup uses the live Sun; subsequent image processing uses each
             # exposure's midpoint. Do not seed it with an abrupt mode default.
             weight = night_weight(
-                self.astro_av[constants.ASTRO_SUN_ALT], self.config['NIGHT_SUN_ALT_DEG'],
+                self.astro_av[constants.ASTRO_SUN_ALT], day_altitude(self.config),
                 self.config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),
             )
             minimum = exposure_minimum(self.config, self._expUtils, self.night, weight=weight)

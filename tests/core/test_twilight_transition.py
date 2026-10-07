@@ -12,7 +12,7 @@ import pytest
 
 from indi_allsky import constants, exposure as modes
 from indi_allsky.twilight import (
-    TwilightTransition, capture_period, exposure_minimum, interpolate, night_weight, observer_at, transition_forecast,
+    TwilightTransition, capture_period, day_altitude, exposure_minimum, interpolate, night_weight, observer_at, transition_forecast,
 )
 
 
@@ -32,6 +32,38 @@ def config():
 @pytest.mark.parametrize('altitude,expected', [(10, 0), (-6, 0), (-9, .5), (-12, 1), (-30, 1)])
 def test_curve_endpoints_and_midpoint(altitude, expected):
     assert night_weight(altitude) == expected
+
+
+@pytest.mark.parametrize('start,end', [(0, -12), (-3, -9), (4, -18), (-6, -6.1)])
+def test_custom_interval_is_symmetric_and_independent_of_mode_threshold(start, end):
+    source = config()
+    source['TWILIGHT_TRANSITION'].update(DAY_ALT=start, NIGHT_ALT=end)
+    source['HIGHLIGHT_PROTECTION'] = {'ENABLE': True, 'GAMMA_DAY': 1.8, 'GAMMA': 0}
+    before = deepcopy(source)
+    t = TwilightTransition(source)
+    # Include both endpoints and a partial reversal, not just a completed night.
+    altitudes = [start + 1, start, (start + end) / 2, end, end - 1]
+    for altitude, expected in zip(altitudes + altitudes[::-1], [0, 0, .5, 1, 1, 1, 1, .5, 0, 0]):
+        t.apply(altitude)
+        assert t.weight == pytest.approx(expected)
+        assert t.config['TARGET_ADU'] == t.config['TARGET_ADU_DAY'] == pytest.approx(50 + 50 * expected)
+        assert t.config['GAMMA_CORRECTION'] == pytest.approx(2 - expected)
+        assert t.config['HIGHLIGHT_PROTECTION']['GAMMA'] == pytest.approx(1.8 - .8 * expected)
+        assert capture_period(source, altitude) == pytest.approx(10 + 20 * expected)
+        assert t.config['NIGHT_SUN_ALT_DEG'] == -6
+    assert source == before
+
+
+@pytest.mark.parametrize('explicit_null', [False, True])
+def test_legacy_endpoint_preserves_custom_mode_threshold(explicit_null):
+    source = config()
+    source['NIGHT_SUN_ALT_DEG'] = -4
+    if explicit_null:
+        source['TWILIGHT_TRANSITION']['DAY_ALT'] = None
+    t = TwilightTransition(source)
+    t.apply(-8)
+    assert t.weight == .5
+    assert capture_period(source, -8) == 20
 
 
 def test_twilight_reverses_at_partial_night_without_reset_or_rescaling():
@@ -287,8 +319,9 @@ def test_dawn_brightness_reduction_at_nonzero_gain_floor(name, minimum):
     assert next_exposure == pytest.approx(.9)
 
 
-@pytest.mark.parametrize('altitude', [-6, -9, -12])
-def test_capture_restart_obeys_camera_limit_and_current_blend(altitude):
+@pytest.mark.parametrize('altitude', [0, -3, -6, -9, -12])
+@pytest.mark.parametrize('start', [None, 0, -3])
+def test_capture_restart_obeys_camera_limit_and_current_blend(altitude, start):
     tree = ast.parse((Path(__file__).resolve().parents[2] / 'indi_allsky/capture.py').read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'CaptureWorker')
     initialize = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_initialize')
@@ -297,25 +330,67 @@ def test_capture_restart_obeys_camera_limit_and_current_blend(altitude):
     obj._expUtils.EXPOSURE_MAX = .1
     worker = SimpleNamespace(config=config(), _expUtils=obj._expUtils, night=True,
                              night_av=[1, 0], astro_av=[altitude, 0, 0])
+    worker.config['TWILIGHT_TRANSITION']['DAY_ALT'] = start
     namespace = dict(self=worker, constants=constants, night_weight=night_weight, interpolate=interpolate,
+                     day_altitude=day_altitude,
                      exposure_minimum=exposure_minimum, maximum_exposure=.1, ccd_exposure_default=.05,
                      exposure_class_str='exposure_basic', gain_day=0, gain_night=100, gain_moonmode=50)
     exec(compile(ast.Module(body=[block], type_ignores=[]), 'capture-startup', 'exec'), namespace)
     assert 0 < namespace['ccd_exposure_default'] <= .1
-    assert namespace['ccd_gain_default'] == 100 * night_weight(altitude)
+    expected = night_weight(altitude, -6 if start is None else start, -12)
+    assert namespace['ccd_gain_default'] == 100 * expected
+
+
+def test_wider_custom_interval_changes_forecast_without_changing_mode_boundary():
+    source = config()
+    when = datetime(2026, 10, 7, 15, tzinfo=timezone.utc)
+    original = transition_forecast(source, when, 53, 11)
+    source['TWILIGHT_TRANSITION']['DAY_ALT'] = 0
+    custom = transition_forecast(source, when, 53, 11)
+    for key in ('dusk_minutes', 'dawn_minutes'):
+        assert 1.8 * original[key] < custom[key] < 2.2 * original[key]
+    source['NIGHT_SUN_ALT_DEG'] = -18
+    assert transition_forecast(source, when, 53, 11) == custom
+
+
+@pytest.mark.parametrize('name', modes.__all__)
+@pytest.mark.parametrize('start,end', [(0, -12), (-3, -9)])
+def test_custom_exposure_limits_do_not_jump_at_operational_mode_switch(name, start, end):
+    source = config()
+    source['TWILIGHT_TRANSITION'].update(DAY_ALT=start, NIGHT_ALT=end)
+    obj, t = controller(name, source)
+    t.apply(-6)
+    before = obj.exposure_min
+    assert before == pytest.approx(.01)
+    obj.night_av[constants.NIGHT_NIGHT] = False
+    assert obj.exposure_min == before
+    if name == 'exposure_basic':
+        assert obj.gain_min == obj.gain_max == 50
+    # Exercise both directions as well as the exact operational boundary.
+    for altitude in [start, -6, end, -6, start]:
+        t.apply(altitude)
+        obj.night_av[constants.NIGHT_NIGHT] = altitude < -6
+        obj._expUtils.EXPOSURE_NEXT = .00001
+        obj._expUtils.GAIN_NEXT = obj.gain_min
+        obj.apply_transition_limits()
+        assert obj._expUtils.EXPOSURE_NEXT == pytest.approx(obj.exposure_min, abs=.000001)
+        assert obj.gain_min <= obj._expUtils.GAIN_NEXT <= obj.gain_max
 
 
 @pytest.mark.parametrize('latitude', [-90, -80, -65, -57, 0, 57, 65, 80, 90])
 @pytest.mark.parametrize('month', [3, 6, 9, 12])
-def test_forecast_agrees_with_sampled_solar_cycle(latitude, month):
+@pytest.mark.parametrize('start', [None, 0])
+def test_forecast_agrees_with_sampled_solar_cycle(latitude, month, start):
     when = datetime(2026, month, 21, 15, tzinfo=timezone.utc)
-    forecast = transition_forecast(config(), when, latitude, 0)
+    source = config()
+    source['TWILIGHT_TRANSITION']['DAY_ALT'] = start
+    forecast = transition_forecast(source, when, latitude, 0)
     obs = observer_at(when, latitude, 0, 0)
-    start = obs.previous_transit(ephem.Sun())
+    noon = obs.previous_transit(ephem.Sun())
     samples = []
     for minute in range(0, 1441, 10):
-        obs.date = start + minute / 1440
-        samples.append(night_weight(math.degrees(ephem.Sun(obs).alt)))
+        obs.date = noon + minute / 1440
+        samples.append(night_weight(math.degrees(ephem.Sun(obs).alt), -6 if start is None else start, -12))
     assert forecast['maximum'] == pytest.approx(max(samples), abs=.001)
     assert forecast['minimum'] == pytest.approx(min(samples), abs=.001)
     for key in ('dusk_minutes', 'dawn_minutes'):

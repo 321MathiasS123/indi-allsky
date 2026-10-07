@@ -20,11 +20,17 @@ COLOR_DEFAULTS = {
 def night_weight(altitude, start=-6.0, end=-12.0):
     """Return the night fraction, clamped to the configured solar interval."""
     if not all(math.isfinite(v) for v in (altitude, start, end)) or end >= start:
-        raise ValueError('Full night elevation must be below the day/night elevation')
+        raise ValueError('Full night elevation must be below the full day elevation')
     u = max(0.0, min(1.0, (start - altitude) / (start - end)))
     # Smoothstep gives zero slope at both endpoints. Using elevation rather
     # than elapsed time also lets partial summer nights reverse naturally.
     return u * u * (3.0 - 2.0 * u)
+
+
+def day_altitude(config):
+    """Preserve the mode-threshold endpoint until a separate day endpoint is saved."""
+    altitude = config.get('TWILIGHT_TRANSITION', {}).get('DAY_ALT')
+    return config.get('NIGHT_SUN_ALT_DEG', -6.0) if altitude is None else altitude
 
 
 def interpolate(day, night, weight, logarithmic=False):
@@ -62,7 +68,7 @@ def exposure_minimum(config, exposure_utils, night, weight=None):
 
 def capture_period(config, altitude):
     """Use the same solar curve for scheduling as for image processing."""
-    weight = night_weight(altitude, config.get('NIGHT_SUN_ALT_DEG', -6.0),
+    weight = night_weight(altitude, day_altitude(config),
                           config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0))
     return interpolate(config['EXPOSURE_PERIOD_DAY'], config['EXPOSURE_PERIOD'], weight)
 
@@ -100,12 +106,12 @@ class TwilightTransition:
         if not self.enabled:
             return
         self.altitude = altitude
-        self.weight = night_weight(altitude, self.source.get('NIGHT_SUN_ALT_DEG', -6.0),
+        self.weight = night_weight(altitude, day_altitude(self.source),
                                    self.source.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0))
         self.config['_TWILIGHT_WEIGHT'] = self.weight
         target = self.value('TARGET_ADU', 'TARGET_ADU_DAY', 75)
         # Both slots must agree: consumers still select by the operational
-        # day/night flag, which changes independently at the day endpoint.
+        # day/night flag, whose threshold is independent of these endpoints.
         self.config['TARGET_ADU'] = self.config['TARGET_ADU_DAY'] = target
 
         if self.source.get('USE_NIGHT_COLOR', True):
@@ -145,7 +151,7 @@ class TwilightTransition:
 
 def transition_forecast(config, when, latitude, longitude, elevation=0):
     """Bound predictions to the solar cycle containing now, including polar days."""
-    start = float(config.get('NIGHT_SUN_ALT_DEG', -6.0))
+    start = float(day_altitude(config))
     end = float(config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0))
     night_weight(start, start, end)  # validate imported configurations too
     obs = observer_at(when, latitude, longitude, elevation)

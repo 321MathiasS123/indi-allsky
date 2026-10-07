@@ -215,6 +215,7 @@ class IndiAllSkyConfigBase(object):
         "NIGHT_SUN_ALT_DEG"        : -6.0,
         "TWILIGHT_TRANSITION" : {
             "ENABLE"    : False,
+            "DAY_ALT"   : None,  # inherit the mode threshold for existing configurations
             "NIGHT_ALT" : -12.0,
         },
         "NIGHT_MOONMODE_ALT_DEG"   : 0.0,
