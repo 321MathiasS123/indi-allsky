@@ -1,8 +1,13 @@
 """Exercise the production form/load/save expressions without Linux D-Bus."""
 import ast
+from collections import OrderedDict
+from copy import deepcopy
+from datetime import datetime, timezone
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from flask import Flask
 from flask_wtf import FlaskForm
@@ -14,6 +19,7 @@ from wtforms.validators import ValidationError
 from wtforms.widgets import NumberInput
 
 from indi_allsky.twilight import day_altitude
+from indi_allsky.exceptions import ConfigSaveException
 
 
 ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky/flask'
@@ -125,6 +131,79 @@ def test_older_clients_validate_the_retained_transition_interval(form_class, sav
         assert namespace['form_config'].validate() == valid
         assert namespace['form_config'].TWILIGHT_TRANSITION__ENABLE.data
         assert namespace['form_config'].TWILIGHT_TRANSITION__NIGHT_ALT.data == -15
+
+
+@pytest.fixture
+def config_store():
+    path = ROOT.parent / 'config.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    tree.body = [n for n in tree.body if isinstance(n, ast.ClassDef)
+                 and n.name in ('IndiAllSkyConfigBase', 'IndiAllSkyConfig')]
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    scope = dict(OrderedDict=OrderedDict, Path=Path, app=app, datetime=datetime,
+                 timezone=timezone, ConfigSaveException=ConfigSaveException,
+                 IndiAllSkyDbUserTable=MagicMock())
+    exec(compile(tree, str(path), 'exec'), scope)
+    cls = scope['IndiAllSkyConfig']
+    saved = [deepcopy(cls._base_config)]
+    # Exercise real validation, password handling and reload. Replace only the
+    # database boundary, retaining its JSON serialization of configuration data.
+    cls._getConfigEntry = lambda self: SimpleNamespace(
+        data=deepcopy(saved[-1]), id=len(saved), level='test', createDate=datetime.now())
+
+    def store(self, config, user, note, encrypted):
+        saved.append(json.loads(json.dumps(config)))
+        return SimpleNamespace(id=len(saved))
+
+    cls._setConfigEntry = store
+    return app, cls, saved
+
+
+@pytest.mark.parametrize('entered', ['-3', '-3.0', '0', '0.0'])
+def test_day_endpoint_survives_form_save_validation_and_reload(form_class, config_store, entered):
+    app, cls, saved = config_store
+    obj = cls()
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({
+            'NIGHT_SUN_ALT_DEG': '-6', 'TWILIGHT_TRANSITION__ENABLE': 'y',
+            'TWILIGHT_TRANSITION__DAY_ALT': entered, 'TWILIGHT_TRANSITION__NIGHT_ALT': '-12'}))
+        assert form.validate(), form.errors
+        payload = {name: field.data for name, field in form._fields.items()}
+        tree = ast.parse((ROOT / 'views.py').read_text(encoding='utf-8'))
+        save = next(n for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+                    and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'update'
+                    and 'TWILIGHT_TRANSITION' in ast.unparse(n))
+        exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-twilight-fields', 'exec'),
+             dict(self=SimpleNamespace(indi_allsky_config=obj.config), request=SimpleNamespace(json=payload)))
+        obj.save('test', 'twilight endpoint')
+        reloaded = cls()
+        assert reloaded.config['TWILIGHT_TRANSITION'] == {
+            'ENABLE': True, 'DAY_ALT': float(entered), 'NIGHT_ALT': -12.0}
+        assert day_altitude(reloaded.config) == float(entered)
+        assert reloaded.config['NIGHT_SUN_ALT_DEG'] == -6
+        assert len(saved) == 2
+
+
+@pytest.mark.parametrize('value', [None, -3, -3.0, 0, 0.0])
+def test_imported_or_inherited_day_endpoint_survives_config_save(config_store, value):
+    _, cls, _ = config_store
+    obj = cls()
+    obj.config['NIGHT_SUN_ALT_DEG'] = -4.0
+    obj.config['TWILIGHT_TRANSITION']['DAY_ALT'] = value
+    obj.save('test', 'existing configuration')
+    assert day_altitude(cls().config) == (-4.0 if value is None else value)
+
+
+@pytest.mark.parametrize('key,value', [('DAY_ALT', '-3'), ('DAY_ALT', []), ('DAY_ALT', {}),
+                                     ('NIGHT_ALT', None), ('NIGHT_ALT', '-12')])
+def test_endpoint_save_type_exception_stays_local(config_store, key, value):
+    _, cls, saved = config_store
+    obj = cls()
+    obj.config['TWILIGHT_TRANSITION'][key] = value
+    with pytest.raises(ConfigSaveException, match='wrong type'):
+        obj.save('test', 'invalid type')
+    assert len(saved) == 1
 
 
 @pytest.mark.parametrize('class_name', ['Fits2JpegView', 'JsonImageProcessingView'])

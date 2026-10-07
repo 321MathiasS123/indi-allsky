@@ -1300,6 +1300,9 @@ class IndiAllSkyConfig(IndiAllSkyConfigBase):
                         if (key, key_l2) == ('VIRTUALSKY', 'CALIBRATION'):
                             # An absent correction is null; a learned model is an object.
                             valid_types = (dict, type(None))
+                        elif (key, key_l2) == ('TWILIGHT_TRANSITION', 'DAY_ALT'):
+                            # Null inherits the mode threshold; an explicit endpoint is numeric.
+                            valid_types = (int, float, type(None))
                         elif isinstance(self.config[key][key_l2], int):
                             # jq will convert floats that end in .0 to ints
                             valid_types = (int, float)
