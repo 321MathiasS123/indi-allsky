@@ -17,7 +17,7 @@ from indi_allsky import asi676mc, constants
 from indi_allsky.denoise import IndiAllskyDenoise
 from indi_allsky.scnr import IndiAllskyScnr
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch
-from indi_allsky.twilight import TwilightTransition, runtime_weight
+from indi_allsky.twilight import TwilightTransition, interpolate, runtime_weight
 
 
 @pytest.fixture(scope='module')
@@ -27,7 +27,7 @@ def processor_class():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageProcessor')
     namespace = dict(__package__='indi_allsky', math=math, cv2=cv2, numpy=numpy, constants=constants, datetime=datetime,
                      timedelta=timedelta, timezone=timezone, logger=logging.getLogger('test'),
-                     TwilightTransition=TwilightTransition, runtime_weight=runtime_weight,
+                     TwilightTransition=TwilightTransition, interpolate=interpolate, runtime_weight=runtime_weight,
                      IndiAllskyDenoise=IndiAllskyDenoise, IndiAllskyScnr=IndiAllskyScnr)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace['ImageProcessor']
@@ -167,6 +167,63 @@ def test_green_removal_selects_one_algorithm_and_blends_midtones_without_stale_c
         p.scnr()
         numpy.testing.assert_array_equal(p.image, expected)
     assert calls.call_count == len(altitudes)
+
+
+@pytest.mark.parametrize('enabled_night', [False, True])
+@pytest.mark.parametrize('strength', [.5, .51, .7])
+@pytest.mark.parametrize('mono', [False, True])
+def test_mtf_green_removal_fades_from_disabled_endpoint_without_switch_or_stale_cache(
+        processor, monkeypatch, enabled_night, strength, mono):
+    settings = {'TWILIGHT_TRANSITION': {'ENABLE': True, 'DAY_ALT': 0, 'NIGHT_ALT': -12},
+                'SCNR_ALGORITHM': 'green_mtf' if enabled_night else '',
+                'SCNR_ALGORITHM_DAY': '' if enabled_night else 'green_mtf',
+                # A stored strength at the disabled end must not affect the fade.
+                'SCNR_MTF_MIDTONES': strength if enabled_night else .9,
+                'SCNR_MTF_MIDTONES_DAY': .9 if enabled_night else strength}
+    p = processor(settings)
+    source_before = deepcopy(p.twilight.source)
+    original = numpy.tile(numpy.arange(256, dtype=numpy.uint8)[None, :, None], (4, 1, 3))
+    if mono:
+        original = original[:, :, 0].copy()
+    algorithm = IndiAllskyScnr.green_mtf
+    calls = []
+
+    def wrapped(obj, image):
+        calls.append(obj.config['SCNR_MTF_MIDTONES'])
+        return algorithm(obj, image)
+
+    monkeypatch.setattr(IndiAllskyScnr, 'green_mtf', wrapped)
+    altitudes = [1, 0, -1, -3, -5.999, -6, -6.001, -9, -12, -13]
+    for altitude in altitudes + altitudes[::-1]:
+        p.twilight.apply(altitude)
+        p.night_av[0] = altitude < -6
+        amount = p.twilight.weight if enabled_night else 1 - p.twilight.weight
+        midtones = .5 + (strength - .5) * amount
+        p.image = original.copy()
+        calls.clear()
+        p.scnr()
+        if amount == 0 or strength == .5:
+            numpy.testing.assert_array_equal(p.image, original)
+            assert calls == []
+        else:
+            expected = algorithm(IndiAllskyScnr({'USE_NIGHT_COLOR': True,
+                                 'SCNR_MTF_MIDTONES': midtones}, p.night_av), original.copy())
+            numpy.testing.assert_array_equal(p.image, expected)
+            assert calls == pytest.approx([midtones])
+    assert p.twilight.source == source_before
+
+
+@pytest.mark.parametrize('shared,enabled,focus', [(True, True, False), (False, False, False), (False, True, True)])
+def test_mtf_disabled_endpoint_fade_respects_existing_bypasses(processor, monkeypatch, shared, enabled, focus):
+    p = processor({'TWILIGHT_TRANSITION': {'ENABLE': enabled}, 'USE_NIGHT_COLOR': shared,
+                   'SCNR_ALGORITHM': '', 'SCNR_ALGORITHM_DAY': 'green_mtf'}, -10)
+    p.focus_mode = focus
+    original = p.image.copy()
+    apply = Mock(side_effect=AssertionError('MTF must not run on this bypass path'))
+    monkeypatch.setattr(IndiAllskyScnr, 'green_mtf', apply)
+    p.scnr()
+    apply.assert_not_called()
+    numpy.testing.assert_array_equal(p.image, original)
 
 
 @pytest.mark.parametrize('altitude,expected', [(-12, 'night'), (-9.001, 'night'), (-9, 'day'), (-6, 'day')])

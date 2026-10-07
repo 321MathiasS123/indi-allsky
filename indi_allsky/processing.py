@@ -37,7 +37,7 @@ from .denoise import IndiAllskyDenoise
 from .stack import IndiAllskyStacker
 from .overlay.cardinalDirsLabel import IndiAllskyCardinalDirsLabel
 from .utils import IndiAllSkyDateCalcs
-from .twilight import TwilightTransition
+from .twilight import TwilightTransition, interpolate
 from .overlay.moonOverlay import IndiAllSkyMoonOverlay
 from .overlay.lightgraphOverlay import IndiAllSkyLightgraphOverlay
 from .overlay.imageOverlay import IndiAllSkyImageOverlay
@@ -2190,10 +2190,24 @@ class ImageProcessor(object):
         if self.focus_mode:
             return True
         original = self.image
-        # Algorithms and denoise strength levels are discrete. Select the
+        # Other algorithms and denoise strength levels are discrete. Select the
         # nearest endpoint, including its options, and process this frame once.
         # An exact midpoint tie selects day, in either direction.
         night = weight > 0.5
+        midtones = None
+        if name == 'scnr':
+            midtones = self.config['SCNR_MTF_MIDTONES']
+            source = self.twilight.source
+            night_algorithm = source.get('SCNR_ALGORITHM')
+            day_algorithm = source.get('SCNR_ALGORITHM_DAY')
+            if {night_algorithm or '', day_algorithm or ''} == {'', 'green_mtf'}:
+                # Off is neutral MTF, not a different algorithm to switch to
+                # halfway through. Ignore the disabled endpoint's stored value.
+                night = night_algorithm == 'green_mtf'
+                strength = source.get('SCNR_MTF_MIDTONES' if night else 'SCNR_MTF_MIDTONES_DAY', .55)
+                midtones = interpolate(.5, strength, weight if night else 1 - weight)
+                if midtones == .5:
+                    return True  # exact no-op, including a configured neutral strength
         key = (name, night)
         if key not in self._twilight_filters:
             self._twilight_filters[key] = filter_class(self.twilight.endpoint_config(night), self.night_av)
@@ -2202,9 +2216,8 @@ class ImageProcessor(object):
         if not algorithm:
             return True
         if name == 'scnr':
-            # The algorithm is discrete, but its midtone value changes each frame.
+            # The effective midtone value can change each frame.
             # Invalidate the cached lookup table only when that value changes.
-            midtones = self.config['SCNR_MTF_MIDTONES']
             if filter_o.config.get('SCNR_MTF_MIDTONES') != midtones:
                 filter_o.config['SCNR_MTF_MIDTONES'] = midtones
                 filter_o._mtf_lut = None

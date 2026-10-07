@@ -39,9 +39,16 @@ is shown if the Sun keeps moving in one direction through the solar cycle.
 - Automatic white balance, stretching, grayscale and contrast enhancement.
   Effects are faded using the same captured frame; no images from different
   capture times are blended.
+- MTF green removal blends its midtone value. When one endpoint has MTF SCNR
+  enabled and the other has SCNR disabled, the disabled endpoint means neutral
+  MTF (0.5), regardless of its stored midtone setting. For example, off by day
+  and 0.52 by night gives 0.51 halfway through the blend. It fades in and out
+  across the full interval, with no algorithm switch at the midpoint. Two MTF
+  endpoints continue blending their configured values. Different non-MTF/MTF
+  algorithm pairs keep the nearer-endpoint selection. SCNR runs at most once
+  per frame; the disabled endpoint is an exact no-op.
 - Denoising runs once with the nearer endpoint's algorithm, strength and options.
-  Green removal also runs once with the nearer algorithm; its continuous midtone
-  setting is blended. Above 50% night settings the night profile is selected;
+  Above 50% night settings the night profile is selected;
   at or below 50% the day profile is selected. With −6°/−12° endpoints, this
   switches at −9°: night denoising during the first half of the morning blend,
   then day denoising. Evening reverses this selection. Partial summer nights
