@@ -78,9 +78,10 @@ class IndiAllskyScnr(object):
 
         #start = time.time()
 
-        # casting to uint16 (for uint8 data) to fix the magenta cast caused by overflows
-        m = numpy.add(r.astype(numpy.uint16), b.astype(numpy.uint16)) * 0.5
-        g = numpy.minimum(g, m.astype(numpy.uint8))
+        # Widen the sum so neither 8-bit nor 16-bit input can overflow.
+        sum_dtype = numpy.uint32 if scidata.dtype == numpy.uint16 else numpy.uint16
+        m = numpy.add(r.astype(sum_dtype), b.astype(sum_dtype)) * 0.5
+        g = numpy.minimum(g, m.astype(scidata.dtype))
 
         #elapsed_s = time.time() - start
         #logger.info('SCNR average neutral in %0.4f s', elapsed_s)
@@ -118,7 +119,9 @@ class IndiAllskyScnr(object):
         #mtf_start = time.time()
 
 
-        if self.night != self.night_av[constants.NIGHT_NIGHT]:
+        if self.night != self.night_av[constants.NIGHT_NIGHT] or (
+            self._mtf_lut is not None and self._mtf_lut.dtype != scidata.dtype
+        ):
             self.night = self.night_av[constants.NIGHT_NIGHT]
             self._mtf_lut = None  # recalculate LUT
 
@@ -136,9 +139,9 @@ class IndiAllskyScnr(object):
 
 
             shadows_val = 0  # no clipping
-            highlights_val = 255
+            highlights_val = numpy.iinfo(scidata.dtype).max
 
-            data_max = 255
+            data_max = highlights_val
 
             range_array = numpy.arange(0, data_max + 1, dtype=numpy.float32)
 
@@ -153,7 +156,9 @@ class IndiAllskyScnr(object):
             lut[lut < 0] = 0  # clip low end
             lut[lut > data_max] = data_max  # clip high end
 
-            lut = lut.astype(numpy.uint8)  # this must come after clipping
+            if scidata.dtype == numpy.uint16:
+                numpy.rint(lut, out=lut)
+            lut = lut.astype(scidata.dtype)  # this must come after clipping
 
             #logger.info('Min: %d, Max: %d', numpy.min(lut), numpy.max(lut))
 
@@ -163,7 +168,7 @@ class IndiAllskyScnr(object):
         b, g, r = cv2.split(scidata)
 
 
-        mtf_g = self._mtf_lut.take(g, mode='raise')
+        mtf_g = self._mtf_lut[g]
 
 
         #stretch_elapsed_s = time.time() - mtf_start

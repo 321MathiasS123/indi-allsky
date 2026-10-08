@@ -281,6 +281,7 @@ class ImageWorker(Process):
 
 
             # new context for every task, reduces the effects of caching
+            cycle_start = time.monotonic()
             with app.app_context():
                 if 'period_end' in i_dict:
                     self._checkCaptureSequence(i_dict['period_end'], marker=True)
@@ -292,6 +293,8 @@ class ImageWorker(Process):
                 self.processImage(i_dict)
                 self.capture_sequence.complete(i_dict)
                 set_inflight(self.period_inflight, None)
+            logger.info('Image worker cycle completed in %0.4f s (frame=%s, exposure=%s, sqm=%s)',
+                time.monotonic() - cycle_start, i_dict.get('exp_time'), i_dict.get('exposure'), bool(i_dict.get('sqm_exposure')))
 
 
     def _checkCaptureSequence(self, item, marker=False):
@@ -675,7 +678,7 @@ class ImageWorker(Process):
                 self.image_processor.contrast_clahe_16bit()
 
 
-        self.image_processor.convert_16bit_to_8bit()
+        self.image_processor.convert_16bit_to_8bit(preserve_colour=True, preserve_detections=self.config.get('DETECT_DRAW', False))
 
         #################################################################
         ### Image data at this stage will be uint8 (grayscale or BGR) ###
@@ -744,6 +747,7 @@ class ImageWorker(Process):
 
 
         # rotation
+        self.image_processor.restore_colour_precision()
         self.image_processor.rotate_90()
         self.image_processor.rotate_angle()
 
@@ -757,6 +761,7 @@ class ImageWorker(Process):
 
         # crop
         self.image_processor.crop_image()
+        self.image_processor.normalize_colour_precision()
 
 
         # green removal
@@ -779,6 +784,7 @@ class ImageWorker(Process):
 
         # sharpening (unsharp mask)
         self.image_processor.sharpen()
+        self.image_processor.finish_colour_precision()
 
 
         if not self.config.get('CONTRAST_ENHANCE_16BIT'):
@@ -3209,4 +3215,3 @@ class ImageWorker(Process):
         with self.sensors_user_av.get_lock():
             self.sensors_user_av[constants.SENSOR_USER_CAMERA_SQM_MAG] = float(mag_sqm)
             self.sensors_user_av[constants.SENSOR_USER_CAMERA_SQM_ADU] = float(raw_adu)
-
