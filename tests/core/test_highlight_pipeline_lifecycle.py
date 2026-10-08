@@ -1,13 +1,11 @@
 """Exercise parent worker ordering without loading platform-specific services."""
 import ast
-from contextlib import nullcontext
 import logging
 from pathlib import Path
 from queue import Queue
 import subprocess
 import sys
 import textwrap
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +13,19 @@ import pytest
 def parent_methods():
     tree = ast.parse((Path(__file__).parents[2] / 'indi_allsky' / 'allsky.py').read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiAllSky')
-    names = {'_highlightMeterEnabled', '_stopHighlightWorker', '_stopImageWorker', '_stopCaptureWorker'}
+    names = {'_highlightMeterEnabled', '_stopHighlightWorker', '_stopImageWorker',
+             '_stopCaptureWorker', '_resetHighlightFeedbackQueue'}
     code = ast.Module(body=[n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names], type_ignores=[])
-    namespace = {'logger': logging.getLogger(__name__)}
+    namespace = {'logger': logging.getLogger(__name__), 'Queue': FeedbackQueue}
     exec(compile(code, '<parent lifecycle>', 'exec'), namespace)
-    return type('Parent', (), {n: namespace[n] for n in names})
+    methods = {n: namespace[n] for n in names}
+    methods['__init__'] = lambda self: setattr(self, 'highlight_feedback_q', FeedbackQueue())
+    return type('Parent', (), methods)
+
+
+class FeedbackQueue(Queue):
+    def close(self):
+        self.closed = True
 
 
 class Worker:
@@ -163,59 +169,39 @@ def test_renderer_failure_during_drain_does_not_restart_stopped_meter():
                       'render-restarted', 'new-render-drained']
 
 
-def test_reload_replaces_only_feedback_after_both_workers_stop():
-    tree = ast.parse((Path(__file__).parents[2] / 'indi_allsky' / 'allsky.py').read_text())
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiAllSky')
-    run = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+@pytest.mark.parametrize('terminate,renderer', [
+    (False, 'alive'), (True, 'alive'), (False, 'absent'),
+    (False, 'dead'), (True, 'dead'),
+])
+def test_stop_replaces_only_feedback_after_both_workers_stop(terminate, renderer):
     events = []
-    old_feedback = Queue()
+    parent = parent_methods()()
+    parent._terminate = terminate
+    parent.highlight_worker = Worker(events, 'meter')
+    parent.image_worker = (None if renderer == 'absent' else
+                           Worker(events, 'render', alive=renderer == 'alive'))
+    parent._startImageWorker = lambda: setattr(parent, 'image_worker', Worker(events, 'replacement'))
+    old_feedback = parent.highlight_feedback_q
     old_feedback.put({'exp_time': 100, 'measurement': 'old configuration'})
-    fresh_feedback = Queue()
     image_queue, input_queue = Queue(), Queue()
+    parent.image_q, parent.highlight_input_q = image_queue, input_queue
     image_queue.put({'filename': 'retained.fit'})
     input_queue.put({'filename': 'fresh.fit'})
 
     def close_feedback():
-        assert events == ['capture-stopped', 'meter-stopped', 'render-stopped']
+        assert parent.highlight_worker is None
+        assert parent.image_worker is None or not parent.image_worker.is_alive()
         events.append('feedback-closed')
 
     old_feedback.close = close_feedback
-
-    def new_queue():
-        assert events[-1] == 'feedback-closed'
-        events.append('feedback-replaced')
-        return fresh_feedback
-
-    namespace = {'logger': logging.getLogger(__name__), 'Queue': new_queue,
-                 'app': SimpleNamespace(app_context=nullcontext)}
-    exec(compile(ast.Module(body=[run], type_ignores=[]), '<parent reload>', 'exec'), namespace)
-    parent = SimpleNamespace(
-        _shutdown=False, _reload=True, highlight_feedback_q=old_feedback,
-        image_q=image_queue, highlight_input_q=input_queue,
-        write_pid=lambda: None, _expireOrphanedTasks=lambda: None,
-        _deleteScratchFolder=lambda: None, _startup=lambda: None,
-        _stopCaptureWorker=lambda: events.append('capture-stopped'),
-        _stopImageWorker=lambda: events.extend(['meter-stopped', 'render-stopped']),
-        _stopVideoWorker=lambda: None, _stopSensorWorker=lambda: None,
-        _stopFileUploadWorkers=lambda: None, reload_handler=lambda: None,
-    )
-
-    class ReloadComplete(Exception):
-        pass
-
-    def start_capture():
-        assert parent.highlight_feedback_q is fresh_feedback
-        assert fresh_feedback.empty()
-        assert parent.image_q is image_queue
-        assert parent.highlight_input_q is input_queue
-        assert image_queue.get_nowait() == {'filename': 'retained.fit'}
-        assert input_queue.get_nowait() == {'filename': 'fresh.fit'}
-        raise ReloadComplete
-
-    parent._startCaptureWorker = start_capture
-    with pytest.raises(ReloadComplete):
-        namespace['run'](parent)
-    assert events[-2:] == ['feedback-closed', 'feedback-replaced']
+    parent._stopImageWorker()
+    assert events[-1] == 'feedback-closed'
+    assert parent.highlight_feedback_q is not old_feedback
+    assert parent.highlight_feedback_q.empty()
+    assert parent.image_q is image_queue
+    assert parent.highlight_input_q is input_queue
+    assert image_queue.get_nowait() == {'filename': 'retained.fit'}
+    assert input_queue.get_nowait() == {'filename': 'fresh.fit'}
 
 
 def test_renderer_exit_drops_unused_feedback_but_flushes_frame_queue(tmp_path):
