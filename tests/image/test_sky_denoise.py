@@ -11,7 +11,7 @@ import ephem
 import numpy as np
 import pytest
 
-from indi_allsky import constants, sky_denoise
+from indi_allsky import asi676mc, constants, sky_denoise
 from indi_allsky.denoise import IndiAllskyDenoise
 
 
@@ -145,10 +145,11 @@ def processor_class():
     tree = ast.parse(path.read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageProcessor')
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-                and n.name in {'_debayer', 'denoise', '_denoise', '_denoise_sun_altitude', 'getLatestImage'}]
+                and n.name in {'_debayer', 'denoise', '_denoise', '_denoise_sun_altitude',
+                               '_denoise_temporal_kwargs', 'getLatestImage'}]
     ns = dict(__name__='indi_allsky.processing', __package__='indi_allsky', cv2=cv2,
               numpy=np, constants=constants, logger=logging.getLogger('test'),
-              ephem=ephem, math=math, timedelta=timedelta)
+              ephem=ephem, math=math, timedelta=timedelta, asi676mc=asi676mc)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), ns)
     return ns['ImageProcessor']
 

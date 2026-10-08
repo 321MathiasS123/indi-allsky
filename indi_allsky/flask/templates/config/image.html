@@ -304,7 +304,7 @@
                     <div class="tw:flex tw:flex-col tw:gap-1">
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.IMAGE_DENOISE.label.text }}</span>
                         {{ form_config.IMAGE_DENOISE(class='tw:select tw:select-bordered tw:select-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
-                        <span class="tw:text-[0.625rem] tw:text-base-content/40">Noise reduction before stretching. Star-aware smooths sky noise, mottling and dark patches while protecting detected stars; it adds processing time and uses the configured lens circle.</span>
+                        <span class="tw:text-[0.625rem] tw:text-base-content/40">Noise reduction before stretching. Star-aware smooths sky noise, mottling and dark patches. During capture, faint stars gain protection by recurring in three of four images, without image stacking. It adds processing time and uses the configured lens circle.</span>
                         <div id="IMAGE_DENOISE-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                     </div>
                     <div class="tw:flex tw:flex-col tw:gap-1">
