@@ -346,3 +346,159 @@ def test_vectorized_uncontested_matches_preserve_greedy_crowded_choices():
                 used_right.add(b)
         actual = sky_catalogue._pairs(previous, current, radius)
         np.testing.assert_array_equal(np.column_stack(actual), np.asarray(expected).reshape(-1, 2))
+
+
+def test_additional_sensor_candidate_fades_without_entering_star_history():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    baseline = sky_catalogue.SkySourceCatalogue()
+    sensor = np.array([[70., 75., 100.]])
+    values, flags = [], []
+    for frame in range(6):
+        expected, _ = update(baseline, frame)
+        weights, diagnostics = update(catalogue, frame, sensor_points=sensor)
+        np.testing.assert_array_equal(weights, expected)
+        np.testing.assert_array_equal(catalogue._tracks, baseline._tracks)
+        np.testing.assert_array_equal(catalogue._anchors, baseline._anchors)
+        for actual, original in zip(catalogue._history, baseline._history):
+            np.testing.assert_array_equal(actual, original)
+        values.append(diagnostics['sensor_weights'][0])
+        flags.append(diagnostics['sensor_stationary'][0])
+    assert values == [1, 1, 1, 0.5, 0.25, 0]
+    assert flags == [False, False, False, True, True, True]
+
+
+def test_normal_and_extra_stationary_candidates_age_once_per_capture():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        weights, diagnostics = update(catalogue, frame, score=12, fixed=True, compact=True,
+                                      sensor_points=[[70, 75, 50]])
+        assert weights[-1] == diagnostics['sensor_weights'][0]
+        assert diagnostics['stationary_mask'][-1] == diagnostics['sensor_stationary'][0]
+
+
+def test_moving_single_colour_candidate_is_not_rejected_or_used_as_a_star():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(10):
+        sensor = np.array([[70., 75., 100.]])
+        sensor[:, :2] += np.array([1.8, -0.7])*frame
+        _, diagnostics = update(catalogue, frame, sensor_points=sensor)
+        assert diagnostics['sensor_weights'][0] == 1
+        assert not diagnostics['sensor_stationary'][0]
+        assert len(catalogue._tracks) == len(frame_points(frame))
+
+
+def test_single_colour_source_at_rotation_pole_has_insufficient_motion_for_rejection():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    initial = anchors(0)
+    for frame in range(12):
+        angle = frame * 0.002
+        rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        points = initial.copy()
+        points[:, :2] = (initial[:, :2] - 600) @ rotation.T + 600
+        _, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
+            geometry_key='rotation', sensor_shape=SHAPE, sensor_points=[[600, 600, 100]])
+        assert diagnostics['sensor_weights'][0] == 1
+        assert not diagnostics['sensor_stationary'][0]
+
+
+def test_extra_bright_detections_cannot_bootstrap_sky_motion():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(4):
+        points = frame_points(frame)[-1:]
+        weights, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
+            geometry_key='one-real-star', sensor_shape=SHAPE, sensor_points=anchors(frame))
+        assert weights[0] == 1 and diagnostics['status'] == 'motion_fallback'
+        np.testing.assert_array_equal(diagnostics['sensor_weights'], 1)
+        assert not diagnostics['sensor_stationary'].any()
+        assert not len(catalogue._tracks) and not len(catalogue._fixed) and not catalogue._history
+
+
+def test_extra_duplicate_capture_reuses_aligned_results_without_learning():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    sensors = np.array([[70., 75., 100.], [1140., 80., 100.]])
+    for frame in range(4):
+        sensors[1, :2] = [1140+1.8*frame, 80-.7*frame]
+        first, diagnostics = update(catalogue, frame, sensor_points=sensors)
+    before = catalogue._fixed.copy()
+    repeated, duplicate = update(catalogue, 3, sensor_points=sensors[::-1])
+    np.testing.assert_array_equal(repeated, first)
+    np.testing.assert_array_equal(duplicate['sensor_weights'], diagnostics['sensor_weights'][::-1])
+    np.testing.assert_array_equal(duplicate['sensor_stationary'], diagnostics['sensor_stationary'][::-1])
+    np.testing.assert_array_equal(catalogue._fixed, before)
+    assert duplicate['status'] == 'duplicate'
+
+
+def test_sensor_fallback_keeps_only_prior_proof_and_suspends_fade():
+    for initial_frames, expected in [(3, 1), (4, 0.5), (6, 0)]:
+        catalogue = sky_catalogue.SkySourceCatalogue()
+        for frame in range(initial_frames):
+            update(catalogue, frame, sensor_points=[[70, 75, 50]])
+        history_and_fade = catalogue._fixed[:, [4, 8, 9]].copy()
+        frame = initial_frames
+        points = frame_points(frame)[-1:]
+        _, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
+            geometry_key='camera-one', sensor_shape=SHAPE,
+            sensor_points=[[70, 75, 50], [80, 85, 100]])
+        assert diagnostics['status'] == 'motion_fallback'
+        np.testing.assert_array_equal(diagnostics['sensor_weights'], [expected, 1])
+        np.testing.assert_array_equal(diagnostics['sensor_stationary'], [initial_frames >= 4, False])
+        np.testing.assert_array_equal(catalogue._fixed[:, [4, 8, 9]], history_and_fade)
+
+
+@pytest.mark.parametrize('change', ['gap', 'invalid', 'geometry'])
+def test_sensor_proof_resets_with_capture_context(change):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        update(catalogue, frame, sensor_points=[[70, 75, 50]])
+    points = frame_points(6)
+    kwargs = dict(capture_time=1180, geometry_key='camera-one', sensor_shape=SHAPE)
+    if change == 'gap':
+        kwargs['capture_time'] = 1700
+    elif change == 'invalid':
+        kwargs['capture_time'] = None
+    else:
+        kwargs['geometry_key'] = 'other-camera'
+    _, diagnostics = catalogue.weights(points, points, sensor_points=[[70, 75, 50]], **kwargs)
+    assert diagnostics['sensor_weights'][0] == 1 and not diagnostics['sensor_stationary'][0]
+
+
+@pytest.mark.parametrize('sensors', [
+    [[70, 75, np.nan]], [[70, np.inf, 50]], [[-1, 75, 50]], [[1200, 75, 50]],
+    [[70, 75]], 'invalid', np.zeros((sky_catalogue.MAX_POINTS+1, 3)),
+])
+def test_invalid_extra_table_is_skipped_without_resetting_stars(sensors):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    baseline = sky_catalogue.SkySourceCatalogue()
+    for frame in range(3):
+        update(catalogue, frame)
+        update(baseline, frame)
+    expected, _ = update(baseline, 3)
+    weights, diagnostics = update(catalogue, 3, sensor_points=sensors)
+    np.testing.assert_array_equal(weights, expected)
+    np.testing.assert_array_equal(catalogue._tracks, baseline._tracks)
+    assert diagnostics['sensor_skipped']
+    assert not diagnostics['sensor_stationary'].any()
+    np.testing.assert_array_equal(diagnostics['sensor_weights'], 1)
+
+
+def test_optional_empty_extra_table_preserves_normal_results_exactly():
+    baseline = sky_catalogue.SkySourceCatalogue()
+    supplied = sky_catalogue.SkySourceCatalogue()
+    for frame in range(7):
+        kwargs = dict(fixed=True, compact=True, score=12)
+        expected, first = update(baseline, frame, **kwargs)
+        actual, second = update(supplied, frame, sensor_points=np.empty((0, 3)), **kwargs)
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(second['stationary_mask'], first['stationary_mask'])
+        np.testing.assert_array_equal(supplied._fixed, baseline._fixed)
+        assert not second['sensor_skipped'] and len(second['sensor_weights']) == 0
+
+
+def test_extra_candidates_respect_the_shared_fixed_track_bound(monkeypatch):
+    monkeypatch.setattr(sky_catalogue, 'MAX_TRACKS', 170)
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    sensors = np.column_stack((np.arange(20)*3+60, np.full(20, 75), np.full(20, 50)))
+    for frame in range(4):
+        _, diagnostics = update(catalogue, frame, sensor_points=sensors)
+        assert len(catalogue._fixed) <= 170 and len(catalogue._tracks) <= 170
+        assert len(diagnostics['sensor_weights']) == len(sensors)
