@@ -158,3 +158,13 @@ def test_separate_day_strength_is_used(monkeypatch, scene):
         lambda image, config, binning, strength: received.append(strength) or image)
     denoiser.star_aware(scene)
     assert received == [4]
+
+
+def test_disabled_bayer_repair_does_not_require_filter_state(processor_class):
+    obj = processor_class()
+    obj.config = {}
+    obj._ImageProcessor__cfa_bgr_map = {'RGGB': cv2.COLOR_BAYER_BG2BGR}
+    raw = np.full((64, 64), 10000, np.uint16)
+    ref = SimpleNamespace(hdulist=[SimpleNamespace(data=raw)], image_bitpix=16,
+                          image_bayerpat='RGGB', binning=1)
+    np.testing.assert_array_equal(obj._debayer(ref), cv2.cvtColor(raw, cv2.COLOR_BAYER_BG2BGR))

@@ -976,7 +976,7 @@ class ImageProcessor(object):
         # patches. Keep the HDU untouched: saved FITS remain calibration data.
         night_colour = self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT]
         denoise_key = 'IMAGE_DENOISE' if night_colour else 'IMAGE_DENOISE_DAY'
-        if not self.focus_mode and self.config.get(denoise_key) == 'star_aware':
+        if self.config.get(denoise_key) == 'star_aware' and not self.focus_mode:
             from .sky_denoise import repair_bayer
             data = repair_bayer(data, self.config, binning=i_ref.binning)
 
