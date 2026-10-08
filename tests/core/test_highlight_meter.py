@@ -1,4 +1,4 @@
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from multiprocessing import Array
 import queue
 import sys
@@ -11,6 +11,7 @@ from indi_allsky.exposure import exposure_basic
 from indi_allsky.highlight import HighlightMeasurement, HighlightTransition
 from indi_allsky.highlight_meter import (
     HighlightMeterWorker, OutputFeedbackGate, apply_control_snapshot, capture_cadence,
+    interrupted_period,
 )
 
 
@@ -138,11 +139,22 @@ def test_startup_seed_is_applied_once_and_disabled_state_resets_rendering():
 
 
 def worker():
+    class SharedMode(list):
+        locked = False
+
+        @contextmanager
+        def get_lock(self):
+            self.locked = True
+            try:
+                yield
+            finally:
+                self.locked = False
+
     result = HighlightMeterWorker.__new__(HighlightMeterWorker)
     result.controller = controller()
     result.config = result.controller.config
     result.frame_mode = [1, 0]
-    result.night_av = [1, 0]
+    result.night_av = SharedMode([1, 0])
     result.image_q = queue.Queue()
     return result
 
@@ -201,8 +213,17 @@ def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mo
     meter.config['CAMERA_INTERFACE'] = 'indi'
     meter.feedback_gate = OutputFeedbackGate()
     meter.output_feedback_q = queue.Queue()
-    meter.controller.compare_highlights = Mock(wraps=meter.controller.compare_highlights)
-    meter.controller.apply_transition_limits = Mock()
+    compare = meter.controller.compare_highlights
+
+    def locked_compare(*args):
+        assert meter.night_av.locked
+        return compare(*args)
+
+    def locked_limits():
+        assert meter.night_av.locked
+
+    meter.controller.compare_highlights = Mock(side_effect=locked_compare)
+    meter.controller.apply_transition_limits = Mock(side_effect=locked_limits)
     events = []
     reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0)
     measurement = HighlightMeasurement(1, 2, 200)
@@ -233,6 +254,7 @@ def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mo
     assert meter.controller.compare_highlights.call_count == int(fresh)
     assert meter.controller.apply_transition_limits.call_count == int(fresh)
     assert status == ('old capture mode' if mode_changes else 'metered' if fresh else 'old capture')
+    assert not meter.night_av.locked
 
 
 def test_period_barriers_and_sqm_keep_fifo_order_and_stop_is_not_forwarded():
@@ -295,3 +317,67 @@ def test_meter_child_resets_inherited_force_termination_handlers(monkeypatch):
         assert (module.signal.SIGHUP, module.signal.SIG_IGN) in [call.args for call in signals.call_args_list]
     meter.initialize.assert_called_once_with()
     meter.saferun.assert_called_once_with(application)
+
+
+@pytest.mark.parametrize('value,expected', [
+    (b'', None), (b'1:2026-10-08:1', '1:2026-10-08:1'),
+    (b'12:2026-10-08:0', '12:2026-10-08:0'), (b'invalid', 'UNKNOWN'),
+    (b'1:2026-10-08:2', 'UNKNOWN'), (b'\xff', 'UNKNOWN'),
+])
+def test_interrupted_receipt_has_bounded_period_identity(value, expected):
+    receipt = Array('c', 256)
+    receipt.value = value
+    assert interrupted_period(receipt) == expected
+    assert interrupted_period(None) is None
+
+
+@pytest.mark.parametrize('sqm', [False, True])
+def test_receipt_covers_handoff_and_is_cleared_only_after_success(sqm):
+    meter = worker()
+    meter.period_inflight = Array('c', 256)
+    meter.input_q = queue.Queue()
+    capture = job(capture_period_id='1:2026-10-08:1', sqm_exposure=sqm)
+    meter.input_q.put(capture)
+    meter.input_q.put({'stop': True})
+    seen = []
+    meter.image_q = SimpleNamespace(put=lambda frame: seen.append((frame, meter.period_inflight.value)))
+    meter.forward = Mock(side_effect=meter.image_q.put)
+    meter.saferun(SimpleNamespace(app_context=nullcontext))
+    assert seen == [(capture, b'1:2026-10-08:1')]
+    assert meter.period_inflight.value == b''
+
+
+@pytest.mark.parametrize('sqm', [False, True])
+def test_interrupted_handoff_marks_period_on_replacement_before_receipt_clear(sqm):
+    receipt = Array('c', 256)
+    first = worker()
+    first.period_inflight = receipt
+    first.input_q = queue.Queue()
+    first.input_q.put(job(capture_period_id='1:2026-10-08:1', sqm_exposure=sqm))
+    first.image_q = SimpleNamespace(put=Mock(side_effect=SystemExit('worker terminated')))
+    first.forward = Mock(side_effect=first.image_q.put)
+    with pytest.raises(SystemExit):
+        first.saferun(SimpleNamespace(app_context=nullcontext))
+    assert receipt.value == b'1:2026-10-08:1'
+    replacement = worker()
+    replacement.period_inflight = receipt
+    replacement.input_q = queue.Queue()
+    replacement.input_q.put({'stop': True})
+    seen = []
+    replacement._miscDb = SimpleNamespace(setState=lambda key, value: seen.append((key, receipt.value)))
+    replacement.saferun(SimpleNamespace(app_context=nullcontext))
+    assert seen == [('CAPTURE_PERIOD_FAILURE_1:2026-10-08:1', b'1:2026-10-08:1')]
+    assert receipt.value == b''
+
+
+def test_failed_failure_persistence_keeps_receipt_and_does_not_consume_new_job():
+    meter = worker()
+    meter.period_inflight = Array('c', 256)
+    meter.period_inflight.value = b'corrupt'
+    meter.input_q = Mock()
+    meter._miscDb = SimpleNamespace(setState=Mock(side_effect=RuntimeError('database unavailable')))
+    with pytest.raises(RuntimeError):
+        meter.saferun(SimpleNamespace(app_context=nullcontext))
+    assert meter.period_inflight.value == b'corrupt'
+    meter.input_q.get.assert_not_called()
+    assert meter._miscDb.setState.call_args.args[0] == 'CAPTURE_PERIOD_FAILURE_UNKNOWN'

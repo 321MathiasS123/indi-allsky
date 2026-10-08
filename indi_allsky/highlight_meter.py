@@ -6,6 +6,7 @@ import math
 from multiprocessing import Process
 from pathlib import Path
 import queue
+import re
 import signal
 import time
 import traceback
@@ -22,6 +23,16 @@ def capture_cadence(job, config):
     period = job.get('capture_period', config.get(
         'EXPOSURE_PERIOD' if mode[constants.NIGHT_NIGHT] else 'EXPOSURE_PERIOD_DAY', 15))
     return max(float(period), float(job['exposure']), 0.001)
+
+
+def interrupted_period(receipt):
+    if receipt is None or not receipt.value:
+        return None
+    try:
+        identifier = receipt.value.decode('utf-8')
+    except UnicodeDecodeError:
+        return 'UNKNOWN'
+    return identifier if re.fullmatch(r'[0-9]+:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]', identifier) else 'UNKNOWN'
 
 
 def apply_control_snapshot(controller, snapshot):
@@ -106,7 +117,8 @@ class HighlightMeterWorker(Process):
 
     def __init__(self, idx, config, error_q, input_q, image_q, output_feedback_q,
                  position_av, exposure_av, gain_av, binning_av, sensors_temp_av,
-                 sensors_user_av, night_av, astro_av, backlog_state=None):
+                 sensors_user_av, night_av, astro_av, backlog_state=None,
+                 period_inflight=None):
         super().__init__()
         self.name = 'HighlightMeter-{0:d}'.format(idx)
         self.config = copy.deepcopy(config)
@@ -123,9 +135,11 @@ class HighlightMeterWorker(Process):
         self.night_av = night_av
         self.astro_av = astro_av
         self.backlog_state = backlog_state
+        self.period_inflight = period_inflight
 
     def initialize(self):
         from . import exposure as exposure_module
+        from .flask.miscDb import miscDb
         from .processing import ImageProcessor
 
         # Capture mode is local to this frame; shared camera state can advance
@@ -145,6 +159,7 @@ class HighlightMeterWorker(Process):
         self.controller = exposure_class(self.config, self.exposure_av, self.gain_av,
                                          self.binning_av, self.frame_mode)
         self.feedback_gate = OutputFeedbackGate()
+        self._miscDb = miscDb(self.config)
 
     def run(self):
         from .flask import create_app
@@ -164,17 +179,35 @@ class HighlightMeterWorker(Process):
             raise
 
     def saferun(self, application):
+        receipt = getattr(self, 'period_inflight', None)
+        interrupted = interrupted_period(receipt)
+        if interrupted:
+            # A replacement worker must not silently finalize a period after
+            # its predecessor died between dequeue and renderer handoff.
+            with application.app_context():
+                self._miscDb.setState('CAPTURE_PERIOD_FAILURE_{0}'.format(interrupted),
+                                      'Highlight metering worker stopped before forwarding its frame')
+            logger.error('Capture period %s is incomplete after metering worker failure', interrupted)
+            receipt.value = b''
         while True:
             job = self.input_q.get()
             if job.get('stop'):
                 # The supervisor stops the renderer after this worker has
                 # forwarded its complete prefix of captures and barriers.
                 return
-            if job.get('period_end') or job.get('sqm_exposure'):
+            if job.get('period_end'):
                 self.image_q.put(job)
                 continue
-            with application.app_context():
-                self.forward(job)
+            if receipt is not None:
+                identifier = (job.get('capture_period_id') or '').encode('utf-8')
+                receipt.value = identifier if len(identifier) < len(receipt) else b'UNKNOWN'
+            if job.get('sqm_exposure'):
+                self.image_q.put(job)
+            else:
+                with application.app_context():
+                    self.forward(job)
+            if receipt is not None:
+                receipt.value = b''
 
     def forward(self, job):
         """No failure in this optional control path may consume the original."""
@@ -222,6 +255,7 @@ class HighlightMeterWorker(Process):
                         logger.exception('Unable to close disposable highlight measurement')
             if processor is not None:
                 processor.image_list.clear()
+            ref = None  # Release the loop's final pixel owner before queue IPC.
         snapshot = {
             'status': status,
             'measurement': tuple(measurement) if measurement is not None else None,
@@ -287,21 +321,23 @@ class HighlightMeterWorker(Process):
                     latest = feedback
             except queue.Empty:
                 break
-        # Mode can change during metering. Never apply an older mode's request
-        # to a camera that has already switched its limits and capture settings.
-        if tuple(job['capture_mode']) != tuple(self.night_av):
-            self.controller.highlight_output.reset()
-            return measurement, 'old capture mode', False, False
-        if time.time() - job['exp_time'] > capture_cadence(job, self.config):
-            self.controller.highlight_output.reset()
-            return measurement, 'old capture', False, False
-        self.feedback_gate.update(self.controller, job, latest, time.monotonic() - started)
-        transition = self.controller.highlight_transition
-        startup = transition._startup
-        self.controller.compare_highlights(measurement, job['exposure'], job['gain'])
-        # Optional independently maintained twilight feature clamps the moving
-        # limits here, never later from an obsolete rendered frame.
-        apply_limits = getattr(self.controller, 'apply_transition_limits', None)
-        if apply_limits is not None:
-            apply_limits()
+        # Hold the same lock used by capture mode changes until the decision
+        # and moving-limit clamp have both published. Checking and then dropping
+        # the lock would still allow an obsolete mode to command the camera.
+        with self.night_av.get_lock():
+            if tuple(job['capture_mode']) != tuple(self.night_av):
+                self.controller.highlight_output.reset()
+                return measurement, 'old capture mode', False, False
+            if time.time() - job['exp_time'] > capture_cadence(job, self.config):
+                self.controller.highlight_output.reset()
+                return measurement, 'old capture', False, False
+            self.feedback_gate.update(self.controller, job, latest, time.monotonic() - started)
+            transition = self.controller.highlight_transition
+            startup = transition._startup
+            self.controller.compare_highlights(measurement, job['exposure'], job['gain'])
+            # Optional independently maintained twilight feature clamps the
+            # moving limits here, never from an obsolete rendered frame.
+            apply_limits = getattr(self.controller, 'apply_transition_limits', None)
+            if apply_limits is not None:
+                apply_limits()
         return measurement, 'metered', startup and transition.active, False
