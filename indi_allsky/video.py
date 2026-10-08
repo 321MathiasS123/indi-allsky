@@ -104,8 +104,6 @@ class VideoWorker(Process):
 
         self.name = 'Video-{0:d}'.format(idx)
 
-        os.nice(19)  # lower priority
-
         self.config = config
 
         self.error_q = error_q
@@ -170,6 +168,18 @@ class VideoWorker(Process):
         signal.signal(signal.SIGTERM, self.sigterm_handler_worker)
         signal.signal(signal.SIGINT, self.sigint_handler_worker)
         signal.signal(signal.SIGALRM, self.sigalarm_handler_worker)
+
+        # Constructors run in the supervisor. Set priorities only in this
+        # child, before its threads and encoder subprocesses inherit them.
+        try:
+            os.nice(19)
+        except (AttributeError, OSError) as e:
+            logger.warning('Unable to lower Video worker CPU priority: %s', str(e))
+
+        try:
+            psutil.Process().ionice(psutil.IOPRIO_CLASS_IDLE)
+        except (AttributeError, OSError, psutil.Error) as e:
+            logger.warning('Unable to lower Video worker I/O priority: %s', str(e))
 
 
         # Calibration has its own serial thread so a long retained-FITS scan
