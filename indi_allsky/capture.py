@@ -805,7 +805,10 @@ class CaptureWorker(Process):
     def _initialize(self):
         self._period_queue = CapturePeriodQueue(
             self.image_q, temperature=lambda: self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP],
+            passive=self.config.get('CAMERA_INTERFACE') == 'indi_passive',
         )
+        if self.config.get('CAMERA_INTERFACE') == 'indi_passive':
+            logger.warning('Passive camera period jobs wait for delivered images only; externally triggered exposures still in flight cannot be included reliably')
         camera_interface = getattr(camera_module, self.config.get('CAMERA_INTERFACE', 'indi'))
 
 

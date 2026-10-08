@@ -78,6 +78,39 @@ def test_failed_delivery_never_releases_marker_or_allows_next_exposure():
     assert producer.waiting
 
 
+def test_passive_camera_accepts_unsolicited_frames_without_claiming_exposure_ownership():
+    outgoing = queue.Queue()
+    producer = CapturePeriodQueue(outgoing, passive=True)
+    first = {'filename': 'before-first-command.fit'}
+    producer.put(first)
+    producer.begin(1, (1, 0), DAY, 20)
+    producer.begin(1, (0, 0), DAY, 5)
+    producer.put({'filename': 'external-1.fit'})
+    producer.put({'filename': 'external-2.fit'})
+    producer.end_period(1, DAY.isoformat(), True, [{'task_id': 7}])
+    producer.put({'filename': 'arrived-after-boundary.fit'})
+    assert not producer.waiting
+    assert outgoing.get_nowait() is first
+    assert outgoing.get_nowait() == {'filename': 'external-1.fit'}
+    assert outgoing.get_nowait() == {'filename': 'external-2.fit'}
+    marker = outgoing.get_nowait()['period_end']
+    assert marker == {'period_id': PERIOD, 'tasks': [{'task_id': 7}]}
+    assert not CaptureSequenceTracker().check(marker, marker=True)
+    assert outgoing.get_nowait() == {'filename': 'arrived-after-boundary.fit'}
+
+
+def test_controlled_camera_still_rejects_unsolicited_or_duplicate_callbacks():
+    outgoing = queue.Queue()
+    producer = CapturePeriodQueue(outgoing)
+    with pytest.raises(RuntimeError, match='without an active exposure'):
+        producer.put({'filename': 'unsolicited.fit'})
+    producer.begin(1, (1, 0), DAY, 20)
+    producer.put({'filename': 'expected.fit'})
+    with pytest.raises(RuntimeError, match='without an active exposure'):
+        producer.put({'filename': 'duplicate.fit'})
+    assert outgoing.qsize() == 1
+
+
 def test_callback_and_transition_writes_cannot_overtake_each_other():
     entered, proceed = Event(), Event()
     items = []
