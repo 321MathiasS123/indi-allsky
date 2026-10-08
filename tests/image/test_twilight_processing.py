@@ -33,7 +33,7 @@ def processor_class():
                      timedelta=timedelta, timezone=timezone, logger=logging.getLogger('test'),
                      TwilightTransition=TwilightTransition, interpolate=interpolate, runtime_weight=runtime_weight,
                      IndiAllskyDenoise=IndiAllskyDenoise, IndiAllskyScnr=IndiAllskyScnr,
-                     Path=Path, time=time, psutil=psutil)
+                     Path=Path, time=time, psutil=psutil, asi676mc=asi676mc)
     exec(compile(ast.Module(body=[cls, frame_cls], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace['ImageProcessor']
 
@@ -226,6 +226,30 @@ def test_twilight_star_denoising_receives_capture_altitude(processor, monkeypatc
     p.denoise()
     altitude.assert_called_once_with(frame)
     assert denoise.call_args.kwargs == {'binning': 1, 'sun_altitude': -7.25}
+
+
+def test_twilight_denoising_endpoints_share_capture_catalogue(processor, monkeypatch):
+    p = processor({'IMAGE_DENOISE': 'star_aware', 'IMAGE_DENOISE_DAY': 'star_aware'}, -8)
+    frame = p.image_list[0]
+    frame.exp_elapsed, frame.exposure = 30.9, 30
+    frame.exp_date_utc = datetime(2026, 10, 8, 19, 0, tzinfo=timezone.utc)
+    frame.camera_id, frame.image_bayerpat, frame.capture_night = 1, 'RGGB', True
+    p._denoise_sun_altitude = Mock(return_value=-8)
+    calls = []
+
+    def record(obj, image, **kwargs):
+        calls.append((obj, kwargs))
+        return image
+
+    monkeypatch.setattr(IndiAllskyDenoise, 'star_aware', record)
+    for altitude in (-8, -10, -8):
+        p.twilight.apply(altitude)
+        p.denoise()
+        frame.exp_date_utc += timedelta(seconds=31)
+    assert calls[0][0] is calls[2][0] and calls[0][0] is not calls[1][0]
+    assert all(kwargs['catalogue'] is p._sky_source_catalogue for _, kwargs in calls)
+    times = [kwargs['capture_context']['capture_time'] for _, kwargs in calls]
+    assert times == [times[0], times[0] + 31, times[0] + 62]
 
 
 def test_green_removal_selects_one_algorithm_and_blends_midtones_without_stale_cache(processor, monkeypatch):

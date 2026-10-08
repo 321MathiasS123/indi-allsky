@@ -77,14 +77,18 @@ class IndiAllskyDenoise(object):
             return float(numpy.iinfo(img.dtype).max)
         return 1.0
 
-    def star_aware(self, scidata, binning=1, sun_altitude=None):
-        """Single-frame sky filter with its own image-based detail protection."""
+    def star_aware(self, scidata, binning=1, sun_altitude=None,
+                   catalogue=None, capture_context=None):
+        """Current-frame sky filter with optional coordinate-only confirmation."""
         from .sky_denoise import denoise
 
         start_t = time.monotonic()
         strength = self._get_strength()
+        temporal = {}
+        if catalogue is not None and capture_context is not None:
+            temporal = dict(catalogue=catalogue, capture_context=capture_context)
         result = denoise(scidata, self.config, binning=binning, strength=strength,
-                         sun_altitude=sun_altitude)
+                         sun_altitude=sun_altitude, **temporal)
         logger.info('Applied star-aware sky denoise strength=%d time=%.3fs',
                     strength, time.monotonic() - start_t)
         return result

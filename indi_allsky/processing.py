@@ -2287,7 +2287,8 @@ class ImageProcessor(object):
             if name == 'denoise' and algorithm == 'star_aware':
                 i_ref = self.getLatestImage()
                 self.image = filter_o.star_aware(original, binning=i_ref.binning,
-                                               sun_altitude=self._denoise_sun_altitude(i_ref))
+                                               sun_altitude=self._denoise_sun_altitude(i_ref),
+                                               **self._denoise_temporal_kwargs(i_ref))
             else:
                 self.image = getattr(filter_o, algorithm)(original)
         except AttributeError:
@@ -2346,13 +2347,45 @@ class ImageProcessor(object):
         if algo == 'star_aware':
             i_ref = self.getLatestImage()
             self.image = denoise_function(self.image, binning=i_ref.binning,
-                                         sun_altitude=self._denoise_sun_altitude(i_ref))
+                                         sun_altitude=self._denoise_sun_altitude(i_ref),
+                                         **self._denoise_temporal_kwargs(i_ref))
         else:
             self.image = self._denoise(denoise_function)
 
 
     def _denoise(self, denoise_function):
         return denoise_function(self.image)
+
+
+    def _denoise_temporal_kwargs(self, i_ref):
+        """Share source history across denoiser instances, never across cameras.
+
+        Archive previews lack acquisition timing. Stacked frames repeat old
+        noise and must not be used as independent confirmation observations.
+        """
+        catalogue = getattr(self, '_sky_source_catalogue', None)
+        try:
+            elapsed = float(i_ref.exp_elapsed)
+            exposure = float(i_ref.exposure)
+            if (elapsed <= 0 or exposure <= 0 or not math.isfinite(elapsed) or not math.isfinite(exposure)
+                    or sum(ref is not None for ref in self.image_list) > 1
+                    or asi676mc.excluded_from_downstream_measurements(
+                        getattr(i_ref, 'asi676mc_repair_result', None))):
+                raise ValueError('No independent capture observation')
+            midpoint = i_ref.exp_date_utc - timedelta(seconds=max(elapsed, exposure) - exposure / 2)
+            night = getattr(i_ref, 'capture_night', self.night_av[constants.NIGHT_NIGHT])
+            period = float(self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 20))
+            context = dict(capture_time=midpoint.timestamp(),
+                           capture_interval=max(period, exposure, elapsed),
+                           geometry_key=(i_ref.camera_id, self.config.get('CFA_PATTERN') or i_ref.image_bayerpat))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            if catalogue is not None:
+                catalogue.reset()
+            return {}
+        if catalogue is None:
+            from .sky_catalogue import SkySourceCatalogue
+            catalogue = self._sky_source_catalogue = SkySourceCatalogue()
+        return dict(catalogue=catalogue, capture_context=context)
 
 
     def _denoise_sun_altitude(self, i_ref):

@@ -1,15 +1,18 @@
-"""Single-frame sky denoising before stretching.
+"""Sky denoising before stretching, always using only current-frame pixels.
 
 Measured point sources and resolved edges protect detail while luminance noise,
 colour mottling and compact negative outliers are treated separately. No temporal
 stacking, trained model, calibration subtraction or generated detail is involved.
-Strength 3 is the reference tuning; all measurements use the original frame.
+An optional bounded coordinate catalogue confirms faint point protection.
+Strength 3 is the reference tuning; pixel measurements use the original frame.
 The one-sided dark-patch repair changes local background and aperture flux:
 this filter is intended for display images, not photometric measurements.
 """
 from concurrent.futures import ThreadPoolExecutor
+import logging
 import os
 import platform
+import time
 
 import cv2
 import numpy as np
@@ -19,6 +22,7 @@ from skimage.restoration import denoise_nl_means
 WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)
 STAR_PROTECTION_DAY_ALT = -6.0
 STAR_PROTECTION_NIGHT_ALT = -8.0
+logger = logging.getLogger('indi_allsky')
 
 
 def _star_protection(sun_altitude):
@@ -102,7 +106,8 @@ def repair_bayer(raw, config, binning=1):
     return result
 
 
-def denoise(image, config, binning=1, strength=3, sun_altitude=None):
+def denoise(image, config, binning=1, strength=3, sun_altitude=None,
+            catalogue=None, capture_context=None):
     """Filter BGR or monochrome data, retaining its layout and numeric range."""
     if strength <= 0 or min(image.shape[:2]) < 32:
         return image
@@ -127,7 +132,14 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None):
     mono = linear.ndim == 2
     if mono:
         linear = np.repeat(linear[:, :, None], 3, axis=2)
-    filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude))
+    temporal = None
+    if catalogue is not None and capture_context is not None:
+        temporal = dict(capture_context)
+        temporal['geometry_key'] = (temporal.get('geometry_key'), image.shape,
+                                    int(binning), geometry, margin)
+        temporal['sensor_shape'] = image.shape[:2]
+    filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude),
+                               catalogue, temporal, margin)
     if mono:
         filtered = filtered[:, :, 0]
     filtered = np.clip(filtered * maximum, 0, maximum)
@@ -138,10 +150,12 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None):
     return result
 
 
-def _denoise_linear(image, valid, strength=3, star_protection=1.0):
+def _denoise_linear(image, valid, strength=3, star_protection=1.0,
+                    catalogue=None, capture_context=None, margin=0):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
-    evidence = _source_evidence(image, valid, star_protection)
+    evidence = _source_evidence(image, valid, star_protection,
+                                catalogue, capture_context, margin)
     evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
@@ -193,7 +207,8 @@ def _noise_grid(data, tile=128):
             row(y)
     return cv2.resize(grid, (w, h), interpolation=cv2.INTER_LINEAR)
 
-def _source_evidence(image, valid=None, star_protection=1.0):
+def _source_evidence(image, valid=None, star_protection=1.0,
+                     catalogue=None, capture_context=None, margin=0):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
     fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
@@ -210,7 +225,9 @@ def _source_evidence(image, valid=None, star_protection=1.0):
     # fmin preserves partition's ordering when one of the scores is NaN.
     a, b, c = colour_scores
     support = np.fmin(np.maximum(a, b), np.maximum(np.fmin(a, b), c))
-    peaks = (dog == maximum_filter(dog, size=5)) & (score > 2.7) & (support > 1.2)
+    temporal = catalogue is not None and capture_context is not None and star_protection > 0
+    peaks = ((dog == maximum_filter(dog, size=5))
+             & (score > (2.0 if temporal else 2.7)) & (support > 1.2))
     if valid is not None:
         peaks &= valid
     # Incomplete neighbourhoods at crop boundaries are not reliable sources.
@@ -218,6 +235,11 @@ def _source_evidence(image, valid=None, star_protection=1.0):
     peaks[-12:] = False
     peaks[:, :12] = False
     peaks[:, -12:] = False
+    if temporal:
+        support_y, support_x = np.nonzero(peaks)
+        support_points = np.column_stack((support_x + margin, support_y + margin,
+                                          score[support_y, support_x]))
+        peaks &= score > 2.7
     yy, xx = np.nonzero(peaks)
     strengths = score[yy, xx]
     distance = cv2.distanceTransform((~peaks).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
@@ -230,8 +252,76 @@ def _source_evidence(image, valid=None, star_protection=1.0):
     coherent = fine - cv2.GaussianBlur(lum, (0, 0), 4)
     edge = np.clip((np.abs(coherent) / _noise_grid(coherent) - 7) / 5, 0, 1)
     edge = cv2.dilate(edge, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-    mask = np.maximum(mask, cv2.GaussianBlur(edge, (0, 0), 0.8))
-    return dict(lum=lum, mask=mask, points=np.column_stack((xx, yy, strengths)), noise=noise)
+    edge = cv2.GaussianBlur(edge, (0, 0), 0.8)
+    mask = np.maximum(mask, edge)
+    points = np.column_stack((xx, yy, strengths))
+    evidence = dict(lum=lum, mask=mask, points=points, noise=noise)
+    if temporal:
+        start = time.monotonic()
+        sensor_points = points.copy()
+        sensor_points[:, :2] += margin
+        # A sparse outer ring rejects broad sources and trails from the fixed
+        # sensor-pixel hypothesis. Ambiguous morphology stays protected.
+        outer = np.maximum.reduce([dog[yy + dy, xx + dx] for dy, dx in
+            ((-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (-3, 3), (3, -3), (3, 3))])
+        compact = outer < 0.3 * dog[yy, xx]
+        weights, diagnostics = catalogue.weights(sensor_points, support_points,
+                                                  compact=compact, **capture_context)
+        evidence['catalogue'] = diagnostics
+        if np.any(weights < 1):
+            # A coherent current-frame trail must not wait for persistence.
+            # Reuse measured fields at sparse points instead of introducing
+            # another image-wide line detector or protecting every broad peak.
+            line = _line_sources(dog, noise, xx, yy)
+            weights[line] = 1
+            # Keep the original exclusion mask for every noise/background
+            # statistic. Only current-source restoration changes with history.
+            evidence['restore_mask'] = _weighted_points(
+                edge, points, weights * star_protection, diagnostics.get('stationary_mask'))
+        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d time=%.3fs',
+                    diagnostics.get('status', 'unknown'), len(points),
+                    diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
+                    diagnostics.get('stationary', 0), time.monotonic() - start)
+    elif catalogue is not None and star_protection == 0:
+        catalogue.reset()
+    return evidence
+
+
+def _line_sources(dog, noise, x, y):
+    """Positive signal at three separated samples supports a real short trail."""
+    line = np.zeros(len(x), bool)
+    for angle in np.arange(32) * (np.pi / 16):
+        supported = np.ones(len(x), bool)
+        for radius in (4, 8, 12):
+            dx, dy = int(round(radius * np.cos(angle))), int(round(radius * np.sin(angle)))
+            supported &= dog[y + dy, x + dx] > 2 * noise[y + dy, x + dx]
+        line |= supported
+    return line
+
+
+def _weighted_points(edge, points, weights, stationary=None):
+    """Splat the existing 4-pixel core/6.5-pixel taper without another image pass.
+
+    Each offset addresses unique pixels, so vectorized maxima also handle
+    overlapping sources correctly. Resolved edges keep their original guard.
+    """
+    result = edge.copy()
+    x, y = points[:, :2].astype(np.intp).T
+    if stationary is not None and np.any(stationary):
+        # A proven compact sensor residual can also trigger the strong-edge
+        # guard. Fade only its tiny core; the statistics mask remains intact.
+        gy, gx = np.mgrid[-4:5, -4:5]
+        core = np.clip((4 - np.hypot(gx, gy)) / 2, 0, 1).astype(np.float32)
+        for index in np.flatnonzero(stationary):
+            result[y[index]-4:y[index]+5, x[index]-4:x[index]+5] *= 1 - (1 - weights[index]) * core
+    for dy in range(-6, 7):
+        for dx in range(-6, 7):
+            taper = min(1.0, max(0.0, (6.5 - (dx * dx + dy * dy) ** 0.5) / 2.5))
+            if taper:
+                # Sources are at least 12 pixels from every image boundary.
+                yy, xx = y + dy, x + dx
+                result[yy, xx] = np.maximum(result[yy, xx], weights * taper)
+    return result
 
 def _nlm_clean(image, evidence, h_multiplier=1.0):
     """Use measured sky scatter, with a small local patch-search window."""
@@ -301,7 +391,7 @@ def _nlm_luminance(lum, h):
 
 
 def _blend(original, filtered, evidence, amount):
-    weight = (amount * (1 - evidence['mask']))[:, :, None]
+    weight = (amount * (1 - evidence.get('restore_mask', evidence['mask'])))[:, :, None]
     return original + (filtered - original) * weight
 
 def _repair_compact_lows(image, valid, threshold=3.0, max_area=16):
