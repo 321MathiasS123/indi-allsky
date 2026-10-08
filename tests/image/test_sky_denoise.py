@@ -168,3 +168,34 @@ def test_disabled_bayer_repair_does_not_require_filter_state(processor_class):
     ref = SimpleNamespace(hdulist=[SimpleNamespace(data=raw)], image_bitpix=16,
                           image_bayerpat='RGGB', binning=1)
     np.testing.assert_array_equal(obj._debayer(ref), cv2.cvtColor(raw, cv2.COLOR_BAYER_BG2BGR))
+
+
+@pytest.mark.parametrize('shape,tile', [((17, 19), 64), ((256, 256), 64),
+                                        ((271, 517), 128), ((515, 523), 128)])
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+def test_noise_grid_matches_independent_tile_mads_without_mutating_source(monkeypatch, shape, tile, dtype):
+    monkeypatch.setattr(sky_denoise.os, 'cpu_count', lambda: 4)
+    rng = np.random.default_rng(742)
+    storage = rng.normal(0, 0.05, (shape[0] * 2, shape[1] * 2)).astype(dtype)
+    data = storage[::2, ::2]  # Channel/Bayer views need not be contiguous.
+    data[0, 0], data[-1, -1] = -1, 1
+    original = storage.copy()
+    grid = np.empty(((shape[0] + tile - 1) // tile, (shape[1] + tile - 1) // tile), np.float32)
+    for y in range(grid.shape[0]):
+        for x in range(grid.shape[1]):
+            values = data[y * tile:(y + 1) * tile, x * tile:(x + 1) * tile]
+            grid[y, x] = max(float(np.median(np.abs(values - np.median(values)))) * 1.4826, 1e-6)
+    expected = cv2.resize(grid, (shape[1], shape[0]), interpolation=cv2.INTER_LINEAR)
+    np.testing.assert_array_equal(sky_denoise._noise_grid(data, tile), expected)
+    np.testing.assert_array_equal(storage, original)
+
+
+def test_noise_grid_preserves_floor_and_nan_tiles(monkeypatch):
+    monkeypatch.setattr(sky_denoise.os, 'cpu_count', lambda: 4)
+    data = np.zeros((512, 512), np.float32)
+    np.testing.assert_array_equal(sky_denoise._noise_grid(data), np.full(data.shape, 1e-6, np.float32))
+    data[:128, :128] = np.nan
+    grid = np.full((4, 4), 1e-6, np.float32)
+    grid[0, 0] = np.nan
+    expected = cv2.resize(grid, (512, 512), interpolation=cv2.INTER_LINEAR)
+    np.testing.assert_array_equal(sky_denoise._noise_grid(data), expected)
