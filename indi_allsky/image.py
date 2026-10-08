@@ -30,7 +30,7 @@ from PIL import Image
 from fractions import Fraction
 
 from . import constants
-from .capture_period import FrameTemperatureValues, failure_key, frame_mode, read_inflight, set_inflight
+from .capture_period import CaptureSequenceTracker, FrameTemperatureValues, failure_key, frame_mode, read_inflight, set_inflight
 from . import asi676mc
 
 from .processing import ImageProcessor
@@ -88,6 +88,7 @@ class ImageWorker(Process):
         astro_av,
         video_q=None,
         period_inflight=None,
+        period_sequence=None,
     ):
         super(ImageWorker, self).__init__()
 
@@ -99,6 +100,7 @@ class ImageWorker(Process):
         self.image_q = image_q
         self.video_q = video_q
         self.period_inflight = period_inflight
+        self.capture_sequence = CaptureSequenceTracker(period_sequence)
         self.upload_q = upload_q
 
         self.position_av = position_av
@@ -281,11 +283,21 @@ class ImageWorker(Process):
             # new context for every task, reduces the effects of caching
             with app.app_context():
                 if 'period_end' in i_dict:
+                    self._checkCaptureSequence(i_dict['period_end'], marker=True)
                     self._releasePeriodEnd(i_dict['period_end'])
+                    self.capture_sequence.complete(i_dict['period_end'], marker=True)
                     continue
+                self._checkCaptureSequence(i_dict)
                 set_inflight(self.period_inflight, i_dict.get('capture_period_id'))
                 self.processImage(i_dict)
+                self.capture_sequence.complete(i_dict)
                 set_inflight(self.period_inflight, None)
+
+
+    def _checkCaptureSequence(self, item, marker=False):
+        for identifier in self.capture_sequence.check(item, marker=marker):
+            self._miscDb.setState(failure_key(identifier), 'Captured frame missing or out of order')
+            logger.error('Capture period %s has an incomplete or out-of-order frame stream; end jobs will not run', identifier)
 
 
     def _releasePeriodEnd(self, marker):

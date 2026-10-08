@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from indi_allsky.capture_period import (
-    CapturePeriodQueue, FrameTemperatureValues, failure_key, frame_mode,
+    CapturePeriodQueue, CaptureSequenceTracker, FrameTemperatureValues, failure_key, frame_mode,
     read_inflight, set_inflight,
 )
 
@@ -22,6 +22,7 @@ from indi_allsky.capture_period import (
 ROOT = Path(__file__).resolve().parents[2]
 DAY = date(2026, 10, 8)
 PERIOD = '1:2026-10-08:1'
+STREAM = 'a' * 32
 
 
 def methods(filename, classname, names, namespace):
@@ -59,7 +60,8 @@ def test_delayed_callback_keeps_mode_date_and_orders_boundary():
     assert frame['capture_temperature'] == 12.5
     assert frame['capture_sequence'] == 1
     assert frame['capture_period_id'] == PERIOD
-    assert marker == {'period_end': {'period_id': PERIOD, 'tasks': [{'task_id': 7}]}}
+    assert marker == {'period_end': {'period_id': PERIOD, 'tasks': [{'task_id': 7}],
+                                    'stream_id': frame['capture_stream_id'], 'last_sequence': 1}}
     assert source == {'filename': 'last-night.fit', 'exp_time': 42}
     assert not producer.waiting
 
@@ -146,7 +148,7 @@ class StateStore:
         return self.values[key]
 
 
-def image_worker(receipt, state=None, task_rows=None):
+def image_worker(receipt, state=None, task_rows=None, prefix=None):
     namespace = dict(app=SimpleNamespace(app_context=nullcontext), queue=queue,
                      logger=logging.getLogger(__name__), frame_mode=frame_mode, datetime=datetime,
                      set_inflight=set_inflight, read_inflight=read_inflight, failure_key=failure_key,
@@ -155,10 +157,11 @@ def image_worker(receipt, state=None, task_rows=None):
     task_rows = task_rows if task_rows is not None else {}
     namespace['IndiAllSkyDbTaskQueueTable'] = SimpleNamespace(query=SimpleNamespace(
         filter_by=lambda id: SimpleNamespace(one=lambda: task_rows[id])))
-    Worker = methods('image.py', 'ImageWorker', ['saferun', '_releasePeriodEnd', '_setFrameContext',
+    Worker = methods('image.py', 'ImageWorker', ['saferun', '_releasePeriodEnd', '_setFrameContext', '_checkCaptureSequence',
                                               '_failCapturePeriod', '_checkCaptureImageSaved'], namespace)
     worker = Worker()
     worker.period_inflight = receipt
+    worker.capture_sequence = CaptureSequenceTracker(prefix)
     worker._miscDb = state or StateStore()
     worker._shutdown = False
     worker.image_q = queue.Queue()
@@ -346,3 +349,158 @@ def test_shoot_reserves_metadata_before_a_synchronous_camera_callback():
     worker.shoot(10, 50, 1, sync=False)
     assert outgoing.get_nowait()['capture_mode'] == (1, 0)
     assert not worker._period_queue.waiting
+
+
+def numbered_frame(sequence, period=PERIOD, stream=STREAM, **extra):
+    return dict(filename='frame-{0}.fit'.format(sequence), capture_period_id=period,
+                capture_stream_id=stream, capture_sequence=sequence, **extra)
+
+
+def closing_marker(sequence, period=PERIOD, stream=STREAM):
+    return dict(period_id=period, stream_id=stream, last_sequence=sequence, tasks=[{'task_id': 5}])
+
+
+@pytest.mark.parametrize('delivered,last_sequence', [
+    ([2, 3], 3),          # first frame lost by a producer/feeder
+    ([1, 3], 3),          # middle frame lost
+    ([1, 2], 3),          # final frame lost, only visible at the marker
+    ([1, 2, 2, 3], 3),    # duplicated frame
+    ([1, 3, 2], 3),       # out-of-order delivery
+    ([], 1),              # entire single-frame period lost
+])
+def test_renderer_detects_lost_feeder_frames_even_without_an_inflight_receipt(delivered, last_sequence):
+    failed = []
+    worker = image_worker(None, task_rows={5: SimpleNamespace(state='queued', setFailed=failed.append)})
+    worker.processImage = lambda item: None
+    for sequence in delivered:
+        worker.image_q.put(numbered_frame(sequence))
+    worker.image_q.put({'period_end': closing_marker(last_sequence)})
+    worker.image_q.put({'stop': True})
+    worker.saferun()
+    assert worker.video_q.empty()
+    assert failed
+    assert failure_key(PERIOD) in worker._miscDb.values
+
+
+def test_gap_across_sunrise_marks_both_possible_periods():
+    tracker = CaptureSequenceTracker()
+    night = numbered_frame(1)
+    assert not tracker.check(night)
+    tracker.complete(night)
+    assert tracker.check(numbered_frame(3, period='1:2026-10-09:0')) == {PERIOD, '1:2026-10-09:0'}
+
+
+def test_sqm_is_part_of_the_same_ordered_prefix():
+    worker = image_worker(None)
+    processed = []
+    worker.processImage = lambda item: processed.append(item.get('sqm_exposure', False))
+    worker.image_q.put(numbered_frame(1))
+    worker.image_q.put(numbered_frame(2, sqm_exposure=True))
+    worker.image_q.put(numbered_frame(3))
+    worker.image_q.put({'period_end': closing_marker(3)})
+    worker.image_q.put({'stop': True})
+    worker.saferun()
+    assert processed == [False, True, False]
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert not worker._miscDb.values
+
+
+def test_renderer_replacement_keeps_completed_prefix_and_detects_next_missing_frame():
+    shared = multiprocessing.RawArray(ctypes.c_char, 1024)
+    first = CaptureSequenceTracker(shared)
+    first.complete(numbered_frame(1))
+    replacement = CaptureSequenceTracker(shared)
+    assert not replacement.check(numbered_frame(2))
+    assert replacement.check(numbered_frame(3)) == {PERIOD}
+    assert replacement.check(closing_marker(2), marker=True) == {PERIOD}
+
+
+def test_new_capture_worker_starts_a_new_stream_without_forgetting_old_queue_order():
+    tracker = CaptureSequenceTracker()
+    tracker.complete(numbered_frame(20))
+    next_frame = numbered_frame(1, stream='b' * 32)
+    assert not tracker.check(next_frame)
+    tracker.complete(next_frame)
+    assert tracker.check(numbered_frame(21)) == {PERIOD}
+
+
+def test_new_capture_stream_without_frames_can_close_previous_period():
+    tracker = CaptureSequenceTracker()
+    tracker.complete(numbered_frame(20))
+    empty = closing_marker(0, stream='b' * 32)
+    assert not tracker.check(empty, marker=True)
+    tracker.complete(empty, marker=True)
+    assert not tracker.check(numbered_frame(1, stream='b' * 32))
+
+
+def test_failed_marker_settles_missing_prefix_without_rewinding_or_poisoning_next_period():
+    tracker = CaptureSequenceTracker()
+    tracker.complete(numbered_frame(1))
+    assert tracker.check(closing_marker(2), marker=True) == {PERIOD}
+    tracker.complete(closing_marker(2), marker=True)
+    assert not tracker.check(numbered_frame(3, period='1:2026-10-09:0'))
+    tracker.complete(numbered_frame(1))
+    assert tracker.current[1] == 2
+
+
+@pytest.mark.parametrize('damage', [b'UNKNOWN', b'{"last_sequence":7}', b'\xff\ninvalid-checksum'])
+def test_torn_or_unparseable_prefix_checkpoint_fails_closed(damage):
+    shared = multiprocessing.RawArray(ctypes.c_char, 1024)
+    shared.value = damage
+    tracker = CaptureSequenceTracker(shared)
+    assert 'UNKNOWN' in tracker.check(numbered_frame(1))
+    assert 'UNKNOWN' in tracker.check(closing_marker(0), marker=True)
+
+
+def test_valid_looking_torn_prefix_cannot_hide_a_dropped_frame():
+    shared = multiprocessing.RawArray(ctypes.c_char, 1024)
+    tracker = CaptureSequenceTracker(shared)
+    tracker.complete(numbered_frame(1))
+    shared.value = shared.value.replace(b'"last_sequence":1', b'"last_sequence":2')
+    assert 'UNKNOWN' in CaptureSequenceTracker(shared).check(numbered_frame(3))
+
+
+@pytest.mark.parametrize('broken', [dict(capture_sequence=1),
+                                    dict(capture_stream_id=STREAM, capture_sequence=True, capture_period_id=PERIOD),
+                                    dict(capture_stream_id=STREAM, capture_sequence=0, capture_period_id=PERIOD)])
+def test_partial_or_invalid_numbering_fails_closed(broken):
+    assert CaptureSequenceTracker().check(broken) == {'UNKNOWN'}
+
+
+def producer_with_paused_feeder(output, put_returned, hold):
+    import multiprocessing.queues
+    # Stop the real multiprocessing feeder before it acquires the pipe lock.
+    # put() still returns, exactly the acknowledgment window under test.
+    def paused(*args):
+        hold.wait(30)
+    multiprocessing.queues.Queue._feed = staticmethod(paused)
+    output.put(numbered_frame(2))
+    put_returned.set()
+    hold.wait(30)
+
+
+def test_killed_producer_after_put_cannot_hide_a_frame_lost_in_its_feeder():
+    ctx = multiprocessing.get_context('spawn')
+    output = ctx.Queue()
+    returned, hold = ctx.Event(), ctx.Event()
+    producer = ctx.Process(target=producer_with_paused_feeder, args=(output, returned, hold))
+    producer.start()
+    try:
+        assert returned.wait(15), 'Producer did not acknowledge put()'
+        producer.terminate()
+        producer.join(5)
+        assert not producer.is_alive()
+        # A replacement can enqueue the next frame, but the acknowledged frame
+        # from the killed process never reached the consumer's pipe.
+        output.put(numbered_frame(3))
+        delivered = output.get(timeout=5)
+        assert delivered['capture_sequence'] == 3
+        tracker = CaptureSequenceTracker()
+        tracker.complete(numbered_frame(1))
+        assert tracker.check(delivered) == {PERIOD}
+    finally:
+        if producer.is_alive():
+            producer.terminate()
+            producer.join(5)
+        output.close()
+        output.join_thread()
