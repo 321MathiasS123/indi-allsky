@@ -7,6 +7,9 @@ Strength 3 is the reference tuning; all measurements use the original frame.
 The one-sided dark-patch repair changes local background and aperture flux:
 this filter is intended for display images, not photometric measurements.
 """
+from concurrent.futures import ThreadPoolExecutor
+import os
+
 import cv2
 import numpy as np
 from scipy.ndimage import maximum_filter
@@ -197,14 +200,37 @@ def _nlm_clean(image, evidence, h_multiplier=1.0):
     sigma = float(np.median(np.abs(sample - np.median(sample)))) * 1.4826
     if sigma <= 1e-8:
         return image.copy(), sigma
-    clean_lum = denoise_nl_means(
-        lum, h=h_multiplier * sigma, patch_size=5, patch_distance=5,
-        sigma=0, fast_mode=True, preserve_range=True, channel_axis=None,
-    )
+    clean_lum = _nlm_luminance(lum, h_multiplier * sigma)
     # Colour speckle is smoothed independently; source RGB is blended back later.
     chroma = image - lum[:, :, None]
     clean_chroma = cv2.GaussianBlur(chroma, (0, 0), 1.4)
     return (clean_lum[:, :, None] + clean_chroma, sigma)
+
+
+def _nlm_luminance(lum, h):
+    """Run the same local filter in bounded, overlapping horizontal strips."""
+    options = dict(h=h, patch_size=5, patch_distance=5, sigma=0,
+                   fast_mode=True, preserve_range=True, channel_axis=None)
+    workers = min(4, os.cpu_count() or 1, max(1, len(lum) // 256))
+    if workers == 1:
+        return denoise_nl_means(lum, **options)
+    edges = np.linspace(0, len(lum), workers + 1, dtype=int)
+    result = np.empty_like(lum)
+    # Include both the search distance and patch radius at every internal edge.
+    # Keep the original outer edges so scikit-image's reflection stays unchanged.
+    halo = options['patch_distance'] + options['patch_size'] // 2
+
+    def run(index):
+        start, end = edges[index:index + 2]
+        first, last = max(0, start - halo), min(len(lum), end + halo)
+        cleaned = denoise_nl_means(lum[first:last], **options)
+        result[start:end] = cleaned[start - first:end - first]
+
+    # NLM releases the GIL. Each worker writes only its non-overlapping interior.
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(run, range(workers)))
+    return result
+
 
 def _blend(original, filtered, evidence, amount):
     weight = (amount * (1 - evidence['mask']))[:, :, None]
@@ -234,23 +260,36 @@ def _repair_compact_lows(image, valid, threshold=3.0, max_area=16):
 def _blur(a, s):
     return cv2.GaussianBlur(a, (0, 0), s)
 
-def _prepare(image, evidence, valid, fine=2.5):
+def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
     """Measure background texture without borrowing signal from protected stars."""
-    weight = (1 - evidence['mask']) * valid
-    norm = _blur(weight, 2.5)
-    background = _blur(image * weight[:, :, None], 2.5) / np.maximum(norm[:, :, None], 0.0001)
+    # channel selects the statistics retained by the split: 0=luma, 1=chroma.
+    if shared is None:
+        shared = {}
+    if not shared:
+        weight = (1 - evidence['mask']) * valid
+        norm = _blur(weight, 2.5)
+        weighted_image = image * weight[:, :, None]
+        background = _blur(weighted_image, 2.5) / np.maximum(norm[:, :, None], 0.0001)
+        shared.update(weight=weight, norm=norm, weighted_image=weighted_image, background=background)
+    else:
+        weight = shared['weight']
+        norm = shared['norm']
+        weighted_image = shared['weighted_image']
+        background = shared['background']
     if fine < 2.5:
         small_norm = _blur(weight, fine)
-        small = _blur(image * weight[:, :, None], fine) / np.maximum(small_norm[:, :, None], 0.0001)
+        small = _blur(weighted_image, fine) / np.maximum(small_norm[:, :, None], 0.0001)
         mix = np.clip((small_norm - 0.1) / 0.5, 0, 1)
-        background += mix[:, :, None] * (small - background)
+        background = background + mix[:, :, None] * (small - background)
     # Do not infer a background where large objects leave no usable samples.
-    trust = (np.clip((norm - 0.05) / 0.2, 0, 1)
-             * np.clip(cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5) / 20, 0, 1))
-    trust = _blur(trust, 3) * valid
+    if 'trust' not in shared:
+        trust = (np.clip((norm - 0.05) / 0.2, 0, 1)
+                 * np.clip(cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5) / 20, 0, 1))
+        shared['trust'] = _blur(trust, 3) * valid
+    trust = shared['trust']
     band = background - _blur(background, 7)
     lum = band @ WEIGHTS
-    chroma = band - lum[:, :, None]
+    chroma = band - lum[:, :, None] if channel != 0 else None
     # Quieter tiles keep clouds from inflating the estimated noise floor.
     sigmas = []
     for y in range(0, image.shape[0] - 128, 128):
@@ -261,16 +300,19 @@ def _prepare(image, evidence, valid, fine=2.5):
                 continue
             a = band[sl][sel]
             l = a @ WEIGHTS
-            c = a - l[:, None]
+            c = a - l[:, None] if channel != 0 else None
+            # Keep the reference scalar precision when a statistic is skipped.
             sigmas.append([
-                np.median(np.abs(l - np.median(l))) * 1.4826,
-                np.sqrt(np.mean(np.median(np.abs(c - np.median(c, axis=0)), axis=0) ** 2)) * 1.4826,
+                np.median(np.abs(l - np.median(l))) * 1.4826 if channel != 1 else np.float32(0),
+                np.sqrt(np.mean(np.median(np.abs(c - np.median(c, axis=0)), axis=0) ** 2)) * 1.4826 if channel != 0 else np.float32(0),
             ])
     # Without enough clear background, skip this optional scale correction.
     noise = np.maximum(np.percentile(sigmas, 25, axis=0), 1e-6) if sigmas else np.zeros(2)
-    hp = evidence['lum'] - _blur(evidence['lum'], 2)
-    sample = hp[(evidence['mask'] < 0.01) & valid]
-    original_sigma = np.median(np.abs(sample - np.median(sample))) * 1.4826 if sample.size else 0.0
+    if 'original_sigma' not in shared:
+        hp = evidence['lum'] - _blur(evidence['lum'], 2)
+        sample = hp[(evidence['mask'] < 0.01) & valid]
+        shared['original_sigma'] = np.median(np.abs(sample - np.median(sample))) * 1.4826 if sample.size else 0.0
+    original_sigma = shared['original_sigma']
     # Cap daytime luminance smoothing using the original fine-scale noise.
     noise[0] = min(noise[0], 0.35 * original_sigma)
     return dict(lum=lum, chroma=chroma, trust=trust, noise=noise)
@@ -292,8 +334,10 @@ def _apply(image, prepared, colour=0.85, brightness=0.6):
 
 def _prepare_split(image, evidence, valid):
     """Treat finer colour blotches separately from stellar luminance detail."""
-    broad = _prepare(image, evidence, valid, fine=2.5)
-    fine = _prepare(image, evidence, valid, fine=1.2)
+    # Reuse only within this frame; skip statistics discarded by the split.
+    shared = {}
+    broad = _prepare(image, evidence, valid, fine=2.5, shared=shared, channel=0)
+    fine = _prepare(image, evidence, valid, fine=1.2, shared=shared, channel=1)
     broad['chroma'] = fine['chroma']
     broad['noise'][1] = fine['noise'][1]
     return broad
@@ -324,11 +368,12 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     backgrounds = []
     supports = []
     average_rgb = np.zeros_like(image)
+    weighted_image = image * weight[:, :, None]
     for q in quadrants:
         kernel = q.astype(np.float32)
         kernel /= kernel.sum()
         norm = cv2.filter2D(weight, -1, kernel)
-        background_rgb = (cv2.filter2D(image * weight[:, :, None], -1, kernel)
+        background_rgb = (cv2.filter2D(weighted_image, -1, kernel)
                           / np.maximum(norm[:, :, None], 1e-05))
         backgrounds.append(background_rgb @ WEIGHTS)
         average_rgb += background_rgb * 0.25
@@ -336,7 +381,16 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     rim = np.stack(backgrounds)
     support = np.min(supports, axis=0)
     average = rim.mean(axis=0)
-    lowest = np.partition(rim, sector_rank, axis=0)[sector_rank]
+    if sector_rank == 1:
+        # Second-lowest of four sectors, without sorting every pixel's values.
+        lower_a = np.minimum(rim[0], rim[1])
+        upper_a = np.maximum(rim[0], rim[1])
+        lower_b = np.minimum(rim[2], rim[3])
+        upper_b = np.maximum(rim[2], rim[3])
+        lowest = np.minimum(np.maximum(lower_a, lower_b), np.minimum(upper_a, upper_b))
+        del lower_a, upper_a, lower_b, upper_b
+    else:
+        lowest = np.partition(rim, sector_rank, axis=0)[sector_rank]
     # Protect actual positive source samples, not negative outliers that merely
     # happen to fall within a circular star-protection neighbourhood.
     guard = np.where(distance < 6.5,
@@ -356,20 +410,28 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     delta = (amount * np.maximum(average - lum, 0) * enclosed * guard
              * stable * structure_trust * keep[labels])
     delta = np.minimum(delta, 3.0 * original_sigma)
-    delta = np.minimum(delta, np.maximum(1 - image.max(axis=2), 0)).astype(np.float32)
+    brightest = np.maximum(np.maximum(image[:, :, 0], image[:, :, 1]), image[:, :, 2])
+    delta = np.minimum(delta, np.maximum(1 - brightest, 0)).astype(np.float32)
     result = image + delta[:, :, None]
     # Grey increments alone leave coloured halos. Repair chroma only where a
     # luminance deficit was filled, using the source-excluded annular background.
-    fraction = np.clip(delta / np.maximum(average - lum, 1e-08), 0, 1) * colour_amount
-    colour = (average_rgb - average[:, :, None] - (image - lum[:, :, None])) * fraction[:, :, None]
-    colour -= (colour @ WEIGHTS)[:, :, None]
+    # Most pixels have no deficit; avoid building full RGB temporaries for them.
+    selected = delta > 0
+    selected_result = result[selected]
+    selected_image = image[selected]
+    selected_lum = lum[selected]
+    selected_average = average[selected]
+    fraction = np.clip(delta[selected] / np.maximum(selected_average - selected_lum, 1e-08), 0, 1) * colour_amount
+    colour = (average_rgb[selected] - selected_average[:, None]
+              - (selected_image - selected_lum[:, None])) * fraction[:, None]
+    colour -= (colour @ WEIGHTS)[:, None]
     # Stay in range without changing the zero-luminance colour direction.
     allowed = np.where(
-        colour > 0, np.maximum(1 - result, 0) / np.maximum(colour, 1e-08),
-        np.where(colour < 0, np.maximum(result, 0) / np.maximum(-colour, 1e-08), 1),
+        colour > 0, np.maximum(1 - selected_result, 0) / np.maximum(colour, 1e-08),
+        np.where(colour < 0, np.maximum(selected_result, 0) / np.maximum(-colour, 1e-08), 1),
     )
-    colour_scale = np.minimum(1, allowed.min(axis=2))
-    result += colour * colour_scale[:, :, None]
+    colour_scale = np.minimum(1, allowed.min(axis=1))
+    result[selected] += colour * colour_scale[:, None]
     return result, delta, dict(
         components=int(keep.sum()), pixels=int((delta > 0).sum()),
         sky_percentage=float(np.mean(delta[valid] > 0) * 100),
