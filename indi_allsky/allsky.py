@@ -799,10 +799,8 @@ class IndiAllSky(object):
             # a normal reload/stop, including the meter's remaining handoffs.
             self._startImageWorker()
         self._stopHighlightWorker()
-        if not self.image_worker:
-            return
-
-        if not self.image_worker.is_alive():
+        if not self.image_worker or not self.image_worker.is_alive():
+            self._resetHighlightFeedbackQueue()
             return
 
         if self._terminate:
@@ -822,6 +820,14 @@ class IndiAllSky(object):
             if attempts > 3:
                 raise RuntimeError('Image worker could not drain captured images')
             self._startImageWorker(manage_meter=False)
+        self._resetHighlightFeedbackQueue()
+
+
+    def _resetHighlightFeedbackQueue(self):
+        # Both users have exited; discard old samples and any partial disposable
+        # write before restarting, including maintenance stops without a reload.
+        self.highlight_feedback_q.close()
+        self.highlight_feedback_q = Queue()
 
 
     def _startVideoWorker(self, planned_restart=False):

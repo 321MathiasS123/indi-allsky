@@ -10,7 +10,7 @@ import pytest
 from indi_allsky import capture_watchdog as watchdog_module
 from indi_allsky.capture_watchdog import CaptureTimeoutError, CaptureWatchdog, FrameArrivalQueue, FrameDeadline, ProcessingAllowance
 from indi_allsky.capture_control import drain_worker_control_queue, request_worker_stop
-from indi_allsky.capture_period import CapturePeriodQueue
+from indi_allsky.capture_period import CapturePeriodQueue, failure_key, read_inflight, set_inflight
 from indi_allsky.twilight import capture_period
 
 
@@ -322,12 +322,13 @@ def test_deadline_is_armed_before_a_blocking_exposure_command(clock):
 
 def test_supervisor_keeps_monitor_running_until_worker_has_stopped():
     actions = []
-    namespace = load_methods('allsky.py', 'IndiAllSky', ['_stopCaptureWorker', '_requestCaptureWorkerStop'], {
+    namespace = load_methods('allsky.py', 'IndiAllSky', ['_stopCaptureWorker', '_requestCaptureWorkerStop', '_settleCapturePeriods'], {
         'logger': Mock(), 'request_worker_stop': request_worker_stop,
+        'read_inflight': read_inflight, 'set_inflight': set_inflight, 'failure_key': failure_key,
     })
     parent = SimpleNamespace(
         capture_watchdog=Mock(stop=Mock(side_effect=lambda: actions.append('stop monitor'))),
-        capture_worker=Mock(is_alive=Mock(return_value=True)),
+        capture_worker=Mock(is_alive=Mock(return_value=True), exitcode=0), capture_receipts=(),
         capture_q=Mock(), _terminate=False, _capture_worker_stop_requested=False,
         _startImageWorker=Mock(),
     )
@@ -339,6 +340,7 @@ def test_supervisor_keeps_monitor_running_until_worker_has_stopped():
         parent.capture_worker.is_alive.return_value = False
     parent.capture_worker.join.side_effect = finish_join
     parent._requestCaptureWorkerStop = lambda: namespace['_requestCaptureWorkerStop'](parent)
+    parent._settleCapturePeriods = lambda interrupted: namespace['_settleCapturePeriods'](parent, interrupted)
     namespace['_stopCaptureWorker'](parent)
     assert actions == ['join', 'stop monitor']
     parent.capture_q.put.assert_called_once_with({'stop': True})

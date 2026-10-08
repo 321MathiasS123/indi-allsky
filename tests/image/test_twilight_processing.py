@@ -9,9 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 import textwrap
+import time
 
 import cv2
 import numpy
+import psutil
 import pytest
 
 from indi_allsky import asi676mc, constants
@@ -26,11 +28,13 @@ def processor_class():
     path = Path(__file__).resolve().parents[2] / 'indi_allsky/processing.py'
     tree = ast.parse(path.read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageProcessor')
+    frame_cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageData')
     namespace = dict(__package__='indi_allsky', math=math, cv2=cv2, numpy=numpy, constants=constants, datetime=datetime,
                      timedelta=timedelta, timezone=timezone, logger=logging.getLogger('test'),
                      TwilightTransition=TwilightTransition, interpolate=interpolate, runtime_weight=runtime_weight,
-                     IndiAllskyDenoise=IndiAllskyDenoise, IndiAllskyScnr=IndiAllskyScnr)
-    exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), namespace)
+                     IndiAllskyDenoise=IndiAllskyDenoise, IndiAllskyScnr=IndiAllskyScnr,
+                     Path=Path, time=time, psutil=psutil)
+    exec(compile(ast.Module(body=[cls, frame_cls], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace['ImageProcessor']
 
 
@@ -410,7 +414,7 @@ def test_ingestion_uses_exposure_midpoint_and_keeps_camera_identity(processor):
     expected.update(when - timedelta(seconds=15), 57, 0, 0)
     assert p.twilight.weight == expected.weight
     assert p.getLatestImage() is frame
-    assert p._add.call_args.kwargs == {'detected_camera_name': 'device'}
+    assert p._add.call_args.kwargs == {'detected_camera_name': 'device', 'capture_day_date': None}
 
 
 @pytest.mark.parametrize('elapsed', [0, 30])
@@ -491,3 +495,42 @@ def test_combined_worker_keeps_invalid_and_repaired_frames_out_of_control(status
     controller.compare_exposure.assert_not_called()
     assert controller.apply_transition_limits.call_count == int(status is None)
     assert controller.hist_adu == [20, 30]
+
+
+@pytest.mark.parametrize('entry,captured', [('add', False), ('add', True), ('_add', False)])
+def test_split_fits_ingestion_preserves_captured_day_and_legacy_defaults(processor, tmp_path, entry, captured):
+    from astropy.io import fits
+
+    data = numpy.arange(64, dtype=numpy.uint16).reshape(8, 8) + 32768
+    filename = tmp_path / 'capture.fit'
+    hdu = fits.PrimaryHDU(data)
+    hdu.header['BAYERPAT'] = 'RGGB'
+    hdu.writeto(filename)
+    received = datetime(2026, 10, 9, 0, 30, tzinfo=timezone.utc)
+    fallback_date = datetime(2026, 10, 8).date()
+    captured_date = datetime(2026, 10, 7).date()
+    p = processor({'TWILIGHT_TRANSITION': {'ENABLE': False}}, bits=16)
+    p._detection_mask_dict = {}
+    p.astro_av = [0] * 10
+    p.astro_darkness = False
+    p.stack_count = 1
+    p.image_list = []
+    p._keogram_store_p = tmp_path
+    p._dateCalcs = SimpleNamespace(calcDayDate=Mock(return_value=fallback_date))
+    camera = SimpleNamespace(id=1, name='test', uuid='test', owner='', location='',
+                             lensFocalLength=2.1, lensFocalRatio=2.0, data={})
+    kwargs = {'capture_day_date': captured_date} if captured else {}
+    # Both real methods and the real ImageData constructor execute: mocking
+    # _add would miss a broken argument handoff or an undefined local there.
+    ref = getattr(p, entry)(filename, 20, 50, 1, received, 25, camera, **kwargs)
+    try:
+        assert ref.day_date == (captured_date if captured else fallback_date)
+        assert ref.exp_date == received
+        numpy.testing.assert_array_equal(ref.hdulist[0].data, data)
+        assert p.image_list == ([ref] if entry == 'add' else [])
+        if captured:
+            p._dateCalcs.calcDayDate.assert_not_called()
+        else:
+            p._dateCalcs.calcDayDate.assert_called_once_with(received)
+    finally:
+        ref.hdulist.close()
