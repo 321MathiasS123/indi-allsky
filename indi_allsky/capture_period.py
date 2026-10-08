@@ -2,6 +2,8 @@
 
 from threading import RLock
 from uuid import uuid4
+import hashlib
+import json
 import re
 
 
@@ -65,15 +67,102 @@ class CapturePeriodQueue:
             self._closing.clear()
 
     def end_period(self, camera_id, day_date, night, tasks):
-        marker = {'period_end': {
-            'period_id': period_id(camera_id, day_date, night),
-            'tasks': list(tasks),
-        }}
         with self._lock:
+            marker = {'period_end': {
+                'period_id': period_id(camera_id, day_date, night),
+                'stream_id': self._stream_id,
+                'last_sequence': self._sequence,
+                'tasks': list(tasks),
+            }}
             if self._waiting:
                 self._closing.append(marker)
             else:
                 self.image_queue.put(marker)
+
+
+class CaptureSequenceTracker:
+    """Check the delivered prefix, including SQM frames and its closing marker.
+
+    A multiprocessing Queue producer can die after put() but before its feeder
+    transmits the frame. These sequence numbers detect that missing frame even
+    when the producer has already cleared its own in-flight receipt. Preserve
+    the consumed prefix across renderer replacement; a checksum makes a torn
+    shared-buffer write fail closed instead of accepting a plausible prefix.
+    """
+
+    def __init__(self, shared=None):
+        self.shared = shared
+        self.current = None
+        self.invalid_checkpoint = False
+        if shared is not None and shared.value:
+            try:
+                encoded, digest = shared.value.rsplit(b'\n', 1)
+                if hashlib.sha256(encoded).hexdigest().encode('ascii') != digest:
+                    raise ValueError('Incomplete prefix checkpoint')
+                saved = json.loads(encoded)
+                self.current = self._position(saved, marker=True)
+                if self.current is None:
+                    raise ValueError('Missing prefix checkpoint')
+            except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                self.invalid_checkpoint = True
+
+    @staticmethod
+    def _position(item, marker=False):
+        stream_key, sequence_key, period_key = (
+            ('stream_id', 'last_sequence', 'period_id') if marker else
+            ('capture_stream_id', 'capture_sequence', 'capture_period_id')
+        )
+        # Standalone/legacy image callers do not belong to a capture stream.
+        if stream_key not in item and sequence_key not in item:
+            return None
+        stream, sequence, identifier = item[stream_key], item[sequence_key], item[period_key]
+        if (not isinstance(stream, str) or not re.fullmatch(r'[0-9a-f]{32}', stream)
+                or type(sequence) is not int or sequence < (0 if marker else 1)
+                or not isinstance(identifier, str)
+                or not re.fullmatch(r'[0-9]+:[0-9]{4}-[0-9]{2}-[0-9]{2}:[01]', identifier)):
+            raise ValueError('Invalid capture stream position')
+        return stream, sequence, identifier
+
+    def check(self, item, marker=False):
+        failed = {'UNKNOWN'} if self.invalid_checkpoint else set()
+        try:
+            position = self._position(item, marker)
+        except (KeyError, TypeError, ValueError):
+            return failed | {'UNKNOWN'}
+        if position is None:
+            return failed
+        stream, sequence, identifier = position
+        previous = self.current
+        expected = previous[1] if previous and previous[0] == stream else 0
+        if not marker:
+            expected += 1
+        if sequence != expected:
+            failed.add(identifier)
+            if previous:
+                # A gap can straddle sunset/sunrise. Neither side may claim
+                # completion when the missing frame's period is unknown.
+                failed.add(previous[2])
+        return failed
+
+    def complete(self, item, marker=False):
+        try:
+            position = self._position(item, marker)
+        except (KeyError, TypeError, ValueError):
+            return
+        if position is None:
+            return
+        if self.current and self.current[0] == position[0] and self.current[1] > position[1]:
+            return  # Never rewind after a duplicate/out-of-order item.
+        if self.shared is not None:
+            encoded = json.dumps(dict(stream_id=position[0], last_sequence=position[1],
+                                      period_id=position[2]), separators=(',', ':')).encode('ascii')
+            payload = encoded + b'\n' + hashlib.sha256(encoded).hexdigest().encode('ascii')
+            if len(payload) >= len(self.shared):
+                self.shared.value = b'UNKNOWN'
+                raise ValueError('Capture prefix checkpoint is too long')
+            self.shared.value = payload
+        self.current = position
+        self.invalid_checkpoint = False
 
 
 def frame_mode(frame, live_mode):
