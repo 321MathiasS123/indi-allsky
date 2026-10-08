@@ -439,6 +439,7 @@ class ImageProcessor(object):
         exp_elapsed,
         camera,
         detected_camera_name=None,
+        capture_day_date=None,
     ):
         """Ingest one capture and retain its authoritative device identity."""
         if isinstance(self._detection_mask_dict, type(None)):
@@ -829,7 +830,7 @@ class ImageProcessor(object):
         )
 
 
-        dayDate = self._dateCalcs.calcDayDate(exp_date)
+        dayDate = capture_day_date or self._dateCalcs.calcDayDate(exp_date)
 
 
         if self.night_av[constants.NIGHT_NIGHT]:
