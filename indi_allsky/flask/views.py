@@ -9894,10 +9894,11 @@ class JsonImageProcessingView(JsonView):
                     message_list.append('16-bit CLAHE')
 
 
-            image_processor.convert_16bit_to_8bit()
+            image_processor.convert_16bit_to_8bit(preserve_colour=True, preserve_detections=run_detection)
 
             runDetection()
 
+            image_processor.restore_colour_precision()
 
             if p_config.get('IMAGE_ROTATE'):
                 image_processor.rotate_90()
@@ -9920,6 +9921,7 @@ class JsonImageProcessingView(JsonView):
             image_processor.crop_image()
 
             # green removal
+            image_processor.normalize_colour_precision()
             image_processor.scnr()
 
 
@@ -9939,6 +9941,7 @@ class JsonImageProcessingView(JsonView):
 
             # sharpening (unsharp mask)
             image_processor.sharpen()
+            image_processor.finish_colour_precision()
 
 
             if p_config['NIGHT_CONTRAST_ENHANCE']:

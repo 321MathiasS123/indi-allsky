@@ -157,6 +157,9 @@ class ImageProcessor(object):
 
         # contains the current stacked image
         self._image = None
+        self._colour_precision_image = None
+        self._colour_detection_image = None
+        self._colour_precision_active = False
 
         # contains the raw image data, data will be newest to oldest
         self.image_list = [None]  # element will be removed on first image
@@ -1839,10 +1842,19 @@ class ImageProcessor(object):
         #logger.info('CCM in %0.4f s', ccm_elapsed_s)
 
 
-    def convert_16bit_to_8bit(self):
+    def convert_16bit_to_8bit(self, preserve_colour=False, preserve_detections=False):
         i_ref = self.getLatestImage()
 
+        # Metering and detection still use the original 8-bit representation.
+        self._colour_precision_image = None
+        self._colour_detection_image = None
+        self._colour_precision_active = False
+        if preserve_colour and not self.focus_mode and i_ref.image_bitpix != 8 and self.image.dtype == numpy.uint16 and self.image.ndim == 3:
+            self._colour_precision_image = self.image
+
         self.image = self._convert_16bit_to_8bit(i_ref)
+        if preserve_detections and self._colour_precision_image is not None:
+            self._colour_detection_image = self.image.copy()
 
 
     def _convert_16bit_to_8bit(self, i_ref):
@@ -1855,6 +1867,40 @@ class ImageProcessor(object):
         shift_factor = self.max_bit_depth - 8
 
         return numpy.right_shift(self.image, shift_factor).astype(numpy.uint8)
+
+
+    def restore_colour_precision(self):
+        if self._colour_precision_image is None:
+            return
+
+        # Detectors can draw into their input, before drawDetections is called.
+        if self._colour_detection_image is not None:
+            changed = numpy.any(self.image != self._colour_detection_image, axis=2)
+            if numpy.any(changed):
+                self._colour_precision_image = self._colour_precision_image.copy()
+                scale = ((1 << self.max_bit_depth) - 1) / 255.0
+                self._colour_precision_image[changed] = numpy.rint(self.image[changed] * scale).astype(numpy.uint16)
+            self._colour_detection_image = None
+
+        self.image = self._colour_precision_image
+        self._colour_precision_image = None
+        self._colour_precision_active = True
+
+
+    def normalize_colour_precision(self):
+        # Delay this allocation until after geometry has discarded unused pixels.
+        if self._colour_precision_active and self.max_bit_depth != 16:
+            scale = 65535.0 / ((1 << self.max_bit_depth) - 1)
+            self.image = cv2.multiply(self.image, (scale, scale, scale, 0), dtype=cv2.CV_16U)
+
+
+    def finish_colour_precision(self):
+        if not self._colour_precision_active:
+            return
+
+        # Round once, before the existing 8-bit CLAHE and output overlays.
+        self.image = cv2.convertScaleAbs(self.image, alpha=255.0 / 65535.0)
+        self._colour_precision_active = False
 
 
     def rotate_90(self):
@@ -2349,7 +2395,9 @@ class ImageProcessor(object):
 
 
     def _white_balance_mtf(self, WBB_MTF_MIDTONES, WBG_MTF_MIDTONES, WBR_MTF_MIDTONES):
-        if self._wb_mtf_night != self.night_av[constants.NIGHT_NIGHT]:
+        if self._wb_mtf_night != self.night_av[constants.NIGHT_NIGHT] or (
+            self._wbb_mtf_lut is not None and self._wbb_mtf_lut.dtype != self.image.dtype
+        ):
             self._wb_mtf_night = self.night_av[constants.NIGHT_NIGHT]
             self._wbb_mtf_lut = None  # recalculate LUT
             self._wbg_mtf_lut = None  # recalculate LUT
@@ -2369,9 +2417,9 @@ class ImageProcessor(object):
         b, g, r = cv2.split(self.image)
 
 
-        mtf_b = self._wbb_mtf_lut.take(b, mode='raise')
-        mtf_g = self._wbg_mtf_lut.take(g, mode='raise')
-        mtf_r = self._wbr_mtf_lut.take(r, mode='raise')
+        mtf_b = self._wbb_mtf_lut[b]
+        mtf_g = self._wbg_mtf_lut[g]
+        mtf_r = self._wbr_mtf_lut[r]
 
 
         self.image = cv2.merge((mtf_b, mtf_g, mtf_r))
@@ -2379,9 +2427,9 @@ class ImageProcessor(object):
 
     def _generate_white_balance_lut(self, midtones):
         shadows_val = 0  # no clipping
-        highlights_val = 255
+        highlights_val = numpy.iinfo(self.image.dtype).max
 
-        data_max = 255
+        data_max = highlights_val
 
         range_array = numpy.arange(0, data_max + 1, dtype=numpy.float32)
 
@@ -2396,7 +2444,9 @@ class ImageProcessor(object):
         lut[lut < 0] = 0  # clip low end
         lut[lut > data_max] = data_max  # clip high end
 
-        lut = lut.astype(numpy.uint8)  # this must come after clipping
+        if self.image.dtype == numpy.uint16:
+            numpy.rint(lut, out=lut)
+        lut = lut.astype(self.image.dtype)  # this must come after clipping
 
         #logger.info('Min: %d, Max: %d', numpy.min(lut), numpy.max(lut))
 
@@ -2435,6 +2485,24 @@ class ImageProcessor(object):
 
 
     def _saturation_adjust(self, SATURATION_FACTOR):
+        if self.image.dtype == numpy.uint16:
+            # OpenCV HSV requires float or 8-bit input. Bound temporary memory
+            # without quantizing the smooth sky to 256 levels before gamma.
+            result = numpy.empty_like(self.image)
+            for row in range(0, self.image.shape[0], 128):
+                block = self.image[row:row + 128].astype(numpy.float32)
+                block *= 1.0 / 65535.0
+                hsv = cv2.cvtColor(block, cv2.COLOR_BGR2HSV)
+                hsv[:, :, 1] *= SATURATION_FACTOR
+                numpy.minimum(hsv[:, :, 1], 1.0, out=hsv[:, :, 1])
+                block = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                block *= 65535.0
+                numpy.clip(block, 0, 65535, out=block)
+                numpy.rint(block, out=block)
+                result[row:row + 128] = block
+            self.image = result
+            return
+
         image_hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
 
         sat = image_hsv[:, :, 1]
@@ -2551,13 +2619,17 @@ class ImageProcessor(object):
 
 
     def _apply_gamma_correction(self, gamma):
-        if self._gamma_lut is None or self._gamma_lut_gamma != gamma:
-            range_array = numpy.arange(0, 256, dtype=numpy.float32)
-            self._gamma_lut = (((range_array / 255) ** (1.0 / gamma)) * 255).astype(numpy.uint8)
+        if self._gamma_lut is None or self._gamma_lut_gamma != gamma or self._gamma_lut.dtype != self.image.dtype:
+            data_max = numpy.iinfo(self.image.dtype).max
+            range_array = numpy.arange(0, data_max + 1, dtype=numpy.float32)
+            lut = ((range_array / data_max) ** (1.0 / gamma)) * data_max
+            if self.image.dtype == numpy.uint16:
+                numpy.rint(lut, out=lut)
+            self._gamma_lut = lut.astype(self.image.dtype)
             self._gamma_lut_gamma = gamma
 
 
-        self.image = self._gamma_lut.take(self.image, mode='raise')
+        self.image = self._gamma_lut[self.image]
 
 
     def sharpen(self):
