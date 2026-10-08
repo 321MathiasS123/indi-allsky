@@ -20,9 +20,10 @@ class CapturePeriodQueue:
     writes to the multiprocessing queue.
     """
 
-    def __init__(self, image_queue, temperature=None):
+    def __init__(self, image_queue, temperature=None, passive=False):
         self.image_queue = image_queue
         self._temperature = temperature
+        self._passive = passive
         self._lock = RLock()
         self._context = None
         self._waiting = False
@@ -37,6 +38,10 @@ class CapturePeriodQueue:
 
     def begin(self, camera_id, mode, day_date, period):
         with self._lock:
+            if self._passive:
+                # An external client owns the exposures; this call merely
+                # updates camera metadata and cannot reserve the next image.
+                return
             if self._waiting:
                 raise RuntimeError('Previous camera frame has not arrived; capture period incomplete')
             self._sequence += 1
@@ -52,6 +57,9 @@ class CapturePeriodQueue:
 
     def put(self, frame):
         with self._lock:
+            if self._passive:
+                self.image_queue.put(frame)
+                return
             if not self._waiting:
                 # Do not silently attach an unsolicited/late callback to a
                 # different exposure or put it after a completed period.
@@ -70,10 +78,10 @@ class CapturePeriodQueue:
         with self._lock:
             marker = {'period_end': {
                 'period_id': period_id(camera_id, day_date, night),
-                'stream_id': self._stream_id,
-                'last_sequence': self._sequence,
                 'tasks': list(tasks),
             }}
+            if not self._passive:
+                marker['period_end'].update(stream_id=self._stream_id, last_sequence=self._sequence)
             if self._waiting:
                 self._closing.append(marker)
             else:
