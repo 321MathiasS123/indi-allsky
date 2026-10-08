@@ -77,7 +77,14 @@ class OutputFeedbackGate:
         output = controller.highlight_output
         candidate = self.latest
         mode = tuple(job['capture_mode'])
-        window = capture_cadence(job, controller.config) + max(0.0, allowance)
+        cadence = capture_cadence(job, controller.config)
+        elapsed = float(job.get('exp_elapsed', job['exposure']))
+        acquisition = max(cadence, elapsed) if math.isfinite(elapsed) else cadence
+        # Frame timestamps follow download, so a 30s exposure can arrive every
+        # 30.9s even when metering is fast. Allow measured acquisition time plus
+        # a small file-write/scheduling margin, but never two nominal frames:
+        # a stalled capture or slow meter must not make old output fresh again.
+        window = min(cadence * 1.5, acquisition + min(1.0, cadence * 0.1) + max(0.0, allowance))
         usable = (
             settings.get('OUTPUT_ENABLE', False)
             and candidate is not None and candidate.get('trusted', False)
