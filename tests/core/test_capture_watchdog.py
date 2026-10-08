@@ -1,6 +1,6 @@
 import ast
 from contextlib import nullcontext
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,6 +10,7 @@ import pytest
 from indi_allsky import capture_watchdog as watchdog_module
 from indi_allsky.capture_watchdog import CaptureTimeoutError, CaptureWatchdog, FrameArrivalQueue, FrameDeadline, ProcessingAllowance
 from indi_allsky.capture_control import drain_worker_control_queue, request_worker_stop
+from indi_allsky.capture_period import CapturePeriodQueue
 from indi_allsky.twilight import capture_period
 
 
@@ -299,7 +300,9 @@ def test_worker_unwinds_and_aborts_before_disconnect_and_error_reporting():
 
 
 def test_deadline_is_armed_before_a_blocking_exposure_command(clock):
-    namespace = load_methods('capture.py', 'CaptureWorker', ['shoot'], {'logger': Mock()})
+    from indi_allsky import constants
+    namespace = load_methods('capture.py', 'CaptureWorker', ['shoot', '_configuredCapturePeriod'],
+                             {'logger': Mock(), 'constants': constants, 'capture_period': capture_period})
     deadline = FrameDeadline(80)
     def blocked_exposure(*args, **kwargs):
         assert deadline.snapshot() == 180
@@ -307,9 +310,14 @@ def test_deadline_is_armed_before_a_blocking_exposure_command(clock):
     worker = SimpleNamespace(
         frame_deadline=deadline, indiclient=SimpleNamespace(setCcdExposure=blocked_exposure),
         focus_mode=False, night=True, config={'EXPOSURE_PERIOD': 15}, add_period_delay=0,
+        night_av=SharedModes([1, 0]), camera_id=1,
+        _period_queue=CapturePeriodQueue(Mock()),
+        _dateCalcs=SimpleNamespace(getDayDate=lambda: date(2026, 10, 8)),
     )
+    worker._configuredCapturePeriod = lambda: namespace['_configuredCapturePeriod'](worker)
     with pytest.raises(RuntimeError):
         namespace['shoot'](worker, 30, 10, 1, sync=False)
+    assert worker._period_queue.waiting  # No completed frame has reached its queue.
 
 
 def test_supervisor_keeps_monitor_running_until_worker_has_stopped():
@@ -319,9 +327,17 @@ def test_supervisor_keeps_monitor_running_until_worker_has_stopped():
     })
     parent = SimpleNamespace(
         capture_watchdog=Mock(stop=Mock(side_effect=lambda: actions.append('stop monitor'))),
-        capture_worker=Mock(is_alive=Mock(return_value=True), join=Mock(side_effect=lambda: actions.append('join'))),
+        capture_worker=Mock(is_alive=Mock(return_value=True)),
         capture_q=Mock(), _terminate=False, _capture_worker_stop_requested=False,
+        _startImageWorker=Mock(),
     )
+    def finish_join(timeout=None):
+        assert timeout == 1.0
+        parent.capture_watchdog.stop.assert_not_called()
+        parent._startImageWorker.assert_called_once_with()
+        actions.append('join')
+        parent.capture_worker.is_alive.return_value = False
+    parent.capture_worker.join.side_effect = finish_join
     parent._requestCaptureWorkerStop = lambda: namespace['_requestCaptureWorkerStop'](parent)
     namespace['_stopCaptureWorker'](parent)
     assert actions == ['join', 'stop monitor']
@@ -337,7 +353,12 @@ def test_dark_maintenance_stops_monitor_and_respects_service_shutdown(shutdown):
     })
     parent = Mock(_dark_automation_task_id=7, _shutdown=False, _terminate=False)
     parent.capture_worker.is_alive.return_value = True
-    parent.capture_worker.join.side_effect = lambda: actions.append('join')
+    def finish_join(timeout=None):
+        assert timeout == 1.0
+        parent.capture_watchdog.stop.assert_not_called()
+        actions.append('join')
+        parent.capture_worker.is_alive.return_value = False
+    parent.capture_worker.join.side_effect = finish_join
     parent.capture_watchdog.stop.side_effect = lambda: actions.append('stop monitor')
     parent._stopCaptureWorker.side_effect = lambda: namespace['_stopCaptureWorker'](parent)
     parent._startCaptureWorker.side_effect = lambda: actions.append('restart')
@@ -387,7 +408,7 @@ class SharedModes(list):
         return nullcontext()
 
 
-def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliver=True, period=30, exposure=5, stop_after=90, twilight=False):
+def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliver=True, period=30, exposure=5, stop_after=90, twilight=False, resource_backoff=None):
     import queue
     from indi_allsky import constants
     start = clock.now
@@ -396,7 +417,8 @@ def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliv
         if clock.now >= start + stop_after:
             raise EndCaptureTest()
     fake_time = SimpleNamespace(time=lambda: clock.now, monotonic=lambda: clock.now, sleep=sleep)
-    namespace = load_methods('capture.py', 'CaptureWorker', ['saferun', 'shoot', '_processCaptureControlQueue'], {
+    namespace = load_methods('capture.py', 'CaptureWorker',
+                             ['saferun', 'shoot', '_processCaptureControlQueue', '_configuredCapturePeriod'], {
         'time': fake_time, 'app': SimpleNamespace(app_context=nullcontext),
         'logger': Mock(), 'constants': constants, 'queue': queue,
         'timedelta': timedelta, 'datetime': __import__('datetime').datetime,
@@ -407,7 +429,8 @@ def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliv
     allowance.record(20)
     deadline = FrameDeadline(0, allowance)
     image_queue = Mock(qsize=Mock(return_value=0))
-    delivery_queue = FrameArrivalQueue(image_queue, deadline)
+    period_queue = CapturePeriodQueue(image_queue)
+    delivery_queue = FrameArrivalQueue(period_queue, deadline)
     in_flight = []
     def start_exposure(seconds, *args, **kwargs):
         in_flight.append(clock.now + seconds)
@@ -425,7 +448,8 @@ def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliv
         night=night, moonmode=False, night_av=SharedModes([int(night), 0]),
         astro_av={constants.ASTRO_SUN_ALT: -9.0},
         detectNight=lambda: None, _initialize=lambda: None, _pre_run_tasks=lambda: None,
-        _dateCalcs=SimpleNamespace(getNextDayNightTransition=lambda: SimpleNamespace(timestamp=lambda: 999999)),
+        _dateCalcs=SimpleNamespace(getNextDayNightTransition=lambda: SimpleNamespace(timestamp=lambda: 999999),
+                                  getDayDate=lambda: date(2026, 10, 8)),
         indiclient=SimpleNamespace(disconnected=False, ccd_removed=False, getCcdExposureStatus=status,
                                   setCcdExposure=start_exposure),
         capture_q=queue.Queue(), frame_deadline=deadline,
@@ -436,6 +460,7 @@ def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliv
         periodic_tasks_time=999999, update_time_offset=None, capture_pre_hook=lambda: None,
         sqm_camera_enable=False, focus_mode=False, image_q=image_queue, image_queue_min=1,
         image_queue_max=3, image_queue_backoff=0.5, add_period_delay=0,
+        resource_backoff=resource_backoff, _period_queue=period_queue, camera_id=1,
         _expUtils=SimpleNamespace(EXPOSURE_NEXT=exposure, EXPOSURE_CURRENT=exposure,
                                  GAIN_NEXT=1, BINNING_NEXT=1),
     )
@@ -443,6 +468,7 @@ def run_capture_loop(clock, *, night=True, paused=False, day_enabled=True, deliv
         worker.config.update(EXPOSURE_PERIOD=15, EXPOSURE_PERIOD_DAY=120,
                              NIGHT_SUN_ALT_DEG=-6, TWILIGHT_TRANSITION={'ENABLE': True, 'NIGHT_ALT': -12})
     worker._processCaptureControlQueue = lambda: namespace['_processCaptureControlQueue'](worker)
+    worker._configuredCapturePeriod = lambda: namespace['_configuredCapturePeriod'](worker)
     worker.shoot = lambda *args, **kwargs: namespace['shoot'](worker, *args, **kwargs)
     with pytest.raises(EndCaptureTest):
         namespace['saferun'](worker)
@@ -457,16 +483,22 @@ def test_real_capture_loop_does_not_treat_ready_as_frame_progress(clock):
 
 @pytest.mark.parametrize('deliver', [True, False])
 def test_twilight_interval_applies_even_before_the_first_frame(clock, deliver):
-    deadline, _ = run_capture_loop(clock, twilight=True, deliver=deliver, stop_after=10)
+    deadline, images = run_capture_loop(clock, twilight=True, deliver=deliver, stop_after=10)
     # Halfway from 120s day to 15s night: 2 * 67.5 + 20 = 155s.
     reference = 105 if deliver else 100
     assert reference + 155 <= deadline.snapshot() <= reference + 155.2
+    if deliver:
+        assert images.put.call_args.args[0]['capture_period'] == pytest.approx(67.5)
+    else:
+        images.put.assert_not_called()
 
 
 @pytest.mark.parametrize('night', [True, False])
 def test_real_capture_loop_allows_the_selected_day_or_night_interval(clock, night):
     deadline, images = run_capture_loop(clock, night=night, period=120)
     images.put.assert_called_once()
+    assert images.put.call_args.args[0]['capture_mode'] == (int(night), 0)
+    assert images.put.call_args.args[0]['capture_period'] == 120
     assert 365 <= deadline.snapshot() <= 365.2  # frame at 105 + 240 + 20
 
 
@@ -475,3 +507,28 @@ def test_real_capture_loop_does_not_arm_during_intentional_inactivity(clock, pau
     deadline, images = run_capture_loop(clock, paused=paused, night=night, day_enabled=day_enabled)
     assert deadline.snapshot() == 0
     images.put.assert_not_called()
+
+
+def test_resource_pause_suspends_watchdog_and_next_actual_exposure_rearms(clock, monkeypatch):
+    start = clock.now
+    resource = SimpleNamespace(can_capture=False)
+    suspensions = []
+    suspend = FrameDeadline.suspend
+
+    def observe_suspend(deadline):
+        suspend(deadline)
+        suspensions.append((clock.now, deadline.snapshot()))
+
+    def resource_delay(period, exposure):
+        assert period == 5 and exposure == 1
+        resource.can_capture = clock.now >= start + 5
+        return 0
+
+    monkeypatch.setattr(FrameDeadline, 'suspend', observe_suspend)
+    resource.delay = resource_delay
+    deadline, images = run_capture_loop(clock, period=5, exposure=1, stop_after=12,
+                                        resource_backoff=resource)
+    assert suspensions and all(snapshot == 0 for _, snapshot in suspensions)
+    assert suspensions[0][0] < start + 5
+    assert images.put.call_count >= 1
+    assert deadline.snapshot() > clock.now

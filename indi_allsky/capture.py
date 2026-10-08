@@ -22,6 +22,7 @@ from multiprocessing import Process
 from . import constants
 from .twilight import capture_period, day_altitude, exposure_minimum, interpolate, night_weight
 from .render_backlog import ResourceBackoff
+from .capture_period import CapturePeriodQueue
 from . import camera as camera_module
 from .capture_watchdog import CaptureTimeoutError, FrameArrivalQueue, FrameDeadline
 
@@ -440,7 +441,7 @@ class CaptureWorker(Process):
 
             self.detectNight()
 
-            if self.config.get('CAPTURE_PAUSE') or (not self.night and not self.config.get('DAYTIME_CAPTURE')):
+            if not self._period_queue.waiting and (self.config.get('CAPTURE_PAUSE') or (not self.night and not self.config.get('DAYTIME_CAPTURE'))):
                 self.frame_deadline.suspend()
 
 
@@ -463,30 +464,10 @@ class CaptureWorker(Process):
                     dayDate = self._dateCalcs.getDayDate()
 
 
-                    if not self.night and self.generate_timelapse_flag:
-                        self._expireData(self.camera_id)  # cleanup old images and folders
-
-                        ### Generate timelapse at end of night
-                        yesterday_ref = dayDate - timedelta(days=1)
-                        timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateNightTimelapse(timespec, self.camera_id)
-                        self._uploadAllskyEndOfNight(self.camera_id)
-
-                        # prevent duplicate generation until reconfigureCcd() is called
-                        self.generate_timelapse_flag = False
-
-                    elif self.night and self.generate_timelapse_flag:
-                        self._expireData(self.camera_id)  # cleanup old images and folders
-
-                        ### Generate timelapse at end of day
-                        today_ref = dayDate
-                        timespec = today_ref.strftime('%Y%m%d')
-                        self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateDayTimelapse(timespec, self.camera_id)
-
-                        # prevent duplicate generation until reconfigureCcd() is called
-                        self.generate_timelapse_flag = False
+                    if self.generate_timelapse_flag:
+                        outgoing_night = not self.night
+                        outgoing_date = dayDate - timedelta(days=1) if outgoing_night else dayDate
+                        self._queuePeriodEnd(outgoing_date, outgoing_night)
 
                 elif self.night and bool(self.night_av[constants.NIGHT_MOONMODE]) != self.moonmode:
                     # Switch between night non-moonmode and moonmode
@@ -515,31 +496,9 @@ class CaptureWorker(Process):
                     dayDate = self._dateCalcs.getDayDate()
 
 
-                    if not self.night and self.generate_timelapse_flag:
-                        self._expireData(self.camera_id)  # cleanup old images and folders
-
-                        ### Generate timelapse at end of day
-                        yesterday_ref = dayDate - timedelta(days=1)
-                        timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateDayTimelapse(timespec, self.camera_id)
-                        self._expireData(self.camera_id)  # cleanup old images and folders
-
-                        # prevent duplicate generation until reconfigureCcd() is called
-                        self.generate_timelapse_flag = False
-
-                    elif self.night and self.generate_timelapse_flag:
-                        self._expireData(self.camera_id)  # cleanup old images and folders
-
-                        ### Generate timelapse at end of night
-                        yesterday_ref = dayDate - timedelta(days=1)
-                        timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateNightTimelapse(timespec, self.camera_id)
-                        self._uploadAllskyEndOfNight(self.camera_id)
-
-                        # prevent duplicate generation until reconfigureCcd() is called
-                        self.generate_timelapse_flag = False
+                    if self.generate_timelapse_flag:
+                        self._queuePeriodEnd(dayDate - timedelta(days=1), self.night,
+                                             expire_twice=not self.night)
 
 
                 #logger.warning(
@@ -552,6 +511,17 @@ class CaptureWorker(Process):
                 self.getCcdTemperature()
                 self.getTelescopeRaDec()
                 self.getGpsPosition()
+
+
+                if self._period_queue.waiting and (
+                        self.config.get('CAPTURE_PAUSE')
+                        or (not self.night and not self.config.get('DAYTIME_CAPTURE'))):
+                    # Closing jobs must still receive the last actual frame
+                    # when there will be no next daytime/paused exposure.
+                    # Actual frame delivery still owns the adaptive watchdog;
+                    # zero is automatic timing, not an immediate timeout.
+                    time.sleep(0.1)
+                    continue
 
 
                 if self.config.get('CAPTURE_PAUSE'):
@@ -617,7 +587,7 @@ class CaptureWorker(Process):
                     camera_ready, exposure_state = self.indiclient.getCcdExposureStatus()
 
 
-                    if not camera_ready:
+                    if not camera_ready or self._period_queue.waiting:
                         continue
 
                     ###########################################
@@ -733,6 +703,10 @@ class CaptureWorker(Process):
 
 
                         self.capture_pre_hook()
+                        self.detectNight()
+                        if (bool(self.night_av[constants.NIGHT_NIGHT]) != self.night
+                                or time.time() > self.next_forced_transition_time):
+                            break
 
                         # The pre-hook may take long enough for maintenance to
                         # be accepted.  Never start another exposure after the
@@ -868,13 +842,16 @@ class CaptureWorker(Process):
 
 
     def _initialize(self):
+        self._period_queue = CapturePeriodQueue(
+            self.image_q, temperature=lambda: self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP],
+        )
         camera_interface = getattr(camera_module, self.config.get('CAMERA_INTERFACE', 'indi'))
 
 
         # instantiate the client
         self.indiclient = camera_interface(
             self.config,
-            FrameArrivalQueue(self.image_q, self.frame_deadline),
+            FrameArrivalQueue(self._period_queue, self.frame_deadline),
             self.position_av,
             self.exposure_av,
             self.gain_av,
@@ -2189,7 +2166,33 @@ class CaptureWorker(Process):
         self.moonmode = False
 
 
-    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _queueVideoTask(self, task_id, task_ids):
+        item = {'task_id': task_id}
+        if task_ids is None:
+            self.video_q.put(item)
+        else:
+            task_ids.append(item)
+
+    def _queuePeriodEnd(self, day_date, night, expire_twice=False):
+        # QUEUED database rows are not runnable until their IDs reach video_q.
+        # Do not use MANUAL: the parent would independently release those rows.
+        tasks = []
+        self._expireData(self.camera_id, task_ids=tasks)
+        timespec = day_date.strftime('%Y%m%d')
+        if night:
+            self._generateNightKeogram(timespec, self.camera_id, task_ids=tasks)
+            self._generateNightTimelapse(timespec, self.camera_id, task_ids=tasks)
+            self._uploadAllskyEndOfNight(self.camera_id, task_ids=tasks)
+        else:
+            self._generateDayKeogram(timespec, self.camera_id, task_ids=tasks)
+            self._generateDayTimelapse(timespec, self.camera_id, task_ids=tasks)
+        if expire_twice:
+            self._expireData(self.camera_id, task_ids=tasks)
+        self._period_queue.end_period(self.camera_id, day_date.isoformat(), night, tasks)
+        self.generate_timelapse_flag = False
+
+
+    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2223,7 +2226,7 @@ class CaptureWorker(Process):
         db.session.add(video_task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : video_task.id})
+        self._queueVideoTask(video_task.id, task_ids)
 
 
         if self.config.get('FISH2PANO', {}).get('ENABLE'):
@@ -2244,10 +2247,10 @@ class CaptureWorker(Process):
             db.session.add(panorama_video_task)
             db.session.commit()
 
-            self.video_q.put({'task_id' : panorama_video_task.id})
+            self._queueVideoTask(panorama_video_task.id, task_ids)
 
 
-    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2277,7 +2280,7 @@ class CaptureWorker(Process):
         db.session.add(video_task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : video_task.id})
+        self._queueVideoTask(video_task.id, task_ids)
 
 
         if self.config.get('FISH2PANO', {}).get('ENABLE'):
@@ -2298,10 +2301,10 @@ class CaptureWorker(Process):
             db.session.add(panorama_video_task)
             db.session.commit()
 
-            self.video_q.put({'task_id' : panorama_video_task.id})
+            self._queueVideoTask(panorama_video_task.id, task_ids)
 
 
-    def _generateNightKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _generateNightKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2331,10 +2334,10 @@ class CaptureWorker(Process):
         db.session.add(task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : task.id})
+        self._queueVideoTask(task.id, task_ids)
 
 
-    def _generateDayKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _generateDayKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2368,7 +2371,7 @@ class CaptureWorker(Process):
         db.session.add(task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : task.id})
+        self._queueVideoTask(task.id, task_ids)
 
 
     def shoot(self, exposure, gain, binning, sync=True, timeout=None, sqm_exposure=False):
@@ -2388,6 +2391,11 @@ class CaptureWorker(Process):
         else:
             period = self.config['EXPOSURE_PERIOD_DAY']
         self.frame_deadline.begin_exposure(exposure, period + self.add_period_delay)
+        mode = tuple(self.night_av)
+        self._period_queue.begin(
+            self.camera_id, mode, self._dateCalcs.getDayDate(),
+            period,
+        )
         self.indiclient.setCcdExposure(exposure, gain, binning, sync=sync, timeout=timeout, sqm_exposure=sqm_exposure)
 
 
@@ -2418,7 +2426,7 @@ class CaptureWorker(Process):
         return r2
 
 
-    def _uploadAllskyEndOfNight(self, camera_id, task_state=TaskQueueState.QUEUED):
+    def _uploadAllskyEndOfNight(self, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
         camera = IndiAllSkyDbCameraTable.query\
             .filter(IndiAllSkyDbCameraTable.id == camera_id)\
             .one()
@@ -2441,10 +2449,10 @@ class CaptureWorker(Process):
         db.session.add(task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : task.id})
+        self._queueVideoTask(task.id, task_ids)
 
 
-    def _expireData(self, camera_id, task_state=TaskQueueState.QUEUED):
+    def _expireData(self, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
 
         camera = IndiAllSkyDbCameraTable.query\
             .filter(IndiAllSkyDbCameraTable.id == camera_id)\
@@ -2467,7 +2475,7 @@ class CaptureWorker(Process):
         db.session.add(task)
         db.session.commit()
 
-        self.video_q.put({'task_id' : task.id})
+        self._queueVideoTask(task.id, task_ids)
 
 
     def update_sensor_slot_labels(self):
@@ -2668,4 +2676,3 @@ class CaptureWorker(Process):
 
         for x, label in enumerate(temp_label_list[:50]):  # limit to 50
             self.SENSOR_SLOTS[x + 80][1] = '{0:s}'.format(label)
-

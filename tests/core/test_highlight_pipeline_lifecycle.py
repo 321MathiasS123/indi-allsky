@@ -7,13 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from indi_allsky.capture_control import request_worker_stop
+
 
 def parent_methods():
     tree = ast.parse((Path(__file__).parents[2] / 'indi_allsky' / 'allsky.py').read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiAllSky')
-    names = {'_highlightMeterEnabled', '_stopHighlightWorker', '_stopImageWorker', '_stopCaptureWorker'}
+    names = {'_highlightMeterEnabled', '_stopHighlightWorker', '_stopImageWorker', '_stopCaptureWorker',
+             '_requestCaptureWorkerStop'}
     code = ast.Module(body=[n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names], type_ignores=[])
-    namespace = {'logger': logging.getLogger(__name__)}
+    namespace = {'logger': logging.getLogger(__name__), 'request_worker_stop': request_worker_stop}
     exec(compile(code, '<parent lifecycle>', 'exec'), namespace)
     return type('Parent', (), {n: namespace[n] for n in names})
 
@@ -114,6 +117,8 @@ def test_capture_drain_starts_consumers_before_waiting_for_queue_flush():
     events = []
     parent = parent_methods()()
     parent._terminate = False
+    parent._capture_worker_stop_requested = False
+    parent.capture_watchdog = None
     parent.capture_worker = Worker(events, 'capture')
     parent.capture_q = RecordedQueue(events, 'capture-control')
     parent._startImageWorker = lambda: events.append('consumers-ready')

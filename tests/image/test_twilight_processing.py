@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import logging
 import math
+from multiprocessing import Array
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -479,12 +480,13 @@ def test_combined_worker_keeps_invalid_and_repaired_frames_out_of_control(status
     controller = SimpleNamespace(hist_adu=[20, 30], compare_exposure=Mock(), apply_transition_limits=Mock(),
                                  reset_highlights=Mock())
     worker = SimpleNamespace(config={'TWILIGHT_TRANSITION': {'ENABLE': True},
-                                    'HIGHLIGHT_PROTECTION': {'ENABLE': True}}, exposure_o=controller)
+                                    'HIGHLIGHT_PROTECTION': {'ENABLE': True}}, exposure_o=controller,
+                             night_av=[True, False], live_night_av=Array('i', [1, 0]))
     ref = SimpleNamespace(asi676mc_repair_result={'status': status} if status else None)
     namespace = dict(self=worker, i_ref=ref, asi676mc=asi676mc, adu=75, adu_average=75,
                      highlight_enabled=True, highlight_adu=75, highlight_adu_average=75, highlight_lift=1,
                      highlights=object() if status is None else None, highlight_repaired=status == 'repaired',
-                     exposure=.1, gain=50, logger=logging.getLogger('test'))
+                     exposure=.1, gain=50, control=None, logger=logging.getLogger('test'))
     exec(segment, namespace)
     controller.compare_exposure.assert_not_called()
     assert controller.apply_transition_limits.call_count == int(status is None)

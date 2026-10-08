@@ -4,6 +4,7 @@ from datetime import datetime
 import ast
 import logging
 import math
+from multiprocessing import Array
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -164,6 +165,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     controller.highlight_transition.gamma_mix = 1
     controller.highlight_transition.trusted = True
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
+                             night_av=[True, False], live_night_av=Array('i', [1, 0]),
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
     if prepared:

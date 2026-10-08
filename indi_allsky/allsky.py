@@ -259,6 +259,8 @@ class IndiAllSky(object):
         self.capture_worker_idx = 0
 
         self.image_q = Queue()
+        self.period_inflight = Array(ctypes.c_char, 256, lock=False)
+        self.period_sequence = Array(ctypes.c_char, 1024, lock=False)
         self.image_error_q = Queue()
         self.image_worker = None
         self.image_worker_idx = 0
@@ -722,6 +724,9 @@ class IndiAllSky(object):
             processing_allowance=self.processing_allowance,
             highlight_feedback_q=self.highlight_feedback_q if self._highlightMeterEnabled() else None,
             backlog_state=self.render_backlog if self._highlightMeterEnabled() else None,
+            video_q=self.video_q,
+            period_inflight=self.period_inflight,
+            period_sequence=self.period_sequence,
         )
         self.image_worker.start()
         self._recordWorkerRestart(
