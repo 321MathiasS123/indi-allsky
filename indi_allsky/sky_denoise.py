@@ -282,28 +282,38 @@ def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
     if shared is None:
         shared = {}
     if not shared:
-        weight = (1 - evidence['mask']) * valid
+        # Weighted samples are zero outside valid. Their Gaussian support
+        # extends 10 pixels at sigma=2.5, then 28 at sigma=7; retain 40.
+        roi = _sky_slice(valid, 40)
+        shared['roi'] = roi
+        weight = (1 - evidence['mask'][roi]) * valid[roi]
         norm = _blur(weight, 2.5)
-        weighted_image = image * weight[:, :, None]
+        weighted_image = image[roi] * weight[:, :, None]
         background = _blur(weighted_image, 2.5) / np.maximum(norm[:, :, None], 0.0001)
         shared.update(weight=weight, norm=norm, weighted_image=weighted_image, background=background)
+        shared['norm_full'] = np.zeros(valid.shape, np.float32)
+        shared['norm_full'][roi] = norm
     else:
         weight = shared['weight']
         norm = shared['norm']
         weighted_image = shared['weighted_image']
         background = shared['background']
+    roi = shared['roi']
     if fine < 2.5:
         small_norm = _blur(weight, fine)
         small = _blur(weighted_image, fine) / np.maximum(small_norm[:, :, None], 0.0001)
         mix = np.clip((small_norm - 0.1) / 0.5, 0, 1)
         background = background + mix[:, :, None] * (small - background)
+    norm = shared['norm_full']
     # Do not infer a background where large objects leave no usable samples.
     if 'trust' not in shared:
         trust = (np.clip((norm - 0.05) / 0.2, 0, 1)
                  * np.clip(cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5) / 20, 0, 1))
         shared['trust'] = _blur(trust, 3) * valid
     trust = shared['trust']
-    band = background - _blur(background, 7)
+    # Restore the original frame and tile coordinates for noise measurements.
+    band = np.zeros_like(image)
+    band[roi] = background - _blur(background, 7)
     lum = band @ WEIGHTS
     chroma = band - lum[:, :, None] if channel != 0 else None
     # Quieter tiles keep clouds from inflating the estimated noise floor.
@@ -358,6 +368,16 @@ def _prepare_split(image, evidence, valid):
     broad['noise'][1] = fine['noise'][1]
     return broad
 
+def _sky_slice(valid, padding):
+    """Keep every valid pixel and a requested halo, preserving image borders."""
+    rows = np.flatnonzero(valid.any(axis=1))
+    if not rows.size:
+        return np.s_[:, :]
+    columns = np.flatnonzero(valid.any(axis=0))
+    return np.s_[max(0, rows[0] - padding):min(valid.shape[0], rows[-1] + padding + 1),
+                 max(0, columns[0] - padding):min(valid.shape[1], columns[-1] + padding + 1)]
+
+
 def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
                  sector_rank=1, colour_amount=1.0):
     """Bounded luminance and chroma repair of the accepted mottling baseline.
@@ -376,6 +396,19 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     original_sigma = _noise_grid(raw - cv2.GaussianBlur(raw, (0, 0), 2))
     broad = cv2.GaussianBlur(raw, (0, 0), 6) - cv2.GaussianBlur(raw, (0, 0), 18)
     structure_trust = np.clip((1.5 - np.abs(broad) / (original_sigma + 1e-08)) / 0.8, 0, 1)
+    # Preserve the full-frame measurements above. The remaining convolutions
+    # and connected components only contribute inside valid, with a local halo.
+    full_image = image
+    # The annular kernels need radius pixels; the final sigma=0.6 blur needs 3.
+    roi = _sky_slice(valid, max(radius, 3))
+    image = image[roi]
+    raw = raw[roi]
+    lum = lum[roi]
+    distance = distance[roi]
+    weight = weight[roi]
+    original_sigma = original_sigma[roi]
+    structure_trust = structure_trust[roi]
+    valid = valid[roi]
     gy, gx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
     rr = gx * gx + gy * gy
     ring = (rr <= radius * radius) & (rr >= inner * inner)
@@ -448,12 +481,19 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     )
     colour_scale = np.minimum(1, allowed.min(axis=1))
     result[selected] += colour * colour_scale[:, None]
-    return result, delta, dict(
+    statistics = dict(
         components=int(keep.sum()), pixels=int((delta > 0).sum()),
         sky_percentage=float(np.mean(delta[valid] > 0) * 100),
         mean_linear_luma_added=float(delta[valid].mean()),
         max_linear_luma_added=float(delta.max()),
     )
+    if result.shape != full_image.shape:
+        full_result = full_image.copy()
+        full_result[roi] = result
+        full_delta = np.zeros(full_image.shape[:2], dtype=delta.dtype)
+        full_delta[roi] = delta
+        result, delta = full_result, full_delta
+    return result, delta, statistics
 
 def _protect_horizon(baseline, candidate, valid):
     """Exclude the outer 50 pixels from extra pit repair; taper the next 30."""
