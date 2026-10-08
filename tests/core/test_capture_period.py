@@ -394,6 +394,53 @@ def test_shoot_reserves_metadata_before_a_synchronous_camera_callback():
     assert not worker._period_queue.waiting
 
 
+@pytest.mark.parametrize('filename,classname', [
+    ('libcamera.py', 'IndiClientLibCameraGeneric'),
+    ('libcamera_mqtt.py', 'IndiClientLibCameraMqttGeneric'),
+    ('pycurl_camera.py', 'IndiClientPycurl'),
+    ('test_cameras.py', 'IndiClientTestCameraBase'),
+])
+@pytest.mark.parametrize('paused', [False, True])
+@pytest.mark.parametrize('finished', [False, True])
+def test_paused_or_day_disabled_drain_polls_real_camera_delivery(filename, classname, paused, finished):
+    tree = ast.parse((ROOT / 'indi_allsky/capture.py').read_text())
+    drain = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
+                 and ast.unparse(node.test).startswith('self._period_queue.waiting and'))
+    # Keep the real continue in its loop, but run only one polling iteration.
+    loop = ast.For(target=ast.Name(id='attempt', ctx=ast.Store()),
+                   iter=ast.Tuple(elts=[ast.Constant(value=0)], ctx=ast.Load()), body=[drain], orelse=[])
+    function = ast.FunctionDef(name='drain', args=ast.arguments(posonlyargs=[], args=[ast.arg(arg='self')],
+                              kwonlyargs=[], kw_defaults=[], defaults=[]), body=[loop], decorator_list=[])
+    clock = SimpleNamespace(time=lambda: 20., sleep=lambda delay: None)
+    namespace = dict(time=clock, loop_start_time=20 if finished else 0, frame_start_time=0)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), '<drain>', 'exec'), namespace)
+    Camera = methods('camera/' + filename, classname, ['getCcdExposureStatus'],
+                     dict(time=clock, logger=logging.getLogger(__name__)))
+    camera = Camera()
+    camera.active_exposure = True
+    camera.exposureStartTime = 0
+    camera.exposure = 10 if finished else 30
+    camera.libcamera_process = SimpleNamespace(returncode=0)
+    camera._libCameraProcessRunning = lambda: not finished
+    camera.pycurl_worker = SimpleNamespace(is_alive=lambda: not finished)
+    camera.user_data = {'waiting_on_metadata': not finished, 'waiting_on_image': not finished}
+    camera._processMetadata = lambda: None
+    camera.abortCcdExposure = lambda: pytest.fail('A completed exposure must be delivered before testing timeout')
+    outgoing = queue.Queue()
+    producer = CapturePeriodQueue(outgoing)
+    producer.begin(1, (1, 0), DAY, 20)
+    producer.end_period(1, DAY.isoformat(), True, [{'task_id': 7}])
+    camera._queueImage = lambda: producer.put({'filename': 'last.fit'})
+    worker = SimpleNamespace(_period_queue=producer, indiclient=camera, night=paused,
+                             config={'CAPTURE_PAUSE': paused, 'DAYTIME_CAPTURE': paused}, exposure_timeout=10)
+    namespace['drain'](worker)
+    assert producer.waiting is not finished
+    if finished:
+        assert outgoing.get_nowait()['filename'] == 'last.fit'
+        assert outgoing.get_nowait()['period_end']['period_id'] == PERIOD
+    assert outgoing.empty()
+
+
 def numbered_frame(sequence, period=PERIOD, stream=STREAM, **extra):
     return dict(filename='frame-{0}.fit'.format(sequence), capture_period_id=period,
                 capture_stream_id=stream, capture_sequence=sequence, **extra)

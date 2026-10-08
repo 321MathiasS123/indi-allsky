@@ -518,6 +518,8 @@ class CaptureWorker(Process):
                         or (not self.night and not self.config.get('DAYTIME_CAPTURE'))):
                     # Closing jobs must still receive the last actual frame
                     # when there will be no next daytime/paused exposure.
+                    # Poll-driven cameras deliver their completed image here.
+                    self.indiclient.getCcdExposureStatus()
                     # Actual frame delivery still owns the adaptive watchdog;
                     # zero is automatic timing, not an immediate timeout.
                     time.sleep(0.1)
