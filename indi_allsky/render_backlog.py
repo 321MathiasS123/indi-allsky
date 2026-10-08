@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import shutil
 
+import psutil
+
 
 class RenderBacklogState:
     """Share small measurements, never queued pixels, between the workers.
@@ -73,7 +75,7 @@ class RenderBacklogState:
 
 
 class ResourceBackoff:
-    """Keep configured cadence until the actual spool filesystem needs relief.
+    """Keep configured cadence until the spool's disk or RAM needs relief.
 
     Call delay() before starting each exposure and check can_capture. At less
     than two frames of free space, wait and recheck instead of starting another
@@ -86,6 +88,19 @@ class ResourceBackoff:
         self.latched = False
         self.can_capture = True
         self._snapshot = None
+        self._mount_path = None
+        self._memory_backed = False
+
+    def _uses_memory(self, path):
+        if path != self._mount_path:
+            directory = Path(path)
+            matches = [part for part in psutil.disk_partitions(all=True)
+                       if directory == Path(part.mountpoint)
+                       or Path(part.mountpoint) in directory.parents]
+            mount = max(matches, key=lambda part: len(Path(part.mountpoint).parts), default=None)
+            self._memory_backed = mount is not None and mount.fstype.lower() in ('tmpfs', 'ramfs')
+            self._mount_path = path
+        return self._memory_backed
 
     def delay(self, period, exposure):
         current = self.state.snapshot()
@@ -95,7 +110,14 @@ class ResourceBackoff:
             return 0.0
         frame_bytes = self._snapshot['frame_bytes']
         try:
-            free = shutil.disk_usage(self._snapshot['spool_path']).free
+            path = self._snapshot['spool_path']
+            free = shutil.disk_usage(path).free
+            if self._uses_memory(path):
+                # A RAM-backed spool competes with RGB and floating-point
+                # denoiser buffers. Reserve 32 raw-frame equivalents (at least
+                # 256 MiB) as conservative headroom, not an exact peak bound.
+                working_reserve = max(256 * 1024 * 1024, 32 * frame_bytes)
+                free = min(free, max(0, psutil.virtual_memory().available - working_reserve))
         except OSError:
             # Keep an established guard while storage cannot be inspected.
             pass
