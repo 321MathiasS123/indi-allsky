@@ -31,6 +31,7 @@ from . import constants
 from . import dark_automation
 from .capture_control import request_worker_stop
 from .render_backlog import RenderBacklogState
+from .capture_period import failure_key, read_inflight, set_inflight
 
 from .exceptions import TimeOutException
 from .exceptions import ConfigSaveException
@@ -257,6 +258,7 @@ class IndiAllSky(object):
         self.capture_watchdog = None
         self.processing_allowance = ProcessingAllowance()
         self.capture_worker_idx = 0
+        self.capture_receipts = tuple(Array(ctypes.c_char, 256, lock=False) for _ in range(2))
 
         self.image_q = Queue()
         self.period_inflight = Array(ctypes.c_char, 256, lock=False)
@@ -490,6 +492,7 @@ class IndiAllSky(object):
             if self.capture_watchdog:
                 self.capture_watchdog.stop()
                 timed_out = self.capture_watchdog.timed_out
+            self._settleCapturePeriods(interrupted=True)
 
             try:
                 capture_error, capture_traceback = self.capture_error_q.get_nowait()
@@ -528,6 +531,7 @@ class IndiAllSky(object):
             self.astro_av,
             frame_deadline=frame_deadline,
             backlog_state=self.render_backlog if self._highlightMeterEnabled() else None,
+            capture_receipts=self.capture_receipts,
         )
         self.capture_worker.start()
         # Run in the parent: a blocked camera call must not block its timer.
@@ -557,6 +561,22 @@ class IndiAllSky(object):
         return stop_requested
 
 
+    def _settleCapturePeriods(self, interrupted):
+        identifiers = {read_inflight(receipt) for receipt in self.capture_receipts} - {None}
+        if interrupted and identifiers:
+            # During a boundary update the old receipt remains valid until
+            # the new one is fully written, before the new exposure starts.
+            # An intact receipt therefore bounds a torn adjacent write.
+            if identifiers - {'UNKNOWN'}:
+                identifiers.discard('UNKNOWN')
+            with app.app_context():
+                for identifier in identifiers:
+                    self._miscDb.setState(failure_key(identifier), 'Capture worker stopped before its delivered frame prefix was confirmed')
+                    logger.error('Capture period %s is incomplete after capture worker failure; end jobs will not run', identifier)
+        for receipt in self.capture_receipts:
+            set_inflight(receipt, None)
+
+
     def _stopCaptureWorker(self):
         if not self.capture_worker:
             self._capture_worker_stop_requested = False
@@ -566,6 +586,7 @@ class IndiAllSky(object):
             self._capture_worker_stop_requested = False
             if self.capture_watchdog:
                 self.capture_watchdog.stop()
+            self._settleCapturePeriods(interrupted=True)
             return
 
         if self._terminate:
@@ -587,6 +608,7 @@ class IndiAllSky(object):
         if self.capture_watchdog:
             self.capture_watchdog.stop()
         self._capture_worker_stop_requested = False
+        self._settleCapturePeriods(interrupted=self._terminate or self.capture_worker.exitcode != 0)
 
 
     def _recordWorkerRestart(
