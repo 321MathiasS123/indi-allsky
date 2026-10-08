@@ -208,11 +208,29 @@ class HighlightTransition:
 
 
 def _largest_patch(region, valid, count):
+    pixels = region & valid
+    # Empty clipping masks need no connected-component labels.
+    if not pixels.any():
+        return 0.0
     _, _, stats, _ = cv2.connectedComponentsWithStats(
-        (region & valid).astype(numpy.uint8), connectivity=8,
+        pixels.astype(numpy.uint8), connectivity=8,
     )
     # Component zero is background; disconnected reflections do not add up.
     return float(stats[1:, cv2.CC_STAT_AREA].max()) * 100 / count if len(stats) > 1 else 0.0
+
+
+def _channel_limits(data):
+    if data.ndim != 3:
+        return data, data
+    if data.shape[2] != 3:
+        return data.min(axis=2), data.max(axis=2)
+    # Pairwise ufuncs avoid the slow three-element reduction at every pixel.
+    # Keep NumPy's NaN propagation for floating-point callers.
+    lowest = numpy.minimum(data[:, :, 0], data[:, :, 1])
+    numpy.minimum(lowest, data[:, :, 2], out=lowest)
+    highest = numpy.maximum(data[:, :, 0], data[:, :, 1])
+    numpy.maximum(highest, data[:, :, 2], out=highest)
+    return lowest, highest
 
 
 def measure_rendered(data, mask):
@@ -227,8 +245,7 @@ def measure_rendered(data, mask):
     count = numpy.count_nonzero(valid)
     if not count:
         return None
-    lowest = data.min(axis=2) if data.ndim == 3 else data
-    highest = data.max(axis=2) if data.ndim == 3 else data
+    lowest, highest = _channel_limits(data)
     return HighlightMeasurement(_largest_patch(lowest >= 240, valid, count),
                                 _largest_patch(highest >= 250, valid, count), 0.0, None, None)
 
@@ -250,8 +267,7 @@ def measure(data, mask, bit_depth, threshold=99.0):
     maximum = (1 << bit_depth) - 1
     if data.ndim == 3:
         # Min/max over channels distinguishes white clipping from lost colour.
-        lowest = data.min(axis=2)
-        highest = data.max(axis=2)
+        lowest, highest = _channel_limits(data)
         mono = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
     else:
         lowest = highest = data
@@ -347,8 +363,15 @@ def compensate(data, bit_depth, adu, target, max_boost):
     curve = numpy.where(values <= knee, values * boost,
                         0.5 + boost * distance / (1 + (2 * boost - 1 / (1 - knee)) * distance))
     scale = numpy.divide(curve, values, out=numpy.ones_like(values), where=values > 0)
-    peak = data.max(axis=2) if data.ndim == 3 else data
+    if data.ndim == 3 and data.shape[2] == 3:
+        peak = numpy.maximum(data[:, :, 0], data[:, :, 1])
+        numpy.maximum(peak, data[:, :, 2], out=peak)
+    else:
+        peak = data.max(axis=2) if data.ndim == 3 else data
     multiplier = scale[numpy.minimum(peak, maximum)]
     if data.ndim == 3:
         multiplier = multiplier[:, :, None]
-    return numpy.clip(numpy.rint(data * multiplier), 0, maximum).astype(data.dtype)
+    lifted = data * multiplier
+    numpy.rint(lifted, out=lifted)
+    numpy.clip(lifted, 0, maximum, out=lifted)
+    return lifted.astype(data.dtype)
