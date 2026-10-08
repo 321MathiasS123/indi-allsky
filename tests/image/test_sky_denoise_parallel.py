@@ -11,13 +11,13 @@ def _scene(height, width, noncontiguous=False):
     storage = rng.normal(0.2, 0.025, (height, width * 2)).astype(np.float32)
     image = storage[:, ::2] if noncontiguous else storage[:, :width].copy()
     yy, xx = np.ogrid[:height, :width]
-    # Uneven strips exercise both rounding directions when splitting the image.
-    boundaries = [height // 4, height // 2, 3 * height // 4]
-    for y in [1, *boundaries, height - 2]:
-        for offset, amplitude in [(-2, 0.025), (0, 0.15), (2, 0.05)]:
-            image += (amplitude * np.exp(
-                -((yy - y - offset) ** 2 + (xx - width // 2) ** 2) / 2
-            )).astype(np.float32)
+    # Sources straddle strip/tile seams, tile corners and original outer edges.
+    for y in [1, 64, 128, height // 4, height // 2, 3 * height // 4, height - 2]:
+        for x in [1, 64, 128, width // 2, width - 2]:
+            for offset, amplitude in [(-2, 0.025), (0, 0.15), (2, 0.05)]:
+                image += (amplitude * np.exp(
+                    -((yy - y - offset) ** 2 + (xx - x - offset) ** 2) / 2
+                )).astype(np.float32)
     image[height // 2:, width // 3:] += 0.06
     image[:, :2] += 0.1
     image[:, -2:] -= 0.06
@@ -31,11 +31,13 @@ def _serial(image):
     )
 
 
-@pytest.mark.parametrize('shape', [(513, 137), (1053, 131)])
+@pytest.mark.parametrize('shape', [(513, 137), (1053, 531)])
 @pytest.mark.parametrize('noncontiguous', [False, True])
+@pytest.mark.parametrize('machine', ['aarch64', 'armv7l', 'AMD64'])
 def test_parallel_nlm_matches_whole_image_at_seams_and_outer_edges(
-        monkeypatch, shape, noncontiguous):
+        monkeypatch, shape, noncontiguous, machine):
     monkeypatch.setattr(sky_denoise.os, 'cpu_count', lambda: 4)
+    monkeypatch.setattr(sky_denoise.platform, 'machine', lambda: machine)
     image = _scene(*shape, noncontiguous=noncontiguous)
     original = image.copy()
     expected = _serial(image)
@@ -44,7 +46,7 @@ def test_parallel_nlm_matches_whole_image_at_seams_and_outer_edges(
     assert actual.shape == image.shape and actual.dtype == image.dtype
     # Independent integral-image accumulation can differ by float32 roundoff.
     # The whole-array comparison includes faint sources, discontinuities,
-    # internal strip seams and the original image's reflected outer borders.
+    # internal tile seams/corners and the original image's reflected borders.
     np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-7)
     np.testing.assert_array_equal(image, original)
 

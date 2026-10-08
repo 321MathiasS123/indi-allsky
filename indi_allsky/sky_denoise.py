@@ -9,6 +9,7 @@ this filter is intended for display images, not photometric measurements.
 """
 from concurrent.futures import ThreadPoolExecutor
 import os
+import platform
 
 import cv2
 import numpy as np
@@ -162,10 +163,13 @@ def _source_evidence(image, valid=None):
     broad_noise = _noise_grid(broad)
     score = np.minimum(dog / noise, broad / broad_noise)
     colour_dog = cv2.GaussianBlur(image, (0, 0), 1) - cv2.GaussianBlur(image, (0, 0), 3.5)
-    colour_scores = np.stack([
+    colour_scores = [
         colour_dog[:, :, c] / _noise_grid(colour_dog[:, :, c]) for c in range(3)
-    ], axis=2)
-    support = np.partition(colour_scores, 1, axis=2)[:, :, 1]
+    ]
+    # Median of three without stacking and partitioning a full RGB image.
+    # fmin preserves partition's ordering when one of the scores is NaN.
+    a, b, c = colour_scores
+    support = np.fmin(np.maximum(a, b), np.maximum(np.fmin(a, b), c))
     peaks = (dog == maximum_filter(dog, size=5)) & (score > 2.7) & (support > 1.2)
     if valid is not None:
         peaks &= valid
@@ -208,27 +212,39 @@ def _nlm_clean(image, evidence, h_multiplier=1.0):
 
 
 def _nlm_luminance(lum, h):
-    """Run the same local filter in bounded, overlapping horizontal strips."""
+    """Run the same local filter in bounded, overlapping regions."""
     options = dict(h=h, patch_size=5, patch_distance=5, sigma=0,
                    fast_mode=True, preserve_range=True, channel_axis=None)
     workers = min(4, os.cpu_count() or 1, max(1, len(lum) // 256))
     if workers == 1:
         return denoise_nl_means(lum, **options)
-    edges = np.linspace(0, len(lum), workers + 1, dtype=int)
+    height, width = lum.shape
+    if platform.machine().lower().startswith(('arm', 'aarch64')):
+        # Small tiles reduce repeated main-memory traffic on the Pi. Desktop
+        # CPUs benefit more from wider strips and less reflected padding.
+        rows = [*range(0, height, 64), height]
+        columns = [*range(0, width, 64), width]
+    else:
+        rows = np.linspace(0, height, workers + 1, dtype=int)
+        columns = [0, width]
     result = np.empty_like(lum)
     # Include both the search distance and patch radius at every internal edge.
     # Keep the original outer edges so scikit-image's reflection stays unchanged.
     halo = options['patch_distance'] + options['patch_size'] // 2
 
-    def run(index):
-        start, end = edges[index:index + 2]
-        first, last = max(0, start - halo), min(len(lum), end + halo)
-        cleaned = denoise_nl_means(lum[first:last], **options)
-        result[start:end] = cleaned[start - first:end - first]
+    def run(position):
+        y, bottom, x, right = position
+        first, last = max(0, y - halo), min(height, bottom + halo)
+        left, edge = max(0, x - halo), min(width, right + halo)
+        cleaned = denoise_nl_means(lum[first:last, left:edge], **options)
+        result[y:bottom, x:right] = cleaned[y - first:bottom - first, x - left:right - left]
 
     # NLM releases the GIL. Each worker writes only its non-overlapping interior.
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(run, range(workers)))
+        positions = ((y, bottom, x, right)
+                     for y, bottom in zip(rows, rows[1:])
+                     for x, right in zip(columns, columns[1:]))
+        list(pool.map(run, positions))
     return result
 
 
