@@ -148,6 +148,69 @@ def test_shared_night_color_does_not_select_day_denoising(processor, monkeypatch
     day.assert_not_called()
 
 
+@pytest.mark.parametrize('algorithm_day,algorithm_night', [
+    ('', 'star_aware'), ('star_aware', ''), ('star_aware', 'star_aware'), ('wavelet', 'star_aware'),
+])
+@pytest.mark.parametrize('altitude', [-13, -9.001, -9, -5])
+@pytest.mark.parametrize('gray_day,gray_night', [(False, False), (True, True), (True, False)])
+def test_star_aware_transition_keeps_bayer_and_filter_selection_in_step(
+        processor, monkeypatch, algorithm_day, algorithm_night, altitude, gray_day, gray_night):
+    from indi_allsky import sky_denoise
+
+    p = processor({'IMAGE_DENOISE_DAY': algorithm_day, 'IMAGE_DENOISE': algorithm_night,
+                   'IMAGE_DENOISE_STRENGTH_DAY': 2, 'IMAGE_DENOISE_STRENGTH': 4,
+                   'DAYTIME_GRAYSCALE': gray_day, 'NIGHT_GRAYSCALE': gray_night}, altitude)
+    night = p.twilight.weight > 0.5
+    # The operational capture flag can disagree with the colour endpoint.
+    p.night_av[0] = int(not night)
+    raw = numpy.full((64, 64), 10000, dtype=numpy.uint16)
+    original = raw.copy()
+    frame = SimpleNamespace(hdulist=[SimpleNamespace(data=raw)], image_bitpix=16,
+                            image_bayerpat='RGGB', binning=2)
+    p.image_list = [frame]
+    calls = []
+
+    def repair(data, config, binning):
+        calls.append(('bayer', binning))
+        return data + 1
+
+    def denoise(data, config, binning, strength):
+        calls.append(('denoise', binning, strength))
+        return data
+
+    monkeypatch.setattr(sky_denoise, 'repair_bayer', repair)
+    monkeypatch.setattr(sky_denoise, 'denoise', denoise)
+    monkeypatch.setattr(IndiAllskyDenoise, 'wavelet', lambda obj, data: data)
+    p.image = p._debayer(frame)
+    p.denoise()
+    selected = algorithm_night if night else algorithm_day
+    assert calls == ([('bayer', 2), ('denoise', 2, 4 if night else 2)]
+                     if selected == 'star_aware' else [])
+    numpy.testing.assert_array_equal(raw, original)
+
+
+@pytest.mark.parametrize('shared,focus', [(True, False), (False, True), (True, True)])
+def test_star_aware_bayer_and_filter_honor_shared_night_color_and_focus(processor, monkeypatch, shared, focus):
+    from indi_allsky import sky_denoise
+
+    p = processor({'USE_NIGHT_COLOR': shared, 'IMAGE_DENOISE': 'star_aware',
+                   'IMAGE_DENOISE_DAY': '', 'IMAGE_DENOISE_STRENGTH': 3}, -5)
+    p.focus_mode = focus
+    p.night_av[0] = 0
+    raw = numpy.full((64, 64), 10000, dtype=numpy.uint16)
+    frame = SimpleNamespace(hdulist=[SimpleNamespace(data=raw)], image_bitpix=16,
+                            image_bayerpat='RGGB', binning=2)
+    p.image_list = [frame]
+    calls = []
+    monkeypatch.setattr(sky_denoise, 'repair_bayer',
+                        lambda data, config, binning: calls.append('bayer') or data.copy())
+    monkeypatch.setattr(sky_denoise, 'denoise',
+                        lambda data, config, binning, strength: calls.append('denoise') or data)
+    p.image = p._debayer(frame)
+    p.denoise()
+    assert calls == (['bayer', 'denoise'] if not focus else [])
+
+
 def test_green_removal_selects_one_algorithm_and_blends_midtones_without_stale_cache(processor, monkeypatch):
     p = processor({'SCNR_ALGORITHM': 'green_mtf', 'SCNR_ALGORITHM_DAY': 'green_mtf',
                    'SCNR_MTF_MIDTONES': .7, 'SCNR_MTF_MIDTONES_DAY': .55})

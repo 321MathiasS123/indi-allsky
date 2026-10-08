@@ -997,6 +997,19 @@ class ImageProcessor(object):
             return data
 
 
+        # Correct isolated cold Bayer samples before they spread into colour
+        # patches. Keep the HDU untouched: saved FITS remain calibration data.
+        night_colour = self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT]
+        if (getattr(self, 'twilight', None) and self.twilight.weight is not None
+                and not self.config.get('USE_NIGHT_COLOR', True)):
+            # Match the discrete endpoint used by the denoising stage.
+            night_colour = self.twilight.weight > 0.5
+        denoise_key = 'IMAGE_DENOISE' if night_colour else 'IMAGE_DENOISE_DAY'
+        if self.config.get(denoise_key) == 'star_aware' and not self.focus_mode:
+            from .sky_denoise import repair_bayer
+            data = repair_bayer(data, self.config, binning=i_ref.binning)
+
+
         if getattr(self, 'twilight', None) and self.twilight.weight is not None:
             # Keep three channels when only one endpoint is gray, so downstream
             # processing sees the same image shape throughout the transition.
@@ -2222,7 +2235,10 @@ class ImageProcessor(object):
                 filter_o.config['SCNR_MTF_MIDTONES'] = midtones
                 filter_o._mtf_lut = None
         try:
-            self.image = getattr(filter_o, algorithm)(original)
+            if name == 'denoise' and algorithm == 'star_aware':
+                self.image = filter_o.star_aware(original, binning=self.getLatestImage().binning)
+            else:
+                self.image = getattr(filter_o, algorithm)(original)
         except AttributeError:
             logger.error('Unknown %s algorithm: %s', name, algorithm)
         if name == 'scnr':
@@ -2276,7 +2292,10 @@ class ImageProcessor(object):
             return
 
 
-        self.image = self._denoise(denoise_function)
+        if algo == 'star_aware':
+            self.image = denoise_function(self.image, binning=self.getLatestImage().binning)
+        else:
+            self.image = self._denoise(denoise_function)
 
 
     def _denoise(self, denoise_function):
