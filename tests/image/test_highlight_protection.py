@@ -147,7 +147,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
         denoise=lambda: events.append('denoise'),
         compensate_highlights=Mock(side_effect=lambda adu: events.append('compensate') or 1.25),
         stretch=lambda: events.append('stretch'),
-        convert_16bit_to_8bit=lambda: events.append('convert'),
+        convert_16bit_to_8bit=lambda **kwargs: events.append('convert'),
     )
     config = {'HIGHLIGHT_PROTECTION': {'ENABLE': enabled}, 'IMAGE_SAVE_FITS': fits_mode != 'off',
               'IMAGE_SAVE_FITS_PRE_DARK': fits_mode == 'pre_dark'}
