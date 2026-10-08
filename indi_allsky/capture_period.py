@@ -20,10 +20,11 @@ class CapturePeriodQueue:
     writes to the multiprocessing queue.
     """
 
-    def __init__(self, image_queue, temperature=None, passive=False):
+    def __init__(self, image_queue, temperature=None, passive=False, capture_receipts=None):
         self.image_queue = image_queue
         self._temperature = temperature
         self._passive = passive
+        self._capture_receipts = capture_receipts
         self._lock = RLock()
         self._context = None
         self._waiting = False
@@ -44,12 +45,20 @@ class CapturePeriodQueue:
                 return
             if self._waiting:
                 raise RuntimeError('Previous camera frame has not arrived; capture period incomplete')
+            identifier = period_id(camera_id, day_date.isoformat(), mode[0])
+            if self._capture_receipts is not None:
+                previous = self._context['capture_period_id'] if self._context else None
+                if previous != identifier:
+                    # Retain the adjacent period before replacing the current
+                    # receipt: an interrupted feeder can lose a boundary tail.
+                    set_inflight(self._capture_receipts[1], previous)
+                    set_inflight(self._capture_receipts[0], identifier)
             self._sequence += 1
             self._context = {
                 'capture_mode': tuple(mode),
                 'capture_day_date': day_date.isoformat(),
                 'capture_period': float(period),
-                'capture_period_id': period_id(camera_id, day_date.isoformat(), mode[0]),
+                'capture_period_id': identifier,
                 'capture_stream_id': self._stream_id,
                 'capture_sequence': self._sequence,
             }

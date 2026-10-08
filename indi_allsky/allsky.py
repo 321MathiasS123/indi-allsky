@@ -28,6 +28,7 @@ from .version import __config_level__
 from .config import IndiAllSkyConfig
 
 from . import constants
+from .capture_period import failure_key, read_inflight, set_inflight
 
 from .exceptions import TimeOutException
 from .exceptions import ConfigSaveException
@@ -245,6 +246,7 @@ class IndiAllSky(object):
         self.capture_error_q = Queue()
         self.capture_worker = None
         self.capture_worker_idx = 0
+        self.capture_receipts = tuple(Array(ctypes.c_char, 256, lock=False) for _ in range(2))
 
         self.image_q = Queue()
         self.period_inflight = Array(ctypes.c_char, 256, lock=False)
@@ -454,6 +456,8 @@ class IndiAllSky(object):
             if self.capture_worker.is_alive():
                 return
 
+            self._settleCapturePeriods(interrupted=True)
+
             try:
                 capture_error, capture_traceback = self.capture_error_q.get_nowait()
                 for line in capture_traceback.split('\n'):
@@ -481,8 +485,25 @@ class IndiAllSky(object):
             self.sensors_user_av,
             self.night_av,
             self.astro_av,
+            capture_receipts=self.capture_receipts,
         )
         self.capture_worker.start()
+
+
+    def _settleCapturePeriods(self, interrupted):
+        identifiers = {read_inflight(receipt) for receipt in self.capture_receipts} - {None}
+        if interrupted and identifiers:
+            # During a boundary update the old receipt remains valid until
+            # the new one is fully written, before the new exposure starts.
+            # An intact receipt therefore bounds a torn adjacent write.
+            if identifiers - {'UNKNOWN'}:
+                identifiers.discard('UNKNOWN')
+            with app.app_context():
+                for identifier in identifiers:
+                    self._miscDb.setState(failure_key(identifier), 'Capture worker stopped before its delivered frame prefix was confirmed')
+                    logger.error('Capture period %s is incomplete after capture worker failure; end jobs will not run', identifier)
+        for receipt in self.capture_receipts:
+            set_inflight(receipt, None)
 
 
     def _stopCaptureWorker(self):
@@ -490,6 +511,7 @@ class IndiAllSky(object):
             return
 
         if not self.capture_worker.is_alive():
+            self._settleCapturePeriods(interrupted=True)
             return
 
         if self._terminate:
@@ -500,6 +522,7 @@ class IndiAllSky(object):
 
         self.capture_q.put({'stop' : True})
         self.capture_worker.join()
+        self._settleCapturePeriods(interrupted=self._terminate or self.capture_worker.exitcode != 0)
 
 
     def _startImageWorker(self):

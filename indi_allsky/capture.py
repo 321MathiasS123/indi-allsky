@@ -220,6 +220,7 @@ class CaptureWorker(Process):
         sensors_user_av,
         night_av,
         astro_av,
+        capture_receipts=None,
     ):
 
         super(CaptureWorker, self).__init__()
@@ -229,6 +230,7 @@ class CaptureWorker(Process):
         self.config = config
         self.error_q = error_q
         self.capture_q = capture_q
+        self.capture_receipts = capture_receipts
         self.image_q = image_q
         self.video_q = video_q
         self.upload_q = upload_q
@@ -808,6 +810,7 @@ class CaptureWorker(Process):
         self._period_queue = CapturePeriodQueue(
             self.image_q, temperature=lambda: self.sensors_temp_av[constants.SENSOR_TEMP_CCD_TEMP],
             passive=self.config.get('CAMERA_INTERFACE') == 'indi_passive',
+            capture_receipts=self.capture_receipts,
         )
         if self.config.get('CAMERA_INTERFACE') == 'indi_passive':
             logger.warning('Passive camera period jobs wait for delivered images only; externally triggered exposures still in flight cannot be included reliably')
