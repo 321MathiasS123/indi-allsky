@@ -236,6 +236,11 @@ class ImageWorker(Process):
         signal.signal(signal.SIGINT, self.sigint_handler_worker)
         signal.signal(signal.SIGALRM, self.sigalarm_handler_worker)
 
+        if self.highlight_feedback_q is not None:
+            # Metering stops before rendering drains.  Unconsumed feedback is
+            # disposable and must not keep this child's queue feeder alive.
+            self.highlight_feedback_q.cancel_join_thread()
+
 
         ### use this as a method to log uncaught exceptions
         try:

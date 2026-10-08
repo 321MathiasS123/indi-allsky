@@ -1,8 +1,12 @@
 """Exercise parent worker ordering without loading platform-specific services."""
 import ast
+from contextlib import nullcontext
 import logging
 from pathlib import Path
 from queue import Queue
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -157,3 +161,118 @@ def test_renderer_failure_during_drain_does_not_restart_stopped_meter():
     parent._stopImageWorker()
     assert events == [('images', {'stop': True}), 'failed-render-drained',
                       'render-restarted', 'new-render-drained']
+
+
+def test_reload_replaces_only_feedback_after_both_workers_stop():
+    tree = ast.parse((Path(__file__).parents[2] / 'indi_allsky' / 'allsky.py').read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'IndiAllSky')
+    run = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+    events = []
+    old_feedback = Queue()
+    old_feedback.put({'exp_time': 100, 'measurement': 'old configuration'})
+    fresh_feedback = Queue()
+    image_queue, input_queue = Queue(), Queue()
+    image_queue.put({'filename': 'retained.fit'})
+    input_queue.put({'filename': 'fresh.fit'})
+
+    def close_feedback():
+        assert events == ['capture-stopped', 'meter-stopped', 'render-stopped']
+        events.append('feedback-closed')
+
+    old_feedback.close = close_feedback
+
+    def new_queue():
+        assert events[-1] == 'feedback-closed'
+        events.append('feedback-replaced')
+        return fresh_feedback
+
+    namespace = {'logger': logging.getLogger(__name__), 'Queue': new_queue,
+                 'app': SimpleNamespace(app_context=nullcontext)}
+    exec(compile(ast.Module(body=[run], type_ignores=[]), '<parent reload>', 'exec'), namespace)
+    parent = SimpleNamespace(
+        _shutdown=False, _reload=True, highlight_feedback_q=old_feedback,
+        image_q=image_queue, highlight_input_q=input_queue,
+        write_pid=lambda: None, _expireOrphanedTasks=lambda: None,
+        _deleteScratchFolder=lambda: None, _startup=lambda: None,
+        _stopCaptureWorker=lambda: events.append('capture-stopped'),
+        _stopImageWorker=lambda: events.extend(['meter-stopped', 'render-stopped']),
+        _stopVideoWorker=lambda: None, _stopSensorWorker=lambda: None,
+        _stopFileUploadWorkers=lambda: None, reload_handler=lambda: None,
+    )
+
+    class ReloadComplete(Exception):
+        pass
+
+    def start_capture():
+        assert parent.highlight_feedback_q is fresh_feedback
+        assert fresh_feedback.empty()
+        assert parent.image_q is image_queue
+        assert parent.highlight_input_q is input_queue
+        assert image_queue.get_nowait() == {'filename': 'retained.fit'}
+        assert input_queue.get_nowait() == {'filename': 'fresh.fit'}
+        raise ReloadComplete
+
+    parent._startCaptureWorker = start_capture
+    with pytest.raises(ReloadComplete):
+        namespace['run'](parent)
+    assert events[-2:] == ['feedback-closed', 'feedback-replaced']
+
+
+def test_renderer_exit_drops_unused_feedback_but_flushes_frame_queue(tmp_path):
+    # A real spawned child is essential: Queue.put() alone cannot expose the
+    # feeder-thread join that occurs only when the producing process exits.
+    script = tmp_path / 'renderer_feedback_exit.py'
+    script.write_text(textwrap.dedent('''\
+        import ast
+        import multiprocessing as mp
+        from pathlib import Path
+        from queue import Queue
+        import sys
+        import traceback
+        from types import SimpleNamespace
+
+        def render(source, feedback, frames):
+            tree = ast.parse(Path(source).read_text())
+            cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageWorker')
+            run = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+            signal = SimpleNamespace(SIGHUP=1, SIGTERM=2, SIGINT=3, SIGALRM=4,
+                                     signal=lambda *args: None)
+            namespace = {'signal': signal, 'traceback': traceback}
+            exec(compile(ast.Module(body=[run], type_ignores=[]), source, 'exec'), namespace)
+            def work():
+                # Far beyond pipe capacity, intentionally never consumed.
+                for index in range(4096):
+                    feedback.put((index, b'x' * 4096))
+                for index in range(400):
+                    frames.put((index, b'y' * 2048))
+            worker = SimpleNamespace(
+                highlight_feedback_q=feedback, error_q=Queue(), saferun=work,
+                sighup_handler_worker=lambda *args: None,
+                sigterm_handler_worker=lambda *args: None,
+                sigint_handler_worker=lambda *args: None,
+                sigalarm_handler_worker=lambda *args: None,
+            )
+            namespace['run'](worker)
+
+        if __name__ == '__main__':
+            context = mp.get_context('spawn')
+            feedback, frames = context.Queue(), context.Queue()
+            child = context.Process(target=render, args=(sys.argv[1], feedback, frames))
+            child.start()
+            try:
+                for index in range(400):
+                    assert frames.get(timeout=10) == (index, b'y' * 2048)
+                child.join(timeout=5)
+                assert not child.is_alive(), 'renderer waits for feedback with no consumer'
+                assert child.exitcode == 0
+            finally:
+                if child.is_alive():
+                    child.terminate()
+                    child.join(timeout=5)
+                feedback.close()
+                frames.close()
+    '''))
+    source = Path(__file__).parents[2] / 'indi_allsky' / 'image.py'
+    result = subprocess.run([sys.executable, str(script), str(source)],
+                            capture_output=True, text=True, timeout=25)
+    assert result.returncode == 0, result.stdout + result.stderr

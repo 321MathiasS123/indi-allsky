@@ -891,6 +891,10 @@ class IndiAllSky(object):
                 self._reload = False
                 self._stopCaptureWorker()  # stop this first so image queue is cleared out
                 self._stopImageWorker()
+                # Both feedback users have exited; discard old-config samples
+                # and any partial disposable write before starting new workers.
+                self.highlight_feedback_q.close()
+                self.highlight_feedback_q = Queue()
                 self._stopVideoWorker()
                 self._stopSensorWorker()
                 self._stopFileUploadWorkers()
