@@ -167,6 +167,7 @@ def _denoise_linear(image, valid, strength=3, star_protection=1.0,
     result = _apply(result, prepared, colour=1, brightness=0.5 + 0.125 * stronger)
     candidate, _, _ = _refine_pits(result, evidence, valid, amount=0.85 + 0.05 * stronger)
     result, _ = _protect_horizon(result, candidate, valid)
+    _repair_sensor_pixels(result, evidence.get('sensor_defects'), evidence.get('sensor_clearance'))
     if strength < 3:
         result = image + (result - image) * (0.5 if strength == 1 else 0.75)
     return np.clip(result, 0, 1)
@@ -265,9 +266,23 @@ def _source_evidence(image, valid=None, star_protection=1.0,
         outer = np.maximum.reduce([dog[yy + dy, xx + dx] for dy, dx in
             ((-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (-3, 3), (3, -3), (3, 3))])
         compact = outer < 0.3 * dog[yy, xx]
+        defects = _single_colour_points(colour_dog, colour_scores, support, distance, valid)
+        sensor_defects = defects.copy()
+        sensor_defects[:, :2] += margin
         weights, diagnostics = catalogue.weights(sensor_points, support_points,
-                                                  compact=compact, **capture_context)
+                                                  compact=compact, sensor_points=sensor_defects,
+                                                  **capture_context)
         evidence['catalogue'] = diagnostics
+        defect_weights = diagnostics.get('sensor_weights', ())
+        if len(defect_weights) == len(defects):
+            proven = np.asarray(diagnostics.get('sensor_stationary', np.zeros(len(defects), bool)))
+            selected = proven & (np.asarray(defect_weights) < 1)
+            evidence['sensor_defects'] = np.column_stack((defects[selected, :2],
+                                                          1 - np.asarray(defect_weights)[selected]))
+            # Keep only tiny patch masks, not another full-frame distance map.
+            evidence['sensor_clearance'] = [
+                distance[int(y)-4:int(y)+5, int(x)-4:int(x)+5] > 6.5
+                for x, y in defects[selected, :2]]
         if np.any(weights < 1):
             # A coherent current-frame trail must not wait for persistence.
             # Reuse measured fields at sparse points instead of introducing
@@ -278,13 +293,67 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             # statistic. Only current-source restoration changes with history.
             evidence['restore_mask'] = _weighted_points(
                 edge, points, weights * star_protection, diagnostics.get('stationary_mask'))
-        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d time=%.3fs',
+        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d sensor_pixels=%d time=%.3fs',
                     diagnostics.get('status', 'unknown'), len(points),
                     diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
-                    diagnostics.get('stationary', 0), time.monotonic() - start)
+                    diagnostics.get('stationary', 0), len(evidence.get('sensor_defects', ())),
+                    time.monotonic() - start)
     elif catalogue is not None and star_protection == 0:
         catalogue.reset()
     return evidence
+
+
+def _single_colour_points(colour_dog, scores, support, distance, valid):
+    """Compact single-channel evidence for the sensor table, never star votes.
+
+    Reuse the existing channel measurements. Only sparse high-significance
+    candidates need neighbourhood checks; no further image-wide filters.
+    """
+    candidates = ((scores[0] > 6) | (scores[1] > 6) | (scores[2] > 6))
+    candidates &= (support <= 1.2) & (distance > 6.5)
+    if valid is not None:
+        candidates &= valid
+    candidates[:12] = candidates[-12:] = False
+    candidates[:, :12] = candidates[:, -12:] = False
+    # An unexpected large coloured structure must not create unbounded work.
+    if np.count_nonzero(candidates) > 20000:
+        return np.empty((0, 3))
+    y, x = np.nonzero(candidates)
+    values = np.column_stack([channel[y, x] for channel in scores])
+    channel = np.argmax(values, axis=1)
+    peak = colour_dog[y, x, channel]
+    keep = np.ones(len(x), bool)
+    for dy, dx in ((-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)):
+        neighbour = colour_dog[y + dy, x + dx, channel]
+        # Pick one deterministic centroid on a flat maximum.
+        keep &= peak > neighbour if (dy, dx) < (0, 0) else peak >= neighbour
+    for dy, dx in ((-4,0), (4,0), (0,-4), (0,4), (-3,-3), (-3,3), (3,-3), (3,3)):
+        keep &= colour_dog[y + dy, x + dx, channel] < .3 * peak
+    return np.column_stack((x[keep], y[keep], values[np.arange(len(x)), channel][keep]))
+
+
+def _repair_sensor_pixels(image, defects, clearance=None):
+    """Fade proven tiny sensor residuals toward the current local background.
+
+    NLM can retain a strong positive outlier even without a protection mask.
+    Its luminance also spreads into the other channels, so repair the small RGB
+    core after filtering. Never lift dark pixels or use previous-frame pixels.
+    The caller owns this working image; originals and noise statistics stay put.
+    """
+    if defects is None or not len(defects):
+        return
+    y, x = np.mgrid[-7:8, -7:8]
+    radius = np.hypot(x, y)
+    ring = (radius >= 5) & (radius <= 7)
+    taper = np.clip((4 - radius[3:12, 3:12]) / 2, 0, 1)[:, :, None]
+    for index, (cx, cy, amount) in enumerate(defects):
+        cx, cy = int(cx), int(cy)
+        background = np.median(image[cy-7:cy+8, cx-7:cx+8][ring], axis=0)
+        patch = image[cy-4:cy+5, cx-4:cx+5]
+        # A passing star can overlap the repair footprint despite its centre
+        # being farther away. Preserve every pixel in its protected wings.
+        weight = taper if clearance is None else taper * clearance[index][:, :, None]
+        patch -= amount * weight * np.maximum(patch - background, 0)
 
 
 def _line_sources(dog, noise, x, y):

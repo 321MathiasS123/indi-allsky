@@ -145,10 +145,13 @@ class SkySourceCatalogue:
         self._last_points = np.empty((0, 3))
         self._last_weights = np.empty(0, np.float32)
         self._last_stationary = np.empty(0, bool)
+        self._last_sensor_points = np.empty((0, 3))
+        self._last_sensor_weights = np.empty(0, np.float32)
+        self._last_sensor_stationary = np.empty(0, bool)
 
     def weights(self, points, support_points, *, capture_time, geometry_key,
                 context_valid=True, capture_interval=None, sensor_shape=None,
-                compact=None):
+                compact=None, sensor_points=None):
         """Return current-point weights and diagnostics; inputs are x,y,score.
 
         Capture time is the exposure midpoint, not processing time. The caller
@@ -157,10 +160,26 @@ class SkySourceCatalogue:
         protection. Exposure/gain changes alone must not change geometry_key.
         Voting uses the current plus three accepted observations. Unregistered
         cloud frames suspend voting, so these need not be consecutive captures.
+        Optional sensor_points are separate compact single-colour candidates.
+        They participate only in sensor-position proof, never star protection,
+        motion fitting or voting. The caller excludes co-located normal points.
         """
         points = np.asarray(points, dtype=np.float64)
         support = np.asarray(support_points, dtype=np.float64)
         ones = np.ones(len(points), np.float32)
+        try:
+            sensors = (np.empty((0, 3)) if sensor_points is None
+                       else np.asarray(sensor_points, dtype=np.float64))
+            sensor_count = len(sensors) if sensors.ndim == 2 and len(sensors) <= MAX_POINTS else 0
+            sensor_valid = (sensors.ndim == 2 and sensors.shape[1] == 3
+                            and len(sensors) <= MAX_POINTS and np.isfinite(sensors).all())
+        except (TypeError, ValueError, OverflowError):
+            sensor_count, sensor_valid = 0, False
+        sensor_result = dict(sensor_stationary=np.zeros(sensor_count, bool),
+                             sensor_weights=np.ones(sensor_count, np.float32),
+                             sensor_skipped=not sensor_valid)
+        if not sensor_valid:
+            sensors = np.empty((0, 3))
         try:
             timestamp = float(capture_time)
             shape = tuple(int(value) for value in sensor_shape)
@@ -173,17 +192,21 @@ class SkySourceCatalogue:
             valid = False
         if not valid:
             self.reset()
-            return ones, {'status': 'invalid_context', 'stationary_mask': np.zeros(len(points), bool)}
+            return ones, dict(status='invalid_context', stationary_mask=np.zeros(len(points), bool), **sensor_result)
+        if len(sensors) and (np.any(sensors[:, :2] < 0)
+                             or np.any(sensors[:, :2] >= np.array(shape[::-1]))):
+            sensors = np.empty((0, 3))
+            sensor_result['sensor_skipped'] = True
         compact = np.zeros(len(points), bool) if compact is None else np.asarray(compact, bool)
         if compact.shape != (len(points),):
             self.reset()
-            return ones, {'status': 'invalid_compact_flags', 'stationary_mask': np.zeros(len(points), bool)}
+            return ones, dict(status='invalid_compact_flags', stationary_mask=np.zeros(len(points), bool), **sensor_result)
         # Every protected candidate must exist in the measured support table.
         if len(points):
             pi, si = _pairs(points[:, :2], support[:, :2], 0.01)
             if len(pi) != len(points):
                 self.reset()
-                return ones, {'status': 'incomplete_support', 'stationary_mask': np.zeros(len(points), bool)}
+                return ones, dict(status='incomplete_support', stationary_mask=np.zeros(len(points), bool), **sensor_result)
             point_support = np.empty(len(points), int)
             point_support[pi] = si
         else:
@@ -194,7 +217,11 @@ class SkySourceCatalogue:
             result[new] = self._last_weights[old]
             stationary = np.zeros(len(points), bool)
             stationary[new] = self._last_stationary[old]
-            return result, {'status': 'duplicate', 'tracks': len(self._tracks), 'stationary_mask': stationary}
+            old, new = _pairs(self._last_sensor_points[:, :2], sensors[:, :2], 0.01)
+            sensor_result['sensor_weights'][new] = self._last_sensor_weights[old]
+            sensor_result['sensor_stationary'][new] = self._last_sensor_stationary[old]
+            return result, dict(status='duplicate', tracks=len(self._tracks), stationary_mask=stationary,
+                                **sensor_result)
         try:
             expected = float(capture_interval)
             if not np.isfinite(expected) or expected <= 0:
@@ -225,7 +252,7 @@ class SkySourceCatalogue:
             motion_info = {'reason': 'motion_rebootstrap'}
         if self._anchor_time is None and not _distributed(anchors, shape):
             return self._fallback(points, compact, timestamp,
-                                  {'reason': 'insufficient_distributed_anchors'})
+                                  {'reason': 'insufficient_distributed_anchors'}, sensors, sensor_result)
         if self._anchor_time is not None:
             dt = timestamp - self._anchor_time
             warm = self._model * (dt / self._model_dt) if self._model is not None else None
@@ -233,7 +260,7 @@ class SkySourceCatalogue:
             if model is None and warm is not None:
                 model, motion_info = _motion(self._anchors, anchors, shape)
             if model is None:
-                return self._fallback(points, compact, timestamp, motion_info)
+                return self._fallback(points, compact, timestamp, motion_info, sensors, sensor_result)
             self._tracks[:, :2] += _features(self._tracks[:, :2], shape) @ model
             self._fixed[:, 2:4] += _features(self._fixed[:, 2:4], shape) @ model
             for previous in self._history:
@@ -308,11 +335,20 @@ class SkySourceCatalogue:
         # gets its downward fade, rather than immediately vetoing itself.
         self._remember_rejected(tracks[newly_rejected][:, [8, 9, 6]])
         result[points[:, 2] >= STRONG_SCORE] = 1
-        stationary, stationary_weight = self._stationary(points, compact, timestamp, advance)
+        combined = np.concatenate((points, sensors)) if len(sensors) else points
+        flags = np.concatenate((compact, np.ones(len(sensors), bool))) if len(sensors) else compact
+        stationary_all, weight_all = self._stationary(combined, flags, timestamp, advance)
+        stationary, stationary_weight = stationary_all[:len(points)], weight_all[:len(points)]
+        if len(sensors):
+            sensor_result['sensor_stationary'] = stationary_all[len(points):]
+            sensor_result['sensor_weights'] = weight_all[len(points):]
         result[stationary] = np.minimum(result[stationary], stationary_weight[stationary])
         self._time = timestamp
         self._last_points, self._last_weights = points.copy(), result.copy()
         self._last_stationary = stationary.copy()
+        self._last_sensor_points = sensors.copy()
+        self._last_sensor_weights = sensor_result['sensor_weights'][:len(sensors)].copy()
+        self._last_sensor_stationary = sensor_result['sensor_stationary'][:len(sensors)].copy()
         self._history.append(support[:, :2].copy())
         self._history = self._history[-3:]
         return result, dict(status='tracking', motion=motion_info, tracks=len(tracks),
@@ -320,27 +356,38 @@ class SkySourceCatalogue:
                             rejected_sensor_positions=len(self._cold),
                             provisional=int(np.count_nonzero((result > 0) & (result < 1))),
                             suppressed=int(np.count_nonzero(result == 0)),
-                            stationary=int(stationary.sum()), stationary_mask=stationary)
+                            stationary=int(stationary.sum()), stationary_mask=stationary, **sensor_result)
 
-    def _fallback(self, points, compact, timestamp, motion_info):
+    def _fallback(self, points, compact, timestamp, motion_info, sensors, sensor_result):
         """Suspend votes, keeping sensor rejection that needs no new sky fit."""
         weights = np.ones(len(points), np.float32)
-        stationary = np.zeros(len(points), bool)
+        combined = np.concatenate((points, sensors)) if len(sensors) else points
+        flags = np.concatenate((compact, np.ones(len(sensors), bool))) if len(sensors) else compact
+        stationary_all = np.zeros(len(combined), bool)
+        stationary_weights = np.ones(len(combined), np.float32)
         proven = np.flatnonzero(self._fixed[:, 8] != 0)
-        selected = np.flatnonzero(compact)
-        fixed, current = _pairs(self._fixed[proven, :2], points[selected, :2], 0.75)
-        stationary[selected[current]] = True
+        selected = np.flatnonzero(flags)
+        fixed, current = _pairs(self._fixed[proven, :2], combined[selected, :2], 0.75)
+        stationary_all[selected[current]] = True
+        stationary_weights[selected[current]] = self._fixed[proven[fixed], 9]
+        stationary = stationary_all[:len(points)]
+        if len(sensors):
+            sensor_result['sensor_stationary'] = stationary_all[len(points):]
+            sensor_result['sensor_weights'] = stationary_weights[len(points):]
         weak = np.flatnonzero(points[:, 2] < STRONG_SCORE)
         cold, recurrent = _pairs(self._cold[:, :2], points[weak, :2], 0.75)
         weights[weak[recurrent]] = 0
         self._cold[cold, 2] = timestamp
-        weights[selected[current]] = np.minimum(weights[selected[current]], self._fixed[proven[fixed], 9])
+        weights[stationary] = np.minimum(weights[stationary], stationary_weights[:len(points)][stationary])
         self._fixed[proven[fixed], 6] = timestamp
         self._time = timestamp
         self._last_points, self._last_weights = points.copy(), weights.copy()
         self._last_stationary = stationary.copy()
+        self._last_sensor_points = sensors.copy()
+        self._last_sensor_weights = sensor_result['sensor_weights'][:len(sensors)].copy()
+        self._last_sensor_stationary = sensor_result['sensor_stationary'][:len(sensors)].copy()
         return weights, dict(status='motion_fallback', motion=motion_info, tracks=len(self._tracks),
-                             stationary_mask=stationary)
+                             stationary_mask=stationary, **sensor_result)
 
     def _remember_rejected(self, positions):
         if not len(positions):
