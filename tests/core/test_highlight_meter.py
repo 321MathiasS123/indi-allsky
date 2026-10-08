@@ -48,13 +48,13 @@ def test_feedback_age_tracks_configured_cadence_and_long_exposure(period, exposu
     output.update(exp_time=100 - expected, exposure=exposure)
     assert gate.update(control, capture, output)
     assert control.highlight_output.active
-    capture['exp_time'] += .1
+    capture['exp_time'] += 2.0  # Outside the bounded scheduling margin.
     assert not gate.update(control, capture, None)
     assert not control.highlight_output.active
 
 
 @pytest.mark.parametrize('change', [
-    {'exp_time': 79.}, {'exp_time': 101.}, {'camera_id': 2}, {'binning': 2},
+    {'exp_time': 78.9}, {'exp_time': 101.}, {'camera_id': 2}, {'binning': 2},
     {'exposure': 1.1}, {'gain': 1}, {'capture_mode': (0, 0)},
     {'trusted': False}, {'measurement': None},
 ])
@@ -93,6 +93,63 @@ def test_metering_allowance_and_output_toggle_never_rewind_latest_feedback():
     control.config['HIGHLIGHT_PROTECTION']['OUTPUT_ENABLE'] = False
     assert not gate.update(control, job(exp_time=102.), None, allowance=2)
     assert not control.highlight_output.active
+
+
+@pytest.mark.parametrize('meter_seconds', [0.1, 0.5])
+@pytest.mark.parametrize('period,exposure,elapsed,arrival_gap', [
+    (20, 30, 30.9, 30.9),  # Continuous long exposures include download time.
+    (20, 5, 5.9, 20.1),   # A scheduled short exposure includes polling jitter.
+    (2, 2, 2.9, 2.9),     # The allowance also scales to a short cadence.
+])
+def test_previous_frame_output_survives_download_with_fast_metering(
+        meter_seconds, period, exposure, elapsed, arrival_gap):
+    control = controller()
+    gate = OutputFeedbackGate()
+    accepted = []
+    previous = None
+    for index in range(4):
+        capture = job(exp_time=100 + arrival_gap * index, capture_period=period,
+                      exposure=exposure, exp_elapsed=elapsed)
+        accepted.append(gate.update(control, capture, previous, allowance=meter_seconds))
+        previous = dict(capture, measurement=(3, 5, 70, 0, 0), trusted=True)
+    assert accepted == [False, False, True, True]  # Preserve recovery hysteresis.
+
+
+@pytest.mark.parametrize('period,exposure', [(2, 2), (20, 5), (20, 30), (60, 10)])
+@pytest.mark.parametrize('elapsed,allowance', [
+    (0, 0.1), (30.9, 0.5), (3600, 3600), (float('inf'), 3600), (float('nan'), 0.1),
+])
+def test_acquisition_or_meter_stall_cannot_admit_two_frame_old_output(
+        period, exposure, elapsed, allowance):
+    control = controller()
+    cadence = max(period, exposure)
+    capture = job(exp_time=1000, capture_period=period, exposure=exposure, exp_elapsed=elapsed)
+    stale = dict(capture, exp_time=1000 - 2 * cadence,
+                 measurement=(3, 5, 70, 0, 0), trusted=True)
+    assert not OutputFeedbackGate().update(control, capture, stale, allowance=allowance)
+    assert not control.highlight_output.active
+
+
+@pytest.mark.parametrize('meter_seconds', [0.1, 0.5])
+def test_previous_output_cannot_compound_cut_from_an_already_running_exposure(meter_seconds):
+    control = controller()
+    control._expUtils.EXPOSURE_NEXT = 30
+    control._expUtils.GAIN_NEXT = 0
+    gate = OutputFeedbackGate()
+    previous = dict(job(exp_time=0, exposure=30), measurement=(3, 5, 70, 0, 0), trusted=True)
+    completion = 0.0
+    requests, accepted = [], []
+    # B was already integrating at 30s when A requested 29.4s. C is the first
+    # changed capture; its older 30s output must not constrain the new settings.
+    for exposure in (30, 30, 29.4, 29.4, 29.4):
+        completion += exposure + 0.9
+        capture = job(exp_time=completion, exposure=exposure, exp_elapsed=exposure + 0.9)
+        accepted.append(gate.update(control, capture, previous, allowance=meter_seconds))
+        control.compare_highlights(HighlightMeasurement(0, 0, 70, 0, 0), exposure, 0)
+        requests.append(control._expUtils.EXPOSURE_NEXT)
+        previous = dict(capture, measurement=(3, 5, 70, 0, 0), trusted=True)
+    assert accepted == [True, True, False, False, True]
+    assert requests == pytest.approx([29.4, 29.4, 29.4, 29.4, 28.812])
 
 
 def snapshot(control, **state):
