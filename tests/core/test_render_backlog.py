@@ -64,6 +64,8 @@ def guard_fixture(monkeypatch, tmp_path, queue_max=3, frame_bytes=100, samples=T
         return SimpleNamespace(free=free.value)
 
     monkeypatch.setattr('indi_allsky.render_backlog.shutil.disk_usage', disk_usage)
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.disk_partitions',
+                        lambda all: [SimpleNamespace(mountpoint=str(tmp_path.anchor), fstype='ext4')])
     return ResourceBackoff(state, queue_max), state, free
 
 
@@ -158,3 +160,77 @@ def test_new_frame_size_and_render_throughput_are_observed(monkeypatch, tmp_path
     free.value = 4500
     assert guard.delay(20, 1) == pytest.approx(13)
     assert guard.can_capture
+
+
+@pytest.mark.parametrize('fstype', ['tmpfs', 'ramfs'])
+@pytest.mark.parametrize('frame_bytes', [100, 10 * 1024 * 1024])
+def test_memory_spool_pauses_before_disk_full_and_recovers_with_hysteresis(
+        monkeypatch, tmp_path, fstype, frame_bytes):
+    guard, state, free = guard_fixture(monkeypatch, tmp_path, frame_bytes=frame_bytes)
+    free.value = 1024 * 1024 * 1024
+    working_reserve = max(256 * 1024 * 1024, 32 * frame_bytes)
+    memory = SimpleNamespace(available=working_reserve + 2 * frame_bytes - 1)
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.virtual_memory', lambda: memory)
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.disk_partitions', lambda all: [
+        SimpleNamespace(mountpoint=str(tmp_path), fstype=fstype),
+        SimpleNamespace(mountpoint=str(tmp_path.anchor), fstype='ext4'),
+    ])
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    assert not guard.can_capture
+    assert guard.latched
+    memory.available = working_reserve - 1
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    assert not guard.can_capture
+    memory.available = working_reserve + 2 * frame_bytes
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    assert guard.can_capture
+    memory.available = working_reserve + 8 * frame_bytes - 1
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    memory.available += 1
+    assert guard.delay(20, 1) == 0
+    assert not guard.latched
+
+
+def test_nested_disk_mount_does_not_use_ram_guard(monkeypatch, tmp_path):
+    guard, state, free = guard_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.disk_partitions', lambda all: [
+        SimpleNamespace(mountpoint=str(tmp_path), fstype='ext4'),
+        SimpleNamespace(mountpoint=str(tmp_path.parent), fstype='tmpfs'),
+        SimpleNamespace(mountpoint=str(tmp_path) + '-other', fstype='ramfs'),
+    ])
+
+    def memory_must_not_be_used():
+        pytest.fail('Disk-backed spool must not consult available RAM')
+
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.virtual_memory', memory_must_not_be_used)
+    assert guard.delay(20, 1) == 0
+    assert guard.can_capture
+    assert not guard.latched
+
+
+def test_memory_mount_classification_is_cached_per_spool_path(monkeypatch, tmp_path):
+    guard, state, free = guard_fixture(monkeypatch, tmp_path)
+    calls = []
+    disk_path = tmp_path / 'disk'
+    disk_path.mkdir()
+
+    def mounts(all):
+        calls.append(all)
+        return [SimpleNamespace(mountpoint=str(tmp_path), fstype='tmpfs'),
+                SimpleNamespace(mountpoint=str(disk_path), fstype='ext4')]
+
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.disk_partitions', mounts)
+    monkeypatch.setattr('indi_allsky.render_backlog.psutil.virtual_memory',
+                        lambda: SimpleNamespace(available=0))
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    assert not guard.can_capture
+    assert guard.delay(20, 1) == pytest.approx(7.5)
+    assert calls == [True]
+    frame = disk_path / 'capture.fit'
+    frame.write_bytes(b'x' * 100)
+    assert state.observe_file(frame)
+    monkeypatch.setattr('indi_allsky.render_backlog.shutil.disk_usage',
+                        lambda path: SimpleNamespace(free=100000))
+    assert guard.delay(20, 1) == 0
+    assert guard.can_capture
+    assert calls == [True, True]
