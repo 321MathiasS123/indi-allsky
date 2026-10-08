@@ -30,6 +30,7 @@ from PIL import Image
 from fractions import Fraction
 
 from . import constants
+from .capture_period import FrameTemperatureValues, failure_key, frame_mode, read_inflight, set_inflight
 from . import asi676mc
 
 from .processing import ImageProcessor
@@ -51,7 +52,7 @@ from .flask.models import IndiAllSkyDbImageTable
 from .flask.models import IndiAllSkyDbTaskQueueTable
 
 from sqlalchemy import func
-#from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.orm.exc import NoResultFound
 
 from .exceptions import TimeOutException
 from .exceptions import BadImage
@@ -85,6 +86,8 @@ class ImageWorker(Process):
         sensors_user_av,
         night_av,
         astro_av,
+        video_q=None,
+        period_inflight=None,
     ):
         super(ImageWorker, self).__init__()
 
@@ -94,6 +97,8 @@ class ImageWorker(Process):
 
         self.error_q = error_q
         self.image_q = image_q
+        self.video_q = video_q
+        self.period_inflight = period_inflight
         self.upload_q = upload_q
 
         self.position_av = position_av
@@ -101,9 +106,12 @@ class ImageWorker(Process):
         self.gain_av = gain_av
         self.binning_av = binning_av
 
-        self.sensors_temp_av = sensors_temp_av  # 0 ccd_temp
+        self.sensors_temp_av = FrameTemperatureValues(sensors_temp_av, constants.SENSOR_TEMP_CCD_TEMP)
         self.sensors_user_av = sensors_user_av
-        self.night_av = night_av
+        # These helpers retain this local list, never the capture worker's live
+        # array. Update it in place once per queued frame.
+        self.live_night_av = night_av
+        self.night_av = list(night_av)
         self.astro_av = astro_av
 
         self.filename_t = 'ccd{0:d}_{1:s}.{2:s}'
@@ -244,6 +252,13 @@ class ImageWorker(Process):
     def saferun(self):
         #raise Exception('Test exception handling in worker')
 
+        with app.app_context():
+            interrupted = read_inflight(self.period_inflight)
+            if interrupted:
+                self._miscDb.setState(failure_key(interrupted), 'Image worker stopped before saving its frame')
+                logger.error('Capture period %s is incomplete after image worker failure; end jobs will not run', interrupted)
+                set_inflight(self.period_inflight, None)
+
         while True:
             try:
                 i_dict = self.image_q.get(timeout=23)  # prime number
@@ -265,11 +280,65 @@ class ImageWorker(Process):
 
             # new context for every task, reduces the effects of caching
             with app.app_context():
+                if 'period_end' in i_dict:
+                    self._releasePeriodEnd(i_dict['period_end'])
+                    continue
+                set_inflight(self.period_inflight, i_dict.get('capture_period_id'))
                 self.processImage(i_dict)
+                set_inflight(self.period_inflight, None)
+
+
+    def _releasePeriodEnd(self, marker):
+        if self.video_q is None:
+            raise RuntimeError('Period-end queue is unavailable; refusing early finalization')
+        failed = False
+        for identifier in (marker['period_id'], 'UNKNOWN'):
+            try:
+                self._miscDb.getState(failure_key(identifier))
+                failed = True
+            except NoResultFound:
+                pass
+        if failed:
+            logger.error('Capture period %s is incomplete; suppressing end-of-period jobs', marker['period_id'])
+            for item in marker['tasks']:
+                task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=item['task_id']).one()
+                if task.state == TaskQueueState.QUEUED:
+                    task.setFailed('Capture period incomplete after image processing failure')
+            return
+        # Reaching this FIFO item means the preceding processImage calls have
+        # completed their local file writes and database commits.
+        self.image_processor.realtimeKeogramDataSave()
+        for item in marker['tasks']:
+            self.video_q.put(item)
+
+
+    def _setFrameContext(self, frame):
+        self.night_av[:] = frame_mode(frame, self.live_night_av)
+        self.sensors_temp_av.set_frame(frame)
+        day_date = frame.get('capture_day_date')
+        return datetime.strptime(day_date, '%Y-%m-%d').date() if day_date else None
+
+
+    def _failCapturePeriod(self, frame, reason):
+        identifier = frame.get('capture_period_id')
+        if identifier and not frame.get('sqm_exposure'):
+            self._miscDb.setState(failure_key(identifier), reason)
+            logger.error('Capture period %s is incomplete: %s', identifier, reason)
+
+
+    def _checkCaptureImageSaved(self, frame, filename):
+        if filename or self.config.get('FOCUS_MODE', False):
+            return
+        if (not self.night_av[constants.NIGHT_NIGHT] and self.config['DAYTIME_CAPTURE']
+                and not self.config.get('DAYTIME_CAPTURE_SAVE', True)):
+            return
+        self._failCapturePeriod(frame, 'Expected timelapse image was not saved')
 
 
     def processImage(self, i_dict):
         import piexif
+
+        capture_day_date = self._setFrameContext(i_dict)
 
         ### Not using DB task queue for image processing to reduce database I/O
         #task_id = i_dict['task_id']
@@ -331,6 +400,7 @@ class ImageWorker(Process):
 
         if not filename_p.exists():
             logger.error('Frame not found: %s', filename_p)
+            self._failCapturePeriod(i_dict, 'Captured frame file was not found')
             #task.setFailed('Frame not found: {0:s}'.format(str(filename_p)))
             return
 
@@ -338,6 +408,7 @@ class ImageWorker(Process):
         image_size = filename_p.stat().st_size
         if image_size == 0:
             logger.error('Frame is empty: %s', filename_p)
+            self._failCapturePeriod(i_dict, 'Captured frame file was empty')
             filename_p.unlink()
             return
 
@@ -385,8 +456,7 @@ class ImageWorker(Process):
             self.adsb_worker.start()
 
 
-        now = datetime.now()
-        self.image_processor.update_astrometric_data(now)
+        self.image_processor.update_astrometric_data(exp_date)
 
 
         try:
@@ -399,9 +469,11 @@ class ImageWorker(Process):
                 exp_elapsed,
                 camera,
                 detected_camera_name=detected_camera_name,
+                capture_day_date=capture_day_date,
             )
         except BadImage as e:
             logger.error('Bad Image: %s', str(e))
+            self._failCapturePeriod(i_dict, 'Captured frame could not be decoded: {0}'.format(e))
             filename_p.unlink()
             #task.setFailed('Bad Image: {0:s}'.format(str(filename_p)))
             return
@@ -612,28 +684,31 @@ class ImageWorker(Process):
         # brightness sample. Do not let it alter exposure history or the next
         # capture settings.
         repair_result = i_ref.asi676mc_repair_result
-        exclude_from_exposure = (
-            asi676mc.excluded_from_downstream_measurements(repair_result)
-        )
-        if exclude_from_exposure:
-            exposure_history = list(
-                getattr(self.exposure_o, 'hist_adu', ())
+        # Do not publish a night exposure result after capture has switched to
+        # day (or conversely). Hold the same lock used by capture's mode update.
+        with self.live_night_av.get_lock():
+            exclude_from_exposure = (
+                asi676mc.excluded_from_downstream_measurements(repair_result)
+                or tuple(self.night_av) != tuple(self.live_night_av)
             )
-            adu_average = (
-                sum(exposure_history) / len(exposure_history)
-                if exposure_history
-                else 0.0
-            )
-            logger.warning(
-                'Ignoring excluded ASI676MC frame for exposure control'
-            )
-        else:
-            adu, adu_average = self.exposure_o.compare_exposure(
-                adu,
-                exposure,
-                gain,
-            )
-
+            if exclude_from_exposure:
+                exposure_history = list(
+                    getattr(self.exposure_o, 'hist_adu', ())
+                )
+                adu_average = (
+                    sum(exposure_history) / len(exposure_history)
+                    if exposure_history
+                    else 0.0
+                )
+                logger.warning(
+                    'Ignoring excluded or outgoing-period frame for exposure control'
+                )
+            else:
+                adu, adu_average = self.exposure_o.compare_exposure(
+                    adu,
+                    exposure,
+                    gain,
+                )
 
         # generate a new mask base once the target ADU is found
         # this should only only fire once per restart
@@ -804,6 +879,7 @@ class ImageWorker(Process):
 
 
         latest_file, new_filename = self.write_img(self.image_processor.image, i_ref, camera, jpeg_exif=jpeg_exif)
+        self._checkCaptureImageSaved(i_dict, new_filename)
 
         if new_filename:
             self.start_image_save_post_hook(new_filename, exposure, gain, binning)

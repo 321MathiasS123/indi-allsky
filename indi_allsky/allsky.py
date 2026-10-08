@@ -247,6 +247,7 @@ class IndiAllSky(object):
         self.capture_worker_idx = 0
 
         self.image_q = Queue()
+        self.period_inflight = Array(ctypes.c_char, 256, lock=False)
         self.image_error_q = Queue()
         self.image_worker = None
         self.image_worker_idx = 0
@@ -532,6 +533,8 @@ class IndiAllSky(object):
             self.sensors_user_av,
             self.night_av,
             self.astro_av,
+            video_q=self.video_q,
+            period_inflight=self.period_inflight,
         )
         self.image_worker.start()
 
