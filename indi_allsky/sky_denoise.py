@@ -127,6 +127,7 @@ def _denoise_linear(image, valid, strength=3):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
     evidence = _source_evidence(image, valid)
+    evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
     if sigma <= 1e-8:
@@ -148,16 +149,40 @@ def _noise_grid(data, tile=128):
     ny = (h + tile - 1) // tile
     nx = (w + tile - 1) // tile
     grid = np.empty((ny, nx), np.float32)
-    for y in range(ny):
-        for x in range(nx):
-            a = data[y * tile:min((y + 1) * tile, h), x * tile:min((x + 1) * tile, w)]
-            grid[y, x] = max(float(np.median(np.abs(a - np.median(a)))) * 1.4826, 1e-06)
+    full_width = w // tile * tile
+
+    def row(y):
+        start, end = y * tile, min(h, (y + 1) * tile)
+        if full_width:
+            # Own the tile samples before partitioning them in place. Batching
+            # one tile row bounds scratch memory and retains the original grid.
+            samples = data[start:end, :full_width].reshape(end - start, -1, tile)
+            samples = samples.transpose(1, 0, 2).reshape(-1, (end - start) * tile).copy()
+            centers = np.median(samples, axis=1, overwrite_input=True)
+            samples -= centers[:, None]
+            np.abs(samples, out=samples)
+            # Match the original Python-float scaling before rounding to float32.
+            scatter = np.median(samples, axis=1, overwrite_input=True).astype(np.float64) * 1.4826
+            grid[y, :w // tile] = np.maximum(scatter, 1e-06)
+        if full_width < w:
+            a = data[start:end, full_width:]
+            grid[y, -1] = max(float(np.median(np.abs(a - np.median(a)))) * 1.4826, 1e-06)
+
+    workers = min(4, os.cpu_count() or 1, ny)
+    if workers > 1 and data.size >= 512 * 512:
+        # NumPy's partitions release the GIL; rows write disjoint grid cells.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(row, range(ny)))
+    else:
+        for y in range(ny):
+            row(y)
     return cv2.resize(grid, (w, h), interpolation=cv2.INTER_LINEAR)
 
 def _source_evidence(image, valid=None):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
-    dog = cv2.GaussianBlur(lum, (0, 0), 1.0) - cv2.GaussianBlur(lum, (0, 0), 3.5)
+    fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
+    dog = fine - cv2.GaussianBlur(lum, (0, 0), 3.5)
     broad = cv2.GaussianBlur(lum, (0, 0), 1.8) - cv2.GaussianBlur(lum, (0, 0), 5.0)
     noise = _noise_grid(dog)
     broad_noise = _noise_grid(broad)
@@ -183,7 +208,7 @@ def _source_evidence(image, valid=None):
     distance = cv2.distanceTransform((~peaks).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     # Retain four-pixel RGB cores; smoothly taper their wings to 6.5 pixels.
     mask = np.clip((6.5 - distance) / 2.5, 0, 1)
-    coherent = cv2.GaussianBlur(lum, (0, 0), 1) - cv2.GaussianBlur(lum, (0, 0), 4)
+    coherent = fine - cv2.GaussianBlur(lum, (0, 0), 4)
     edge = np.clip((np.abs(coherent) / _noise_grid(coherent) - 7) / 5, 0, 1)
     edge = cv2.dilate(edge, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     mask = np.maximum(mask, cv2.GaussianBlur(edge, (0, 0), 0.8))
@@ -192,7 +217,7 @@ def _source_evidence(image, valid=None):
 def _nlm_clean(image, evidence, h_multiplier=1.0):
     """Use measured sky scatter, with a small local patch-search window."""
     lum = evidence['lum']
-    hp = lum - cv2.GaussianBlur(lum, (0, 0), 2)
+    hp = _original_highpass(evidence)
     sky = (evidence['mask'] < 0.01) & (lum > 0.005)
     sample = hp[sky]
     if sample.size == 0:
@@ -209,6 +234,14 @@ def _nlm_clean(image, evidence, h_multiplier=1.0):
     chroma = image - lum[:, :, None]
     clean_chroma = cv2.GaussianBlur(chroma, (0, 0), 1.4)
     return (clean_lum[:, :, None] + clean_chroma, sigma)
+
+
+def _original_highpass(evidence):
+    """Reuse the same original-frame noise samples across the three stages."""
+    if 'highpass' in evidence:
+        return evidence['highpass']
+    lum = evidence['lum']
+    return lum - cv2.GaussianBlur(lum, (0, 0), 2)
 
 
 def _nlm_luminance(lum, h):
@@ -335,7 +368,7 @@ def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
     # Without enough clear background, skip this optional scale correction.
     noise = np.maximum(np.percentile(sigmas, 25, axis=0), 1e-6) if sigmas else np.zeros(2)
     if 'original_sigma' not in shared:
-        hp = evidence['lum'] - _blur(evidence['lum'], 2)
+        hp = _original_highpass(evidence)
         sample = hp[(evidence['mask'] < 0.01) & valid]
         shared['original_sigma'] = np.median(np.abs(sample - np.median(sample))) * 1.4826 if sample.size else 0.0
     original_sigma = shared['original_sigma']
@@ -393,7 +426,7 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     peaks = (dog == cv2.dilate(dog, np.ones((7, 7), np.uint8))) & (dog > 2.7 * dog_sigma) & valid
     distance = cv2.distanceTransform((~peaks).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     weight = (np.clip((distance - 3) / 2, 0, 1) * valid).astype(np.float32)
-    original_sigma = _noise_grid(raw - cv2.GaussianBlur(raw, (0, 0), 2))
+    original_sigma = _noise_grid(_original_highpass(evidence))
     broad = cv2.GaussianBlur(raw, (0, 0), 6) - cv2.GaussianBlur(raw, (0, 0), 18)
     structure_trust = np.clip((1.5 - np.abs(broad) / (original_sigma + 1e-08)) / 0.8, 0, 1)
     # Preserve the full-frame measurements above. The remaining convolutions
@@ -501,6 +534,6 @@ def _protect_horizon(baseline, candidate, valid):
     weight = np.clip((distance - 50) / 30, 0, 1)
     result = candidate.copy()
     transition = (weight > 0) & (weight < 1)
-    result[weight == 0] = baseline[weight == 0]
+    np.copyto(result, baseline, where=(weight == 0)[:, :, None])
     result[transition] = baseline[transition] + (candidate[transition] - baseline[transition]) * weight[transition, None]
     return (result, weight)
