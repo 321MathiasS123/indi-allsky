@@ -495,7 +495,9 @@ class CaptureWorker(Process):
                         or (not self.night and not self.config.get('DAYTIME_CAPTURE'))):
                     # Closing jobs must still receive the last actual frame
                     # when there will be no next daytime/paused exposure.
-                    if loop_start_time - frame_start_time > self.exposure_timeout:
+                    # Poll-driven cameras deliver their completed image here.
+                    self.indiclient.getCcdExposureStatus()
+                    if self._period_queue.waiting and loop_start_time - frame_start_time > self.exposure_timeout:
                         self.indiclient.abortCcdExposure()
                         raise RuntimeError('Camera frame did not arrive; outgoing capture period incomplete')
                     time.sleep(0.1)
