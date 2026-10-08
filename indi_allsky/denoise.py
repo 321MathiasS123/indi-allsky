@@ -42,15 +42,16 @@ logger = logging.getLogger('indi_allsky')
 class IndiAllskyDenoise(object):
     """Lightweight image denoising for allsky cameras.
 
-    Provides Gaussian, median, bilateral, and wavelet denoising algorithms.
+    Provides Gaussian, median, bilateral, wavelet and star-aware sky denoising.
 
     Algorithms exposed to callers:
       - gaussian_blur: Direct Gaussian blur with strength-based blending
       - median_blur: Direct median filter with strength-based blending
       - bilateral: Edge-aware bilateral filter (preserves star edges)
       - wavelet: BayesShrink wavelet denoise (frequency-domain, best quality)
+      - star_aware: Measured-source protection with sky and dark-patch smoothing
 
-    All algorithms apply the filter directly and blend with the original
+    The original four algorithms apply the filter directly and blend with the original
     at a strength-dependent ratio.  Strength 1 gives subtle smoothing;
     strength 5 produces fully-filtered output (visibly smoother).
 
@@ -75,6 +76,17 @@ class IndiAllskyDenoise(object):
         if numpy.issubdtype(img.dtype, numpy.integer):
             return float(numpy.iinfo(img.dtype).max)
         return 1.0
+
+    def star_aware(self, scidata, binning=1):
+        """Single-frame sky filter with its own image-based detail protection."""
+        from .sky_denoise import denoise
+
+        start_t = time.monotonic()
+        strength = self._get_strength()
+        result = denoise(scidata, self.config, binning=binning, strength=strength)
+        logger.info('Applied star-aware sky denoise strength=%d time=%.3fs',
+                    strength, time.monotonic() - start_t)
+        return result
 
     def _match_luminance(self, orig, result):
         """Apply a small global gain to ``result`` so that its mean

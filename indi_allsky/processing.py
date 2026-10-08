@@ -980,6 +980,14 @@ class ImageProcessor(object):
             debayer_algorithm = self.__cfa_bgr_map[image_bayerpat]
 
 
+        # Correct isolated cold Bayer samples before they spread into colour
+        # patches. Keep the HDU untouched: saved FITS remain calibration data.
+        night_colour = self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT]
+        denoise_key = 'IMAGE_DENOISE' if night_colour else 'IMAGE_DENOISE_DAY'
+        if not self.focus_mode and self.config.get(denoise_key) == 'star_aware':
+            from .sky_denoise import repair_bayer
+            data = repair_bayer(data, self.config, binning=i_ref.binning)
+
         return cv2.cvtColor(data, debayer_algorithm)
 
 
@@ -2110,7 +2118,10 @@ class ImageProcessor(object):
             return
 
 
-        self.image = self._denoise(denoise_function)
+        if algo == 'star_aware':
+            self.image = denoise_function(self.image, binning=self.getLatestImage().binning)
+        else:
+            self.image = self._denoise(denoise_function)
 
 
     def _denoise(self, denoise_function):
