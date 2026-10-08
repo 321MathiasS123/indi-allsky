@@ -2120,13 +2120,34 @@ class ImageProcessor(object):
 
 
         if algo == 'star_aware':
-            self.image = denoise_function(self.image, binning=self.getLatestImage().binning)
+            i_ref = self.getLatestImage()
+            self.image = denoise_function(self.image, binning=i_ref.binning,
+                                         sun_altitude=self._denoise_sun_altitude(i_ref))
         else:
             self.image = self._denoise(denoise_function)
 
 
     def _denoise(self, denoise_function):
         return denoise_function(self.image)
+
+
+    def _denoise_sun_altitude(self, i_ref):
+        """Use the exposure midpoint, even when processing is delayed by a queue."""
+        try:
+            # Convert to UTC before arithmetic across a local clock change.
+            # Archive replays lack readout timing; elapsed=0 uses half exposure.
+            midpoint = i_ref.exp_date_utc - timedelta(
+                seconds=max(i_ref.exp_elapsed, i_ref.exposure) - i_ref.exposure / 2)
+            observer = ephem.Observer()
+            observer.lat = math.radians(self.position_av[constants.POSITION_LATITUDE])
+            observer.lon = math.radians(self.position_av[constants.POSITION_LONGITUDE])
+            observer.elevation = self.position_av[constants.POSITION_ELEVATION]
+            observer.pressure = 0
+            observer.date = midpoint
+            return math.degrees(ephem.Sun(observer).alt)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            logger.warning('Cannot determine capture-time Sun altitude for denoising; retaining star protection')
+            return None
 
 
     def scnr(self):

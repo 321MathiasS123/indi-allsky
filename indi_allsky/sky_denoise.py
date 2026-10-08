@@ -17,6 +17,21 @@ from scipy.ndimage import maximum_filter
 from skimage.restoration import denoise_nl_means
 
 WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)
+STAR_PROTECTION_DAY_ALT = -6.0
+STAR_PROTECTION_NIGHT_ALT = -8.0
+
+
+def _star_protection(sun_altitude):
+    """Fade point protection as stars become visible; unknown dates stay safe."""
+    try:
+        altitude = float(sun_altitude)
+    except (TypeError, ValueError):
+        return 1.0
+    if not np.isfinite(altitude):
+        return 1.0
+    x = np.clip((STAR_PROTECTION_DAY_ALT - altitude)
+                / (STAR_PROTECTION_DAY_ALT - STAR_PROTECTION_NIGHT_ALT), 0, 1)
+    return float(x * x * (3 - 2 * x))
 
 
 def _sky_geometry(shape, config, binning):
@@ -87,7 +102,7 @@ def repair_bayer(raw, config, binning=1):
     return result
 
 
-def denoise(image, config, binning=1, strength=3):
+def denoise(image, config, binning=1, strength=3, sun_altitude=None):
     """Filter BGR or monochrome data, retaining its layout and numeric range."""
     if strength <= 0 or min(image.shape[:2]) < 32:
         return image
@@ -112,7 +127,7 @@ def denoise(image, config, binning=1, strength=3):
     mono = linear.ndim == 2
     if mono:
         linear = np.repeat(linear[:, :, None], 3, axis=2)
-    filtered = _denoise_linear(linear, valid, strength)
+    filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude))
     if mono:
         filtered = filtered[:, :, 0]
     filtered = np.clip(filtered * maximum, 0, maximum)
@@ -123,10 +138,10 @@ def denoise(image, config, binning=1, strength=3):
     return result
 
 
-def _denoise_linear(image, valid, strength=3):
+def _denoise_linear(image, valid, strength=3, star_protection=1.0):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
-    evidence = _source_evidence(image, valid)
+    evidence = _source_evidence(image, valid, star_protection)
     evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
@@ -178,7 +193,7 @@ def _noise_grid(data, tile=128):
             row(y)
     return cv2.resize(grid, (w, h), interpolation=cv2.INTER_LINEAR)
 
-def _source_evidence(image, valid=None):
+def _source_evidence(image, valid=None, star_protection=1.0):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
     fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
@@ -208,6 +223,10 @@ def _source_evidence(image, valid=None):
     distance = cv2.distanceTransform((~peaks).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     # Retain four-pixel RGB cores; smoothly taper their wings to 6.5 pixels.
     mask = np.clip((6.5 - distance) / 2.5, 0, 1)
+    # Fade only point candidates: daytime noise highs can resemble faint stars.
+    # Keep the full-night arithmetic and independent resolved-edge guard intact.
+    if star_protection < 1:
+        mask *= star_protection
     coherent = fine - cv2.GaussianBlur(lum, (0, 0), 4)
     edge = np.clip((np.abs(coherent) / _noise_grid(coherent) - 7) / 5, 0, 1)
     edge = cv2.dilate(edge, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
