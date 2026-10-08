@@ -181,6 +181,65 @@ class StateStore:
         return self.values[key]
 
 
+def capture_parent(receipts):
+    Worker = methods('allsky.py', 'IndiAllSky', ['_settleCapturePeriods', '_stopCaptureWorker'],
+                     dict(app=SimpleNamespace(app_context=nullcontext), logger=logging.getLogger(__name__),
+                          failure_key=failure_key, read_inflight=read_inflight, set_inflight=set_inflight))
+    worker = Worker()
+    worker.capture_receipts = receipts
+    worker._miscDb = StateStore()
+    worker.capture_q = queue.Queue()
+    worker.capture_watchdog = None
+    worker._capture_worker_stop_requested = False
+    worker._startImageWorker = lambda: None
+    worker._requestCaptureWorkerStop = lambda: worker.capture_q.put({'stop': True})
+    return worker
+
+
+@pytest.mark.parametrize('alive,exitcode,forced,failed', [
+    (True, 0, False, False),   # acknowledged parent stop, with feeder joined
+    (False, 0, False, True),   # unexpected early return is not a planned stop
+    (False, 9, False, True),
+    (True, 9, False, True),    # worker failed during its requested drain
+    (True, 0, True, True),     # forced termination never certifies a drain
+])
+def test_capture_parent_only_clears_receipts_after_a_clean_requested_stop(alive, exitcode, forced, failed):
+    receipts = tuple(multiprocessing.RawArray(ctypes.c_char, 256) for _ in range(2))
+    set_inflight(receipts[0], PERIOD)
+    parent = capture_parent(receipts)
+    child = SimpleNamespace(alive=alive, exitcode=exitcode, terminate=lambda: None)
+    child.is_alive = lambda: child.alive
+    child.join = lambda timeout=None: setattr(child, 'alive', False)
+    parent.capture_worker = child
+    parent._terminate = forced
+    parent._stopCaptureWorker()
+    assert (failure_key(PERIOD) in parent._miscDb.values) is failed
+    assert all(read_inflight(receipt) is None for receipt in receipts)
+
+
+def test_capture_receipts_survive_delivery_and_keep_the_adjacent_period():
+    receipts = tuple(multiprocessing.RawArray(ctypes.c_char, 256) for _ in range(2))
+    producer = CapturePeriodQueue(queue.Queue(), capture_receipts=receipts)
+    producer.begin(1, (1, 0), DAY, 20)
+    assert read_inflight(receipts[0]) == PERIOD
+    producer.put({'filename': 'last-night.fit'})
+    assert read_inflight(receipts[0]) == PERIOD  # put() is not a feeder acknowledgment
+    producer.begin(1, (0, 0), DAY + timedelta(days=1), 5)
+    producer.put({'filename': 'first-day.fit'})
+    producer.begin(1, (0, 0), DAY + timedelta(days=1), 5)
+    assert [read_inflight(receipt) for receipt in receipts] == ['1:2026-10-09:0', PERIOD]
+
+
+@pytest.mark.parametrize('valid', [None, PERIOD])
+def test_interrupted_capture_receipt_update_uses_exact_known_period_when_available(valid):
+    receipts = tuple(multiprocessing.RawArray(ctypes.c_char, 256) for _ in range(2))
+    receipts[0].value = b'torn-write'
+    set_inflight(receipts[1], valid)
+    parent = capture_parent(receipts)
+    parent._settleCapturePeriods(interrupted=True)
+    assert set(parent._miscDb.values) == {failure_key(valid or 'UNKNOWN')}
+
+
 def image_worker(receipt, state=None, task_rows=None, prefix=None):
     namespace = dict(app=SimpleNamespace(app_context=nullcontext), queue=queue,
                      logger=logging.getLogger(__name__), frame_mode=frame_mode, datetime=datetime,
@@ -547,16 +606,61 @@ def test_partial_or_invalid_numbering_fails_closed(broken):
     assert CaptureSequenceTracker().check(broken) == {'UNKNOWN'}
 
 
-def producer_with_paused_feeder(output, put_returned, hold):
+def producer_with_paused_feeder(output, put_returned, hold, capture_receipts=None):
     import multiprocessing.queues
     # Stop the real multiprocessing feeder before it acquires the pipe lock.
     # put() still returns, exactly the acknowledgment window under test.
     def paused(*args):
         hold.wait(30)
     multiprocessing.queues.Queue._feed = staticmethod(paused)
-    output.put(numbered_frame(2))
+    if capture_receipts is None:
+        output.put(numbered_frame(2))
+    else:
+        producer = CapturePeriodQueue(output, capture_receipts=capture_receipts)
+        producer.begin(1, (1, 0), DAY, 20)
+        producer.put({'filename': 'lost-last-night.fit'})
+        producer.end_period(1, DAY.isoformat(), True, [{'task_id': 5}])
+        producer.begin(1, (0, 0), DAY + timedelta(days=1), 5)
+        producer.put({'filename': 'lost-first-day.fit'})
     put_returned.set()
     hold.wait(30)
+
+
+def test_capture_restart_cannot_hide_a_lost_tail_across_the_period_boundary():
+    ctx = multiprocessing.get_context('spawn')
+    receipts = tuple(ctx.RawArray(ctypes.c_char, 256) for _ in range(2))
+    output = ctx.Queue()
+    returned, hold = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=producer_with_paused_feeder, args=(output, returned, hold, receipts))
+    child.start()
+    try:
+        assert returned.wait(15), 'Producer did not acknowledge its boundary tail'
+        child.terminate()
+        child.join(5)
+        assert not child.is_alive()
+        parent = capture_parent(receipts)
+        parent.capture_worker = child
+        parent._terminate = False
+        parent._stopCaptureWorker()
+        assert set(parent._miscDb.values) == {failure_key(PERIOD), failure_key('1:2026-10-09:0')}
+        # A replacement stream starting at 1 cannot reveal the prior lost tail
+        # by sequence alone. The parent's exact-period failure still blocks it.
+        output.put(numbered_frame(1, period='1:2026-10-09:0', stream='b' * 32))
+        replacement_frame = output.get(timeout=5)
+        assert not CaptureSequenceTracker().check(replacement_frame)
+        for identifier in (PERIOD, '1:2026-10-09:0'):
+            failed = []
+            renderer = image_worker(None, state=parent._miscDb,
+                                    task_rows={5: SimpleNamespace(state='queued', setFailed=failed.append)})
+            renderer._releasePeriodEnd(closing_marker(1, period=identifier, stream='b' * 32))
+            assert renderer.video_q.empty()
+            assert len(failed) == 1
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(5)
+        output.close()
+        output.join_thread()
 
 
 def test_killed_producer_after_put_cannot_hide_a_frame_lost_in_its_feeder():
