@@ -1,7 +1,10 @@
 """Real denoise form fields and config/preview serialization, without services."""
 import ast
+from datetime import datetime
+import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import flask
 from flask_wtf import FlaskForm
@@ -15,6 +18,29 @@ from wtforms.widgets import NumberInput
 ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky/flask'
 FIELDS = {'IMAGE_DENOISE', 'IMAGE_DENOISE_DAY',
           'IMAGE_DENOISE_STRENGTH', 'IMAGE_DENOISE_STRENGTH_DAY'}
+
+
+@pytest.mark.parametrize('recorded_date', [datetime(2026, 9, 8, 22, 15), None])
+def test_processed_fits_replay_passes_archive_date_to_processor(tmp_path, recorded_date):
+    # Execute the endpoint's date resolution and ingestion statements without
+    # unrelated camera/colour services. This catches using wall time at add().
+    path = ROOT / 'views.py'
+    tree = ast.parse(path.read_text(encoding='utf-8'))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'JsonImageProcessingView')
+    method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'dispatch_request')
+    assignments = [n for n in ast.walk(method) if isinstance(n, ast.Assign)]
+    date = next(n for n in assignments if any(isinstance(t, ast.Name) and t.id == 'image_date' for t in n.targets))
+    ingestion = next(n for n in assignments if any(isinstance(t, ast.Name) and t.id == 'i_ref' for t in n.targets))
+    filename = tmp_path / 'archive.fit'
+    filename.touch()
+    os.utime(filename, (1600000000, 1600000000))
+    processor = Mock()
+    ns = dict(datetime=datetime, filename_p=filename, fits_entry=SimpleNamespace(createDate=recorded_date, camera=object()),
+              image_processor=processor, exposure=20, gain=100, binning=1)
+    exec(compile(ast.Module(body=[date, ingestion], type_ignores=[]), str(path), 'exec'), ns)
+    expected = recorded_date or datetime.fromtimestamp(filename.stat().st_mtime)
+    assert processor.add.call_args.args[4] == expected
+    assert processor.add.call_args.args[5] == 0.0  # Archive readout duration is unknown.
 
 
 def load_forms():

@@ -174,7 +174,7 @@ def test_star_aware_transition_keeps_bayer_and_filter_selection_in_step(
         calls.append(('bayer', binning))
         return data + 1
 
-    def denoise(data, config, binning, strength):
+    def denoise(data, config, binning, strength, sun_altitude=None):
         calls.append(('denoise', binning, strength))
         return data
 
@@ -205,10 +205,22 @@ def test_star_aware_bayer_and_filter_honor_shared_night_color_and_focus(processo
     monkeypatch.setattr(sky_denoise, 'repair_bayer',
                         lambda data, config, binning: calls.append('bayer') or data.copy())
     monkeypatch.setattr(sky_denoise, 'denoise',
-                        lambda data, config, binning, strength: calls.append('denoise') or data)
+                        lambda data, config, binning, strength, sun_altitude=None: calls.append('denoise') or data)
     p.image = p._debayer(frame)
     p.denoise()
     assert calls == (['bayer', 'denoise'] if not focus else [])
+
+
+def test_twilight_star_denoising_receives_capture_altitude(processor, monkeypatch):
+    p = processor({'IMAGE_DENOISE': 'star_aware', 'IMAGE_DENOISE_DAY': 'star_aware'}, -7)
+    frame = p.image_list[0]
+    altitude = Mock(return_value=-7.25)
+    p._denoise_sun_altitude = altitude
+    denoise = Mock(return_value=p.image)
+    monkeypatch.setattr(IndiAllskyDenoise, 'star_aware', denoise)
+    p.denoise()
+    altitude.assert_called_once_with(frame)
+    assert denoise.call_args.kwargs == {'binning': 1, 'sun_altitude': -7.25}
 
 
 def test_green_removal_selects_one_algorithm_and_blends_midtones_without_stale_cache(processor, monkeypatch):
