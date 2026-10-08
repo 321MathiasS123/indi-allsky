@@ -38,6 +38,8 @@ from .miscUpload import miscUpload
 from .adsb import AdsbAircraftHttpWorker
 
 from . import exposure as exposure_module
+from .highlight import HighlightMeasurement
+from .highlight_meter import apply_control_snapshot
 
 from .flask import create_app
 from .flask import db
@@ -86,6 +88,8 @@ class ImageWorker(Process):
         night_av,
         astro_av,
         processing_allowance=None,
+        highlight_feedback_q=None,
+        backlog_state=None,
     ):
         super(ImageWorker, self).__init__()
 
@@ -96,6 +100,8 @@ class ImageWorker(Process):
         self.error_q = error_q
         self.image_q = image_q
         self.upload_q = upload_q
+        self.highlight_feedback_q = highlight_feedback_q
+        self.backlog_state = backlog_state
 
         self.position_av = position_av
         self.exposure_av = exposure_av
@@ -104,7 +110,7 @@ class ImageWorker(Process):
 
         self.sensors_temp_av = sensors_temp_av  # 0 ccd_temp
         self.sensors_user_av = sensors_user_av
-        self.night_av = night_av
+        self.night_av = list(night_av) if highlight_feedback_q is not None else night_av
         self.astro_av = astro_av
         self.processing_allowance = processing_allowance
 
@@ -268,15 +274,35 @@ class ImageWorker(Process):
 
 
             # new context for every task, reduces the effects of caching
-            cycle_start = time.monotonic()
+            processing_started = time.monotonic()
             with app.app_context():
                 self.processImage(i_dict)
+            if self.backlog_state is not None:
+                self.backlog_state.record(time.monotonic() - processing_started)
+
+
             logger.info('Image worker cycle completed in %0.4f s (frame=%s, exposure=%s, sqm=%s)',
-                time.monotonic() - cycle_start, i_dict.get('exp_time'), i_dict.get('exposure'), bool(i_dict.get('sqm_exposure')))
+                time.monotonic() - processing_started, i_dict.get('exp_time'), i_dict.get('exposure'), bool(i_dict.get('sqm_exposure')))
+
+
+    def send_highlight_feedback(self, job, output, trusted):
+        if self.highlight_feedback_q is None:
+            return
+        self.highlight_feedback_q.put({
+            'exp_time': job['exp_time'], 'exposure': job['exposure'],
+            'gain': job['gain'], 'binning': job['binning'],
+            'camera_id': job['camera_id'], 'capture_mode': tuple(self.night_av),
+            'measurement': tuple(output) if output is not None else None,
+            'trusted': bool(trusted),
+        })
 
 
     def processImage(self, i_dict):
         import piexif
+
+        self._highlight_control = i_dict.get('highlight_control')
+        if self.highlight_feedback_q is not None and 'capture_mode' in i_dict:
+            self.night_av[:] = i_dict['capture_mode']
 
         ### Not using DB task queue for image processing to reduce database I/O
         #task_id = i_dict['task_id']
@@ -474,8 +500,12 @@ class ImageWorker(Process):
         # Share only rendering state; correction-history resets must not release
         # protection. Unusable/repaired captures hold the last trusted envelope.
         self.image_processor.highlight_transition = self.exposure_o.highlight_transition
-        self.exposure_o.highlight_transition.trusted = False
-        if not highlight_enabled:
+        control = getattr(self, '_highlight_control', None)
+        if control is not None:
+            apply_control_snapshot(self.exposure_o, control)
+        else:
+            self.exposure_o.highlight_transition.trusted = False
+        if not highlight_enabled and control is None:
             self.exposure_o.highlight_transition.reset()
             self.exposure_o.highlight_output.reset()
         highlight_repaired = (
@@ -486,6 +516,7 @@ class ImageWorker(Process):
         # Reconstructed highlights can be rendered, but cannot prove raw clipping.
         if (
             highlight_enabled
+            and control is None
             and not highlight_repaired
             and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result)
         ):
@@ -508,7 +539,10 @@ class ImageWorker(Process):
 
         self.image_processor.debayer()  # populates self.opencv_data
 
-        if highlights is not None:
+        if control is not None and control['measurement'] is not None:
+            highlights = HighlightMeasurement(*control['measurement'])
+            highlight_adu, highlight_adu_average = highlights.adu, control['adu_average']
+        elif highlights is not None:
             # Publish capture settings as soon as calibrated brightness is
             # available; stacking and rendering must not delay this request.
             highlights = self.image_processor.calibrate_highlights(highlights)
@@ -698,6 +732,10 @@ class ImageWorker(Process):
         elif highlights is not None:
             # Reuse the early decision for telemetry; do not adjust exposure twice.
             adu, adu_average = highlight_adu, highlight_adu_average
+        elif control is not None:
+            # Failed/held metering is deliberate. A delayed render must never
+            # retry capture control with an older frame or an obsolete mode.
+            adu_average = control['adu_average']
         else:
             adu, adu_average = self.exposure_o.compare_exposure(
                 adu,
@@ -708,7 +746,7 @@ class ImageWorker(Process):
 
         # Excluded/repaired frames must not move the limits behind highlight
         # protection's held exposure request.
-        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and not exclude_from_exposure and not (
+        if control is None and self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False) and not exclude_from_exposure and not (
             self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
             and (repair_result or {}).get('status') == 'repaired'
         ):
@@ -813,7 +851,9 @@ class ImageWorker(Process):
             # publish a second, late exposure command for this same capture.
             output = self.image_processor.measure_output_highlights()
             trusted_output = self.image_processor.highlight_output_trusted()
-            if output is None:
+            if getattr(self, '_highlight_control', None) is not None:
+                self.send_highlight_feedback(i_dict, output, trusted_output)
+            elif output is None:
                 # A missing ROI must not leave a stale output constraint latched.
                 self.exposure_o.highlight_output.reset()
             else:

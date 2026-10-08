@@ -15,6 +15,7 @@ import pytest
 
 from indi_allsky import asi676mc, constants
 from indi_allsky.highlight import HighlightMeasurement, HighlightOutput, HighlightTransition, compensate, measure, measure_rendered
+from indi_allsky.highlight_meter import apply_control_snapshot
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch_x2
 from indi_allsky.stretch.mode3_adaptive_mtf import IndiAllSky_Mode3_Adaptive_MTF_Stretch
@@ -113,7 +114,8 @@ def test_compensation_keeps_stretch_settings_and_normal_brightness_path(stretch_
 @pytest.mark.parametrize('focus', [False, True])
 @pytest.mark.parametrize('fits_mode', ['off', 'pre_dark', 'post_dark'])
 @pytest.mark.parametrize('meter_valid', [False, True])
-def test_worker_routes_measurement_and_processing_without_touching_off_path(enabled, status, focus, fits_mode, meter_valid, caplog):
+@pytest.mark.parametrize('prepared', [False, True])
+def test_worker_routes_measurement_and_processing_without_touching_off_path(enabled, status, focus, fits_mode, meter_valid, prepared, caplog):
     # Execute the actual processing/control segment with camera and DB services
     # replaced by spies. This catches integration order and invalid-frame leaks.
     source = (Path(__file__).resolve().parents[2] / 'indi_allsky/image.py').read_text(encoding='utf-8')
@@ -164,37 +166,46 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
+    if prepared:
+        worker._highlight_control = {
+            'measurement': (1, 2, 20, 0, 0) if active else None,
+            'adu_average': 20 if active else 0,
+            'stable': active, 'current_adu_target': 20,
+            'transition': {'active': enabled and not focus, 'trusted': active,
+                           'reason': 'capture decision', 'reset': not enabled or focus},
+        }
     namespace = dict(self=worker, i_ref=reference, exposure=0.01, gain=0, binning=1,
                      camera=Mock(), filename_p=Mock(), libcamera_black_level=0, asi676mc=asi676mc,
-                     logger=logging.getLogger(__name__))
+                     logger=logging.getLogger(__name__), apply_control_snapshot=apply_control_snapshot,
+                     HighlightMeasurement=HighlightMeasurement)
     with caplog.at_level(logging.INFO):
         exec(early, namespace)
-        assert controller.compare_highlights.call_count == int(active)
+        assert controller.compare_highlights.call_count == int(active and not prepared)
         controller.compare_exposure.assert_not_called()
         exec(late, namespace)
     expected = ['purple_check']
     if fits_mode == 'pre_dark':
         expected.append('save')
-    if metered:
+    if metered and not prepared:
         expected.append('measure')
     expected += ['dark', 'holes']
     if fits_mode == 'post_dark':
         expected.append('save')
     expected.append('debayer')
-    if active:
+    if active and not prepared:
         expected += ['calibrated_adu', 'highlight_control']
     expected += ['stack', 'denoise']
     if enabled and not focus and not excluded:
         expected.append('compensate')
     expected += ['stretch', 'convert']
-    if not excluded and not repaired and not active:
+    if not excluded and not repaired and not active and not prepared:
         expected.append('ordinary_control')
     assert events == expected
-    assert controller.compare_highlights.call_count == int(active)
-    assert controller.compare_exposure.call_count == int(not excluded and not repaired and not active)
+    assert controller.compare_highlights.call_count == int(active and not prepared)
+    assert controller.compare_exposure.call_count == int(not excluded and not repaired and not active and not prepared)
     assert controller.reset_highlights.call_count == int(enabled and not focus and (excluded or repaired))
     assert processor.highlight_transition is controller.highlight_transition
-    assert not processor.highlight_transition.trusted  # spy does not observe a capture
+    assert processor.highlight_transition.trusted is (active and prepared)
     if enabled and not focus:
         assert processor.highlight_transition.active
         assert processor.highlight_transition.lift == .5
@@ -202,7 +213,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
         disabled = HighlightTransition()
         disabled.reset()
         assert processor.highlight_transition.__dict__ == disabled.__dict__
-    if active:
+    if active and not prepared:
         assert 'Highlight control source: frame 2026-10-05T07:00:14; exposure 0.010000s @ gain 0.000' in caplog.text
         assert controller.compare_highlights.call_args.args[0] == HighlightMeasurement(1, 2, 20)
         assert controller.compare_highlights.call_args.kwargs == {}
@@ -319,7 +330,8 @@ def test_output_feedback_waits_for_matching_trusted_stack(highlight_processor, c
 @pytest.mark.parametrize('output_enabled', [False, True])
 @pytest.mark.parametrize('trusted', [False, True])
 @pytest.mark.parametrize('valid_output', [False, True])
-def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_enabled, trusted, valid_output):
+@pytest.mark.parametrize('prepared', [False, True])
+def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_enabled, trusted, valid_output, prepared):
     source = (Path(__file__).resolve().parents[2] / 'indi_allsky/image.py').read_text(encoding='utf-8')
     section = textwrap.dedent(source[source.index('        if highlights is not None and self.config.get'):
                                      source.index('        self.image_processor.realtimeKeogramUpdate()')])
@@ -331,11 +343,19 @@ def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_
     processor = SimpleNamespace(measure_output_highlights=Mock(return_value=result if valid_output else None),
                                 highlight_output_trusted=Mock(return_value=trusted))
     worker = SimpleNamespace(config={'HIGHLIGHT_PROTECTION': {'OUTPUT_ENABLE': output_enabled}},
-                             exposure_o=controller, image_processor=processor, night_av=[True, False])
+                             exposure_o=controller, image_processor=processor, night_av=[True, False],
+                             send_highlight_feedback=Mock())
+    if prepared:
+        worker._highlight_control = {'status': 'metered'}
+    capture = {'exp_time': 1234}
     exec(section, dict(self=worker, highlights=result if valid_raw else None, exposure=1., gain=0,
-                       i_ref=SimpleNamespace(exp_date=datetime(2026, 10, 5)), logger=logging.getLogger(__name__)))
+                       i_ref=SimpleNamespace(exp_date=datetime(2026, 10, 5)), logger=logging.getLogger(__name__),
+                       i_dict=capture))
     assert processor.measure_output_highlights.call_count == int(valid_raw and output_enabled)
-    assert state.active is (valid_raw and output_enabled and trusted and valid_output)
+    assert state.active is (valid_raw and output_enabled and trusted and valid_output and not prepared)
+    assert worker.send_highlight_feedback.call_count == int(valid_raw and output_enabled and prepared)
+    if valid_raw and output_enabled and prepared:
+        worker.send_highlight_feedback.assert_called_once_with(capture, result if valid_output else None, trusted)
 
 
 @pytest.mark.parametrize('shared_color', [False, True, None])

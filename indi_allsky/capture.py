@@ -21,6 +21,7 @@ from multiprocessing import Process
 
 from . import constants
 from .twilight import capture_period, day_altitude, exposure_minimum, interpolate, night_weight
+from .render_backlog import ResourceBackoff
 from . import camera as camera_module
 from .capture_watchdog import CaptureTimeoutError, FrameArrivalQueue, FrameDeadline
 
@@ -225,6 +226,7 @@ class CaptureWorker(Process):
         night_av,
         astro_av,
         frame_deadline=None,
+        backlog_state=None,
     ):
 
         super(CaptureWorker, self).__init__()
@@ -277,6 +279,7 @@ class CaptureWorker(Process):
         self.image_queue_min = self.config.get('IMAGE_QUEUE_MIN', 1)
         self.image_queue_backoff = self.config.get('IMAGE_QUEUE_BACKOFF', 0.5)
         self.add_period_delay = 0.0
+        self.resource_backoff = ResourceBackoff(backlog_state, self.image_queue_max) if backlog_state is not None else None
 
 
         now_time = time.time()
@@ -705,6 +708,26 @@ class CaptureWorker(Process):
                         #######################
                         # Start next exposure #
                         #######################
+
+                        if self.resource_backoff is not None:
+                            period = self._configuredCapturePeriod()
+                            resource_delay = self.resource_backoff.delay(period, self._expUtils.EXPOSURE_NEXT)
+                            if not self.resource_backoff.can_capture:
+                                # Wait before taking an image, never discard a
+                                # captured file or block the fresh meter.
+                                next_frame_time = now_time + max(period, 1.0)
+                                self.frame_deadline.suspend()
+                                logger.error('Capture waiting for temporary image storage to drain')
+                                continue
+                            earliest = frame_start_time + period + resource_delay
+                            if resource_delay and now_time < earliest:
+                                next_frame_time = earliest
+                                self.frame_deadline.schedule_next(
+                                    time.monotonic() + max(0.0, earliest - time.time()),
+                                    period + resource_delay,
+                                )
+                                logger.warning('Temporary image storage reserve reached; allowing %.3fs for processing', period + resource_delay)
+                                continue
 
                         total_elapsed = now_time - frame_start_time
 
@@ -2366,6 +2389,14 @@ class CaptureWorker(Process):
             period = self.config['EXPOSURE_PERIOD_DAY']
         self.frame_deadline.begin_exposure(exposure, period + self.add_period_delay)
         self.indiclient.setCcdExposure(exposure, gain, binning, sync=sync, timeout=timeout, sqm_exposure=sqm_exposure)
+
+
+    def _configuredCapturePeriod(self):
+        if self.focus_mode:
+            return self.config.get('FOCUS_DELAY', 4.0)
+        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            return capture_period(self.config, self.astro_av[constants.ASTRO_SUN_ALT])
+        return self.config['EXPOSURE_PERIOD' if self.night else 'EXPOSURE_PERIOD_DAY']
 
 
     def setTimeSystemd(self, new_datetime_utc):
