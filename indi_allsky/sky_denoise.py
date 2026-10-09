@@ -78,15 +78,20 @@ def _sky_mask(shape, geometry):
 
 
 def repair_bayer(raw, config, binning=1):
-    """Repair only isolated, extreme negative same-colour Bayer samples.
+    """Repair isolated or paired extreme negative same-colour Bayer samples.
 
     Work on a copy so that the calibrated FITS and capture data are preserved.
-    Requiring separation from every neighbour rejects broad dark structures.
+    Pairs require a separated perimeter and a healthy intervening colour sample.
     This is not another dark-frame subtraction or a general hot-pixel filter.
     """
     if raw.ndim != 2 or min(raw.shape) < 16:
         return raw
-    valid = _sky_mask(raw.shape, _sky_geometry(raw.shape, config, binning))
+    cx, cy, radius = _sky_geometry(raw.shape, config, binning)
+    if radius <= 0:
+        return raw.copy()
+    # This local operation needs a four-pixel neighbourhood. Keep a six-pixel
+    # inset; leave the main denoiser's twenty-pixel sky guard unchanged.
+    valid = _sky_mask(raw.shape, (cx, cy, radius + 14))
     result = raw.copy()
     kernel = np.ones((3, 3), np.uint8)
     kernel[1, 1] = 0
@@ -95,14 +100,56 @@ def repair_bayer(raw, config, binning=1):
             plane = raw[y::2, x::2].astype(np.float32)
             median = cv2.medianBlur(plane, 3)
             sigma = _noise_grid(plane - median, 64)
-            neighbour_min = cv2.erode(plane, kernel)
-            bad = ((plane < median - 6 * sigma)
-                   & (plane < neighbour_min - 2 * sigma)
-                   & valid[y::2, x::2])
-            bad[:2] = bad[-2:] = False
-            bad[:, :2] = bad[:, -2:] = False
+            low = plane < median - 6 * sigma
+            region = valid[y::2, x::2].copy()
+            region[:2] = region[-2:] = False
+            region[:, :2] = region[:, -2:] = False
+            bad = low & (plane < cv2.erode(plane, kernel) - 2 * sigma) & region
             target = result[y::2, x::2]
             target[bad] = median[bad].astype(raw.dtype)
+
+            # Outliers are sparse. Avoid labelling four full sensor planes.
+            ys, xs = np.nonzero(low & region)
+            remaining = set(zip(ys.tolist(), xs.tolist()))
+            while remaining:
+                first = remaining.pop()
+                component = [first]
+                pending = [first]
+                while pending:
+                    py, px = pending.pop()
+                    for dy in (-1, 0, 1):
+                        for dx in (-1, 0, 1):
+                            neighbour = (py + dy, px + dx)
+                            if neighbour in remaining:
+                                remaining.remove(neighbour)
+                                component.append(neighbour)
+                                pending.append(neighbour)
+                if len(component) != 2:
+                    continue
+                members = set(component)
+                ring = {(py+dy, px+dx) for py, px in component
+                        for dy in (-1, 0, 1) for dx in (-1, 0, 1)} - members
+                ry, rx = np.asarray(list(ring)).T
+                surround = plane[ry, rx]
+                floor = float(surround.min())
+                if any(plane[py, px] >= floor - 2 * sigma[py, px]
+                       for py, px in component):
+                    continue
+                # A real tiny dark feature normally also depresses the other
+                # colour sample between the pair. Reject such shared detail.
+                # Same-phase neighbours keep colour gradients out of the test.
+                my = component[0][0] + component[1][0] + y
+                mx = component[0][1] + component[1][1] + x
+                cross = raw[my-2:my+3:2, mx-2:mx+3:2].astype(np.float32)
+                middle = float(np.median(cross))
+                scatter = max(float(np.median(np.abs(cross-middle))) * 1.4826,
+                              *(float(sigma[py, px]) for py, px in component))
+                if float(raw[my, mx]) < middle - 3 * scatter:
+                    continue
+                replacement = np.median(surround).astype(raw.dtype)
+                for py, px in component:
+                    if not bad[py, px]:
+                        target[py, px] = replacement
     return result
 
 
