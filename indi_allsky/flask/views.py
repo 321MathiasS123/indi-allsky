@@ -6436,7 +6436,7 @@ class AjaxSyncApiRunView(BaseView):
 
     def dispatch_request(self):
         from ..syncapi_sync import request_sync, cancel_sync, status, MEDIA, DEFAULT_TYPES
-        from ..syncapi_schedule import save_settings, pause, status as schedule_status
+        from ..syncapi_schedule import save_settings, status as schedule_status
         from ..syncapi import on_demand_enabled
         if not app.config.get('LOGIN_DISABLED') and not current_user.is_admin:
             return jsonify({'error': 'Administrator access required.'}), 403
@@ -6454,9 +6454,6 @@ class AjaxSyncApiRunView(BaseView):
                         request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES),
                                      upload_limit=payload.get('upload_limit'))
                 elif payload.get('action') == 'cancel' and type(payload.get('task_id')) is int:
-                    current = status()
-                    if current.get('active') and current.get('task_id') == payload['task_id']:
-                        pause('Automatic synchronization paused by Cancel. Enable and save the schedule to resume.')
                     cancel_sync(payload['task_id'])
                 else:
                     raise ValueError('Invalid synchronization action.')

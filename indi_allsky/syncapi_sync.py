@@ -90,6 +90,8 @@ def status():
     if task and result.get('task_id') != task.id:
         result = {'task_id': task.id, 'state': 'queued', 'message': 'Waiting for the indi-allsky service.'}
     result['active'] = task is not None
+    if task:
+        result['scheduled'] = task.data.get('schedule_revision') is not None
     result['cancel_requested'] = bool(task and get_state(CANCEL_KEY, 0) >= task.id)
     # A blocked socket may prevent worker updates. Do not present an old
     # transfer rate as current speed while waiting for the next update.
@@ -133,6 +135,11 @@ def request_sync(config, types, schedule_revision=None, upload_limit=None):
 def cancel_sync(task_id):
     task = active_task()
     if task and task.id == task_id:
+        # The stored task origin is authoritative, even if the browser's
+        # schedule checkbox has been edited since this run started.
+        if task.data.get('schedule_revision') is not None:
+            from .syncapi_schedule import pause
+            pause('Scheduled synchronization cancelled. Enable and save the schedule to resume.')
         # Include duplicate clicks queued before cancellation, but not a future run.
         latest = db.session.query(func.max(models.IndiAllSkyDbTaskQueueTable.id)).scalar() or task.id
         set_state(CANCEL_KEY, latest)
@@ -409,7 +416,7 @@ class SyncApiSyncWorker(Thread):
         if not task or task.state not in ACTIVE_STATES:
             return
         self.schedule_revision = task.data.get('schedule_revision')
-        self.progress = dict(task_id=self.task_id, state='running', started=datetime.now().isoformat(),
+        self.progress = dict(task_id=self.task_id, state='running', scheduled=self.schedule_revision is not None, started=datetime.now().isoformat(),
                              completed=0, total=0, skipped=0, files=0, bytes=0, message='Preparing synchronization.')
         outcome = 'complete'
         reason = None

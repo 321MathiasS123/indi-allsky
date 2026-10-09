@@ -90,7 +90,8 @@ def test_waits_for_configuration_reload(sync_endpoint):
     assert env.calls == []
 
 
-def test_schedule_is_saved_without_network_and_cancel_pauses_it(sync_endpoint):
+@pytest.mark.parametrize('scheduled', [False, True])
+def test_cancellation_only_pauses_runs_started_by_the_schedule(sync_endpoint, scheduled):
     env, client, _, headers = sync_endpoint
     payload = dict(action='schedule', enabled=True, interval=5, delay=2, types=['image', 'rawimage'])
     response = client.post('/ajax/syncapi/run', json=payload, headers=headers)
@@ -100,16 +101,25 @@ def test_schedule_is_saved_without_network_and_cancel_pauses_it(sync_endpoint):
     assert saved['types'] == ['image', 'rawimage']
     assert env.calls == [] and env.sync.active_task() is None
     assert client.get('/ajax/syncapi/run').get_json()['schedule']['settings'] == saved
-    response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image']}, headers=headers)
-    task_id = response.get_json()['task_id']
+    if scheduled:
+        task_id = env.sync.request_sync(env.config, ['image'], schedule_revision=saved['revision']).id
+    else:
+        response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image']}, headers=headers)
+        task_id = response.get_json()['task_id']
+    assert client.get('/ajax/syncapi/run').get_json()['scheduled'] is scheduled
     assert client.post('/ajax/syncapi/run', json=dict(payload, interval=6), headers=headers).status_code == 400
     # An outdated Cancel must not pause the schedule or cancel a newer run.
     response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id - 1}, headers=headers)
     assert response.get_json()['schedule']['settings']['enabled']
-    response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id}, headers=headers)
+    response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id, 'scheduled': not scheduled}, headers=headers)
     result = response.get_json()
-    assert result['cancel_requested'] and not result['schedule']['settings']['enabled']
-    assert result['schedule']['state'] == 'paused' and env.calls == []
+    assert result['cancel_requested']
+    assert result['schedule']['settings']['enabled'] is not scheduled
+    if scheduled:
+        assert result['schedule']['state'] == 'paused'
+    else:
+        assert result['schedule']['settings'] == saved
+    assert env.calls == []
 
 
 def test_schedule_requires_csrf_admin_and_applied_config(sync_endpoint):

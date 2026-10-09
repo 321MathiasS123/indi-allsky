@@ -2,14 +2,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {formatStatus, mount, schedulePayload} = require('../../indi_allsky/flask/static/js/syncapi-on-demand.js');
 
+function statusText(state) { return Object.values(formatStatus(state)).join('\n'); }
+
 function harness() {
     function element() {
         return {children: [], handlers: {}, appendChild(child) { this.children.push(child); },
             addEventListener(event, handler) { this.handlers[event] = handler; },
-            querySelectorAll(selector) { return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
+            querySelectorAll(selector) { if (selector === '[data-sync-status]') return this.children; return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
     const nodes = Object.fromEntries(['start', 'cancel', 'types', 'status', 'error', 'schedule-controls',
         'schedule-enabled', 'schedule-interval', 'schedule-delay', 'upload-limit'].map(key => [key, element()]));
+    nodes.status.children = ['schedule', 'next', 'run', 'cutoff', 'items', 'transferred', 'speed', 'file', 'progress', 'notice']
+        .map(key => ({dataset: {syncStatus: key}, textContent: ''}));
+    Object.defineProperty(nodes.status, 'textContent', {get() { return this.children.map(child => child.textContent).join('\n'); }});
     nodes.types.children = [{children: [{type: 'checkbox', value: 'image', checked: true}]},
         {children: [{type: 'checkbox', value: 'rawimage', checked: false}]}];
     nodes['schedule-enabled'].checked = false;
@@ -25,7 +30,7 @@ function harness() {
 }
 
 test('progress describes saved results, cutoff and pending cancellation', () => {
-    const text = formatStatus({enabled: true, message: 'Interrupted', completed: 2, total: 4,
+    const text = statusText({enabled: true, message: 'Interrupted', completed: 2, total: 4,
         skipped: 1, files: 3, bytes: 1048576, cutoff: '2026-09-13T12:00:00.157618', cancel_requested: true});
     assert.match(text, /2 of 4/);
     assert.match(text, /1.0 MiB/);
@@ -41,14 +46,14 @@ for (const runState of ['cancelled', 'interrupted', 'failed', 'complete']) {
             skipped: 0, files: 2749, bytes: 1666711552,
             schedule: {settings: {enabled: true}, message: 'Waiting for the next availability check.',
                 next_action: '2026-09-13T22:17:20+02:00'}};
-        const text = formatStatus(state);
-        assert.match(text, /^Waiting for the next availability check\.\nNext check:/);
+        const text = statusText(state);
+        assert.match(text, /^Waiting for the next availability check\.\n2026-09-13 22:17:20/);
         assert.match(text, /Previous run: Synchronization stopped\./);
         assert.match(text, /1832 of 115977/);
         assert.doesNotMatch(text, /Press Sync now/);
         state.schedule.settings.enabled = false;
-        assert.match(formatStatus(state), /^Synchronization stopped\. Press Sync now/);
-        assert.doesNotMatch(formatStatus(state), /Previous run/);
+        assert.match(formatStatus(state).run, /^Synchronization stopped\. Press Sync now/);
+        assert.doesNotMatch(statusText(state), /Previous run/);
     });
 }
 
@@ -222,7 +227,7 @@ test('Sync now uses unsaved checkboxes without changing scheduled content, even 
     assert.deepEqual(JSON.parse(requests[2].body), {action: 'start', types: ['rawimage'], upload_limit: 512});
     assert.equal(requests.filter(options => options.method === 'POST').length, 1);
     assert.match(nodes.status.textContent, /Waiting for receiver/);
-    assert.match(nodes.status.textContent, /Next check: 2026-09-13 20:15:00/);
+    assert.match(nodes.status.textContent, /2026-09-13 20:15:00/);
     nodes.types.querySelectorAll('input')[1].checked = false;
     await nodes.start.handlers.click();
     assert.equal(requests.length, 3);
@@ -238,28 +243,68 @@ function deferred() {
 test('current file progress is separate from acknowledged totals and hidden after a run', () => {
     const state = {enabled: true, active: true, completed: 1, total: 2, skipped: 0, files: 1, bytes: 1048576,
         upload: {name: 'night.mp4', bytes: 1048576, total: 2097152}};
-    assert.match(formatStatus(state), /1 files, 1.0 MiB sent/);
-    assert.match(formatStatus(state), /Uploading night.mp4: 1.0 of 2.0 MiB \(50%\)/);
-    assert.doesNotMatch(formatStatus(state), /Waiting for the receiver/);
+    assert.match(statusText(state), /1 files, 1.0 MiB sent/);
+    assert.equal(formatStatus(state).file, 'night.mp4');
+    assert.match(formatStatus(state).progress, /1.0 of 2.0 MiB \(50%\)/);
+    assert.doesNotMatch(statusText(state), /Waiting for the receiver/);
     state.upload.bytes = state.upload.total;
-    assert.match(formatStatus(state), /Waiting for the receiver to acknowledge/);
+    assert.match(statusText(state), /Waiting for the receiver to acknowledge/);
     state.active = false;
-    assert.doesNotMatch(formatStatus(state), /Uploading|Waiting for the receiver/);
+    assert.doesNotMatch(statusText(state), /Uploading|Waiting for the receiver/);
 });
 
 test('recent speed uses decimal MB and only appears during a running task', () => {
     const state = {enabled: true, active: true, state: 'running', rates: {bytes: 250000, items: 0.5, files: 1.25}};
-    assert.match(formatStatus(state), /Recent speed: 0.25 MB\/s · 0.50 items\/s · 1.25 files\/s/);
+    assert.match(statusText(state), /0.25 MB\/s · 0.50 items\/s · 1.25 files\/s/);
     delete state.rates;
-    assert.match(formatStatus(state), /Speed: waiting for a progress update/);
+    assert.match(statusText(state), /Waiting for a progress update/);
     state.rates = {bytes: 0, items: 0, files: 0};
-    assert.match(formatStatus(state), /0.00 MB\/s · 0.00 items\/s · 0.00 files\/s/);
+    assert.match(statusText(state), /0.00 MB\/s · 0.00 items\/s · 0.00 files\/s/);
     state.state = 'queued';
-    assert.doesNotMatch(formatStatus(state), /speed:|Speed:/);
+    assert.equal(formatStatus(state).speed, '');
     state.state = 'complete';
     state.active = false;
-    assert.doesNotMatch(formatStatus(state), /speed:|Speed:/);
+    assert.equal(formatStatus(state).speed, '');
 });
+
+test('status rows survive completion and clear transient values in place', async () => {
+    const {nodes, document, panel} = harness();
+    const polls = [];
+    const rows = [...nodes.status.children];
+    let current = {enabled: true, active: true, scheduled: true, state: 'running',
+        upload: {name: 'night.mp4', bytes: 2097152, total: 2097152},
+        rates: {bytes: 250000, items: 0.5, files: 1.25}};
+    await mount(panel, document, async () => ({ok: true, json: async () => current}), fn => polls.push(fn));
+    const row = key => rows.find(field => field.dataset.syncStatus === key);
+    assert.match(row('run').textContent, /^Scheduled run/);
+    assert.equal(row('file').textContent, 'night.mp4');
+    assert.match(row('notice').textContent, /acknowledge/);
+    current = {enabled: true, active: false, state: 'complete',
+        schedule: {settings: {enabled: true}, message: 'Waiting for the next availability check.'}};
+    await polls.shift()();
+    assert.equal(nodes.status.children.length, rows.length);
+    rows.forEach((field, index) => assert.equal(nodes.status.children[index], field));
+    for (const key of ['speed', 'file', 'progress', 'notice']) {
+        assert.equal(row(key).textContent, '');
+        assert.equal(row(key).title, '');
+    }
+    assert.equal(row('schedule').textContent, 'Waiting for the next availability check.');
+});
+
+for (const checked of [false, true]) {
+    test(`cancelling a manual run preserves the schedule checkbox (${checked})`, async () => {
+        const {nodes, document, panel} = harness();
+        nodes['schedule-enabled'].checked = checked;
+        const current = {enabled: true, active: true, scheduled: false, task_id: 42,
+            schedule: {settings: {enabled: true}}};
+        await mount(panel, document, async (url, options) => ({ok: true,
+            json: async () => ({...current, cancel_requested: Boolean(options.body)})}), () => {});
+        await nodes.cancel.handlers.click();
+        assert.equal(nodes['schedule-enabled'].checked, checked);
+        assert.match(nodes.status.textContent, /Manual run/);
+        assert.match(nodes.status.textContent, /Cancellation requested/);
+    });
+}
 
 test('Sync now stays disabled through scheduler handoff and unlocks between runs', async () => {
     const {nodes, document, panel} = harness();
@@ -313,7 +358,7 @@ for (const staleFails of [false, true]) {
         test(`cancel overtakes a poll (${staleFails ? 'failed' : 'successful'}, finishes ${pollFinishesFirst ? 'before' : 'after'} command)`, async () => {
             const {nodes, document, panel} = harness();
             const polls = [], requests = [], pendingPoll = deferred(), pendingCommand = deferred();
-            const running = {enabled: true, active: true, task_id: 42,
+            const running = {enabled: true, active: true, scheduled: true, task_id: 42,
                 types: [{id: 'image', label: 'Images', selected: true}],
                 schedule: {settings: {enabled: true, interval: 10, delay: 3, types: ['image'], revision: 'old'}}};
             const response = value => ({ok: true, json: async () => value});
