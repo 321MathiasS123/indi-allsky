@@ -2,10 +2,15 @@
 
 Only the main service calls tick(). Browser requests save settings/read status;
 the probe thread owns no Flask context, database session or upload queue.
+Preferences live in the normal SYNCAPI configuration. Only progress and pause
+controls are local state, so exporting a config does not export a running job.
+Revision tokens invalidate stale probes/jobs when preferences change or pause.
 """
 
 from copy import deepcopy
 from datetime import datetime, timedelta
+import hashlib
+import json
 import logging
 import math
 from threading import Thread
@@ -17,18 +22,44 @@ from . import syncapi_sync as sync
 
 
 logger = logging.getLogger('indi_allsky')
-SETTINGS_KEY = 'SYNCAPI_SCHEDULE_SETTINGS'
+CONTROL_KEY = 'SYNCAPI_SCHEDULE_CONTROL'
 STATUS_KEY = 'SYNCAPI_SCHEDULE_STATUS'
 APPLYING_MESSAGE = 'Schedule saved. Waiting for indi-allsky to apply the configuration.'
 
 
-def settings():
-    defaults = dict(enabled=False, interval=10, delay=3, upload_limit=0,
-                    types=list(sync.DEFAULT_TYPES), revision='')
-    return dict(defaults, **sync.get_state(SETTINGS_KEY, {}))
+def configured_settings(config):
+    options = config.get('SYNCAPI', {})
+    if not isinstance(options, dict):
+        raise ValueError('Invalid SyncAPI configuration.')
+    return validate_settings(dict(
+        enabled=options.get('ON_DEMAND_SCHEDULE', False),
+        interval=options.get('ON_DEMAND_INTERVAL', 10),
+        delay=options.get('ON_DEMAND_DELAY', 3),
+        upload_limit=options.get('ON_DEMAND_UPLOAD_LIMIT', 0),
+        types=options.get('ON_DEMAND_TYPES', list(sync.DEFAULT_TYPES)),
+    ))
 
 
-def save_settings(config, payload, commit=True):
+def settings(config=None):
+    if config is None:
+        row = sync.models.IndiAllSkyDbConfigTable.query.order_by(sync.models.IndiAllSkyDbConfigTable.createDate.desc()).first()
+        config = row.data if row else {}
+    options = configured_settings(config)
+    fingerprint = settings_fingerprint(options)
+    control = sync.get_state(CONTROL_KEY, {})
+    # Restoring different preferences invalidates old jobs/probes as well as
+    # pauses. Unrelated config edits must not invalidate a running sync.
+    options['revision'] = fingerprint + control.get('revision', '')
+    if options['enabled'] and control.get('paused_settings') == fingerprint:
+        options.update(enabled=False, paused_reason=control['paused_reason'])
+    return options
+
+
+def settings_fingerprint(options):
+    return hashlib.sha256(json.dumps(options, sort_keys=True).encode()).hexdigest()
+
+
+def validate_settings(payload):
     if not isinstance(payload, dict):
         raise ValueError('Invalid synchronization schedule.')
     enabled, interval, delay = (payload.get(key) for key in ('enabled', 'interval', 'delay'))
@@ -41,30 +72,40 @@ def save_settings(config, payload, commit=True):
         raise ValueError('Startup delay must be between 0 and 1440 minutes.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in sync.MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
-    current = settings()
-    # Older open pages omit this field; preserve the saved limit on their saves.
-    upload_limit = sync.validate_upload_limit(payload.get('upload_limit', current['upload_limit']))
-    options = dict(enabled=enabled, interval=interval, delay=delay, upload_limit=upload_limit,
-                   types=list(dict.fromkeys(types)))
+    upload_limit = sync.validate_upload_limit(payload.get('upload_limit'))
+    return dict(enabled=enabled, interval=interval, delay=delay, upload_limit=upload_limit,
+                types=list(dict.fromkeys(types)))
+
+
+def save_settings(config, payload):
+    """Stage preferences and resume controls for the normal config transaction."""
+    options = validate_settings(payload)
+    current = configured_settings(config)
+    paused = settings(config).get('paused_reason')
     # General configuration saves also submit unchanged schedule fields. Do not
     # restart the timer or invalidate an active worker for an unrelated edit.
-    if all(current[key] == value for key, value in options.items()):
-        return False
-    if sync.active_task():
+    changed = current != options or bool(paused and options['enabled'])
+    if changed and sync.active_task():
         raise ValueError('Cancel the running synchronization before changing its schedule.')
     # Keep the preference when SyncAPI is off or in automatic-upload mode.
-    # The scheduler already requires an applied On demand configuration.
-    if enabled and on_demand_enabled(config):
+    # The scheduler already requires an applied Archive sync configuration.
+    if changed and options['enabled'] and on_demand_enabled(config):
         sync.validate_destination(config)
-    sync.set_state(SETTINGS_KEY, dict(options, revision=str(uuid4())), commit=commit)
-    return True
+    keys = dict(enabled='SCHEDULE', interval='INTERVAL', delay='DELAY',
+                upload_limit='UPLOAD_LIMIT', types='TYPES')
+    config.setdefault('SYNCAPI', {}).update({'ON_DEMAND_' + keys[key]: value for key, value in options.items()})
+    # Do not commit here: a failed config save must also leave the pause intact.
+    if changed:
+        sync.set_state(CONTROL_KEY, dict(revision=str(uuid4())), commit=False)
+    return changed
 
 
 def pause(message):
     options = settings()
     if options['enabled']:
-        options.update(enabled=False, revision=str(uuid4()), paused_reason=message)
-        sync.set_state(SETTINGS_KEY, options)
+        options.pop('revision')
+        sync.set_state(CONTROL_KEY, dict(revision=str(uuid4()),
+                       paused_settings=settings_fingerprint(options), paused_reason=message))
 
 
 def status():
@@ -160,9 +201,9 @@ class SyncApiScheduler:
             logger.warning('Automatic SyncAPI synchronization paused: %s', message)
 
     def tick(self, config, config_id, busy=False):
-        options = settings()
         # Match IndiAllSkyConfig's ordering, including after clock corrections.
         latest = sync.models.IndiAllSkyDbConfigTable.query.order_by(sync.models.IndiAllSkyDbConfigTable.createDate.desc()).first()
+        options = settings(latest.data if latest else config)
         applied = latest is not None and latest.id == config_id
         enabled = options['enabled'] and on_demand_enabled(config) and applied
         signature = options['revision'], config_id, enabled
@@ -177,7 +218,7 @@ class SyncApiScheduler:
             if options['enabled'] and not applied:
                 self.publish(options, 'applying', APPLYING_MESSAGE)
             else:
-                self.publish(options, 'disabled', 'Save and apply On demand mode to use the schedule.')
+                self.publish(options, 'disabled', 'Save and apply Archive sync mode to use the schedule.')
             return
 
         task = sync.active_task()

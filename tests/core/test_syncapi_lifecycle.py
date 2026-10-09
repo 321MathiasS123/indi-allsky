@@ -75,7 +75,7 @@ def test_main_service_admits_scheduled_task_through_existing_queue(sync_env, mon
     schedule = importlib.import_module('indi_allsky.syncapi_schedule')
     main = main_service(env)
     env.asset()
-    schedule.save_settings(env.config, dict(enabled=True, interval=1, delay=0, types=['image']))
+    main._config_obj.config_id = env.save_schedule(dict(enabled=True, interval=1, delay=0, upload_limit=0, types=['image']))
     clock = SimpleNamespace(now=0)
     monkeypatch.setattr(schedule, 'time', SimpleNamespace(monotonic=lambda: clock.now))
     monkeypatch.setattr(schedule, 'ReceiverProbe', lambda *args: SimpleNamespace(

@@ -37,6 +37,7 @@ class requests_syncapi_v1(GenericFileTransfer):
         self._port = 443
         self.url = None
         self.apikey = None
+        self.quiet = kwargs.get('quiet', False)
 
 
     def connect(self, *args, **kwargs):
@@ -72,7 +73,11 @@ class requests_syncapi_v1(GenericFileTransfer):
 
 
     def put(self, *args, **kwargs):
-        super(requests_syncapi_v1, self).put(*args, **kwargs)
+        # Quiet archive logging is specific to SyncAPI, not other protocols.
+        if self.quiet and not self.delete:
+            logger.debug('Uploading %s', kwargs['local_file'])
+        else:
+            super(requests_syncapi_v1, self).put(*args, **kwargs)
 
         metadata = kwargs['metadata']
         local_file = kwargs['local_file']
@@ -203,9 +208,13 @@ class requests_syncapi_v1(GenericFileTransfer):
             f_media.close()
 
 
+        # A receiver/proxy can restart between a successful probe and an upload.
+        # Use the archive worker's bounded retries and lookup-before-resend path
+        # for these responses too. Keep legacy automatic-upload handling intact.
+        if (self.quiet or kwargs.get('availability_probe')) and r.status_code in (429, 500, 502, 503, 504):
+            raise ConnectionFailure('Receiver is temporarily unavailable (HTTP {0:d}).'.format(r.status_code))
+
         if kwargs.get('availability_probe'):
-            if r.status_code in (429, 500, 502, 503, 504):
-                raise ConnectionFailure('Receiver is still starting or temporarily unavailable.')
             try:
                 response = r.json()
             except ValueError:
@@ -232,7 +241,7 @@ class requests_syncapi_v1(GenericFileTransfer):
                 if r.status_code in (401, 403) or error == 'authentication failed':
                     raise AuthenticationFailure('Receiver authentication failed')
                 if kwargs.get('lookup'):
-                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting on-demand synchronization and check its logs.'.format(r.status_code))
+                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting archive synchronization and check its logs.'.format(r.status_code))
                 raise TransferFailure('Receiver rejected the transfer (HTTP {0:d}). Check its storage and service logs.'.format(r.status_code))
             raise TransferFailure('Sync error: {0:d}'.format(r.status_code))
 

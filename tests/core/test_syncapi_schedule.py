@@ -36,13 +36,15 @@ def schedule_env(sync_env, monkeypatch):
     monkeypatch.setattr(module, 'ReceiverProbe', Probe)
     scheduler = module.SyncApiScheduler()
 
-    def tick(seconds=0, config_id=1, busy=False):
+    def tick(seconds=0, config_id=None, busy=False):
         clock.now += seconds
+        if config_id is None:
+            config_id = env.sync.get_state('CONFIG_ID')
         scheduler.tick(env.config, config_id, busy=busy)
         return module.status()
 
     def enable(delay=3, types=None):
-        module.save_settings(env.config, dict(enabled=True, interval=10, delay=delay, types=types or ['image']))
+        env.save_schedule(dict(enabled=True, interval=10, delay=delay, upload_limit=0, types=types or ['image']))
         tick()
 
     def queue_run():
@@ -89,7 +91,7 @@ def test_offline_checks_are_quiet_and_restart_the_interval(schedule_env, caplog)
 def test_wait_recheck_run_and_repeat_with_incremental_checkpoints(schedule_env):
     ctx = schedule_env
     image = ctx.env.asset()
-    ctx.module.save_settings(ctx.env.config, dict(enabled=True, interval=10, delay=3, upload_limit=256, types=['image']))
+    ctx.env.save_schedule(dict(enabled=True, interval=10, delay=3, upload_limit=256, types=['image']))
     ctx.tick()
     ctx.tick(600)
     ctx.probes[-1].finish()
@@ -114,14 +116,14 @@ def test_wait_recheck_run_and_repeat_with_incremental_checkpoints(schedule_env):
     assert ctx.env.sync.status()['completed'] == 1 and next_image.sync_id
 
 
-def test_old_settings_default_to_unlimited_and_old_pages_preserve_saved_limit(schedule_env):
+def test_config_defaults_ignore_old_state_preferences(schedule_env):
     ctx = schedule_env
-    old = dict(enabled=False, interval=10, delay=3, types=['image'], revision='old')
-    ctx.env.sync.set_state(ctx.module.SETTINGS_KEY, old)
-    assert ctx.module.settings()['upload_limit'] == 0
-    assert not ctx.module.save_settings(ctx.env.config, old)
-    ctx.module.save_settings(ctx.env.config, dict(old, upload_limit=512))
-    ctx.module.save_settings(ctx.env.config, dict(old, interval=5))
+    ctx.env.sync.set_state('SYNCAPI_SCHEDULE_SETTINGS', dict(enabled=True, interval=1, delay=0,
+                           upload_limit=512, types=['rawimage'], revision='old'))
+    defaults = ctx.module.settings()
+    assert not defaults['enabled'] and defaults['interval'] == 10 and defaults['delay'] == 3
+    assert defaults['upload_limit'] == 0 and defaults['types'] == ctx.env.sync.DEFAULT_TYPES
+    ctx.env.save_schedule(dict(enabled=False, interval=5, delay=3, upload_limit=512, types=['image']))
     assert ctx.module.settings()['upload_limit'] == 512
     task = ctx.env.sync.request_sync(ctx.env.config, ['image'])
     assert task.data['upload_limit'] == 512
@@ -144,14 +146,18 @@ def test_receiver_disappearing_during_startup_delay_restarts_cycle(schedule_env)
     assert len(ctx.probes) == 3
 
 
-def test_connection_failure_rearms_but_authentication_failure_pauses(schedule_env, monkeypatch):
+@pytest.mark.parametrize('failure', ['connection', 'http'])
+def test_connection_failure_rearms_but_authentication_failure_pauses(schedule_env, monkeypatch, failure):
     ctx = schedule_env
     ctx.env.asset()
     ctx.enable(delay=0)
     task = ctx.queue_run()
     monkeypatch.setattr(ctx.env.sync.SyncApiSyncWorker, 'retry_delays', ())
-    monkeypatch.setattr(ctx.env.transport.requests, 'put', lambda *a, **k: (_ for _ in ()).throw(
-        ctx.env.transport.requests.exceptions.ConnectionError('offline')))
+    def unavailable(*args, **kwargs):
+        if failure == 'http':
+            return SimpleNamespace(status_code=503)
+        raise ctx.env.transport.requests.exceptions.ConnectionError('offline')
+    monkeypatch.setattr(ctx.env.transport.requests, 'put', unavailable)
     ctx.env.sync.SyncApiSyncWorker(ctx.env.app, task.id).execute()
     assert ctx.env.sync.status()['reason'] == 'connection'
     assert ctx.tick()['settings']['enabled']
@@ -162,7 +168,7 @@ def test_connection_failure_rearms_but_authentication_failure_pauses(schedule_en
     result = ctx.tick()
     assert result['state'] == 'paused' and not result['settings']['enabled']
     restarted = ctx.module.SyncApiScheduler()
-    restarted.tick(ctx.env.config, 1)
+    restarted.tick(ctx.env.config, ctx.env.sync.get_state('CONFIG_ID'))
     assert ctx.module.status()['state'] == 'paused'
 
 
@@ -189,7 +195,7 @@ def test_changed_settings_discard_inflight_probe_and_cancel_stale_job(schedule_e
     ctx.enable(delay=0)
     ctx.tick(600)
     old_revision = ctx.module.settings()['revision']
-    ctx.module.save_settings(ctx.env.config, dict(enabled=True, interval=5, delay=1, types=['video']))
+    ctx.env.save_schedule(dict(enabled=True, interval=5, delay=1, upload_limit=0, types=['video']))
     ctx.tick()
     ctx.probes[-1].finish()
     ctx.tick()
@@ -204,21 +210,22 @@ def test_schedule_survives_restart_but_waits_for_applied_config(schedule_env):
     ctx = schedule_env
     ctx.env.asset()
     ctx.enable()
-    ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(level='test', note='new', data=deepcopy(ctx.env.config)))
+    new = ctx.env.models.IndiAllSkyDbConfigTable(level='test', note='new', data=deepcopy(ctx.env.config))
+    ctx.env.db.session.add(new)
     ctx.env.db.session.commit()
     result = ctx.tick(600)
     assert result['state'] == 'applying'
     assert 'Waiting for indi-allsky to apply the configuration' in result['message']
     assert 'next_action' not in result
     assert not ctx.probes
-    result = ctx.tick(config_id=2)
+    result = ctx.tick(config_id=new.id)
     assert result['state'] == 'waiting' and 'next_action' in result
-    ctx.tick(599, config_id=2)
+    ctx.tick(599, config_id=new.id)
     assert not ctx.probes
-    ctx.tick(1, config_id=2)
+    ctx.tick(1, config_id=new.id)
     assert len(ctx.probes) == 1
     restarted = ctx.module.SyncApiScheduler()
-    restarted.tick(ctx.env.config, 2)
+    restarted.tick(ctx.env.config, new.id)
     assert ctx.module.settings()['enabled'] and ctx.module.status()['state'] == 'waiting'
 
 
@@ -227,15 +234,13 @@ def test_reenabled_schedule_reports_applying_before_and_after_service_tick(sched
     ctx.enable()
     ctx.module.pause('Paused by Cancel.')
     ctx.tick()
-    ctx.module.save_settings(ctx.env.config, dict(enabled=True, interval=5, delay=3, types=['image']))
-    ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(level='test', note='reenabled', data=deepcopy(ctx.env.config)))
-    ctx.env.db.session.commit()
+    config_id = ctx.env.save_schedule(dict(enabled=True, interval=5, delay=3, upload_limit=0, types=['image']), apply=False)
     result = ctx.module.status()
     assert result['state'] == 'applying'
     assert 'Waiting for indi-allsky to apply the configuration' in result['message']
     assert 'next_action' not in result
     assert ctx.tick()['message'] == result['message']
-    assert ctx.tick(config_id=2)['state'] == 'waiting'
+    assert ctx.tick(config_id=config_id)['state'] == 'waiting'
     assert ctx.probes == [] and ctx.env.sync.active_task() is None
 
 
@@ -245,7 +250,7 @@ def test_applied_automatic_mode_still_explains_why_schedule_cannot_run(schedule_
     ctx.enable()
     result = ctx.module.status()
     assert result['state'] == 'disabled'
-    assert result['message'] == 'Save and apply On demand mode to use the schedule.'
+    assert result['message'] == 'Save and apply Archive sync mode to use the schedule.'
     assert ctx.probes == []
 
 
@@ -262,14 +267,14 @@ def test_configuration_selection_matches_service_after_clock_adjustment(schedule
     ctx = schedule_env
     ctx.env.asset()
     ctx.enable()
-    current = ctx.env.db.session.get(ctx.env.models.IndiAllSkyDbConfigTable, 1)
+    current = ctx.env.db.session.get(ctx.env.models.IndiAllSkyDbConfigTable, ctx.env.sync.get_state('CONFIG_ID'))
     # The service chooses by timestamp, which need not match insertion order
     # after a clock correction. Its applied configuration must remain usable.
     ctx.env.db.session.add(ctx.env.models.IndiAllSkyDbConfigTable(
         level='test', note='older timestamp', data=deepcopy(ctx.env.config),
         createDate=current.createDate - timedelta(days=1)))
     ctx.env.db.session.commit()
-    ctx.tick(600, config_id=1)
+    ctx.tick(600, config_id=current.id)
     assert len(ctx.probes) == 1
 
 
@@ -368,7 +373,7 @@ def test_slow_probe_is_independent_of_flask_and_does_not_mutate_saved_config(syn
     ('types', []), ('types', ['unknown']), ('types', [1])])
 def test_invalid_settings_are_rejected_without_side_effects(sync_env, field, value):
     module = importlib.import_module('indi_allsky.syncapi_schedule')
-    payload = dict(enabled=True, interval=10, delay=3, types=['image'])
+    payload = dict(enabled=True, interval=10, delay=3, upload_limit=0, types=['image'])
     payload[field] = value
     with pytest.raises(ValueError):
         module.save_settings(sync_env.config, payload)

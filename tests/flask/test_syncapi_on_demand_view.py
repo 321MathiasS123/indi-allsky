@@ -15,7 +15,7 @@ def sync_endpoint(sync_env):
     class BaseView(View):
         def __init__(self):
             self.indi_allsky_config = env.config
-            self.indi_allsky_config_id = 1
+            self.indi_allsky_config_id = env.models.IndiAllSkyDbConfigTable.query.order_by(env.models.IndiAllSkyDbConfigTable.createDate.desc()).first().id
             self._miscDb = type('State', (), {'getState': lambda _, key: str(env.sync.get_state(key))})()
 
     source = Path(__file__).resolve().parents[2] / 'indi_allsky/flask/views.py'
@@ -73,7 +73,7 @@ def test_start_uses_unsaved_speed_without_changing_saved_settings(sync_endpoint)
 
 
 @pytest.mark.parametrize('payload', [[], None, {'action': 'start', 'types': []}, {'action': 'start', 'types': ['invalid']}, {'action': 'cancel', 'task_id': True},
-    {'action': 'start', 'upload_limit': -1}, {'action': 'start', 'upload_limit': True}])
+    {'action': 'start', 'upload_limit': -1}, {'action': 'start', 'upload_limit': True}, {'action': 'schedule'}])
 def test_rejects_invalid_requests(sync_endpoint, payload):
     env, client, _, headers = sync_endpoint
     response = client.post('/ajax/syncapi/run', data=flask.json.dumps(payload), content_type='application/json', headers=headers)
@@ -93,9 +93,8 @@ def test_waits_for_configuration_reload(sync_endpoint):
 @pytest.mark.parametrize('scheduled', [False, True])
 def test_cancellation_only_pauses_runs_started_by_the_schedule(sync_endpoint, scheduled):
     env, client, _, headers = sync_endpoint
-    payload = dict(action='schedule', enabled=True, interval=5, delay=2, types=['image', 'rawimage'])
-    response = client.post('/ajax/syncapi/run', json=payload, headers=headers)
-    assert response.status_code == 200
+    env.save_schedule(dict(enabled=True, interval=5, delay=2, upload_limit=0, types=['image', 'rawimage']))
+    response = client.get('/ajax/syncapi/run')
     saved = response.get_json()['schedule']['settings']
     assert saved['enabled'] and saved['interval'] == 5 and saved['delay'] == 2
     assert saved['types'] == ['image', 'rawimage']
@@ -107,7 +106,6 @@ def test_cancellation_only_pauses_runs_started_by_the_schedule(sync_endpoint, sc
         response = client.post('/ajax/syncapi/run', json={'action': 'start', 'types': ['image']}, headers=headers)
         task_id = response.get_json()['task_id']
     assert client.get('/ajax/syncapi/run').get_json()['scheduled'] is scheduled
-    assert client.post('/ajax/syncapi/run', json=dict(payload, interval=6), headers=headers).status_code == 400
     # An outdated Cancel must not pause the schedule or cancel a newer run.
     response = client.post('/ajax/syncapi/run', json={'action': 'cancel', 'task_id': task_id - 1}, headers=headers)
     assert response.get_json()['schedule']['settings']['enabled']
@@ -119,17 +117,4 @@ def test_cancellation_only_pauses_runs_started_by_the_schedule(sync_endpoint, sc
         assert result['schedule']['state'] == 'paused'
     else:
         assert result['schedule']['settings'] == saved
-    assert env.calls == []
-
-
-def test_schedule_requires_csrf_admin_and_applied_config(sync_endpoint):
-    env, client, user, headers = sync_endpoint
-    payload = dict(action='schedule', enabled=True, interval=10, delay=3, types=['image'])
-    assert client.post('/ajax/syncapi/run', json=payload).status_code == 400
-    env.sync.set_state('CONFIG_ID', 0)
-    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 400
-    env.sync.set_state('CONFIG_ID', 1)
-    user.admin = False
-    env.db.session.commit()
-    assert client.post('/ajax/syncapi/run', json=payload, headers=headers).status_code == 403
     assert env.calls == []
