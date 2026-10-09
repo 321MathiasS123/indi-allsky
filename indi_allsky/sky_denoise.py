@@ -293,6 +293,26 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             # statistic. Only current-source restoration changes with history.
             evidence['restore_mask'] = _weighted_points(
                 edge, points, weights * star_protection, diagnostics.get('stationary_mask'))
+            stationary = np.asarray(diagnostics.get('stationary_mask', np.zeros(len(points), bool)))
+            selected = np.flatnonzero(stationary & (weights < 1))
+            if len(selected):
+                # Noise in a second channel can move the same proven defect
+                # between source tables. Both paths need the final RGB repair.
+                normal_defects = np.column_stack((points[selected, :2], 1 - weights[selected]))
+                evidence['sensor_defects'] = np.concatenate((
+                    evidence.get('sensor_defects', np.empty((0, 3))), normal_defects))
+                clearance = evidence.setdefault('sensor_clearance', [])
+                gy, gx = np.mgrid[-4:5, -4:5]
+                for index in selected:
+                    x, y = xx[index], yy[index]
+                    # Exclude only this defect's own source core. Other source
+                    # wings remain untouched, using just a tiny local mask.
+                    nearby = (np.abs(xx - x) < 11) & (np.abs(yy - y) < 11)
+                    nearby[index] = False
+                    clear = np.ones((9, 9), bool)
+                    for nx, ny in zip(xx[nearby], yy[nearby]):
+                        clear &= (gx + x - nx)**2 + (gy + y - ny)**2 > 6.5**2
+                    clearance.append(clear)
         logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d sensor_pixels=%d time=%.3fs',
                     diagnostics.get('status', 'unknown'), len(points),
                     diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
@@ -337,7 +357,8 @@ def _repair_sensor_pixels(image, defects, clearance=None):
 
     NLM can retain a strong positive outlier even without a protection mask.
     Its luminance also spreads into the other channels, so repair the small RGB
-    core after filtering. Never lift dark pixels or use previous-frame pixels.
+    core after filtering. Symmetric interpolation avoids retaining only the
+    negative noise excursions in a repaired core. Use only current-frame pixels.
     The caller owns this working image; originals and noise statistics stay put.
     """
     if defects is None or not len(defects):
@@ -353,7 +374,7 @@ def _repair_sensor_pixels(image, defects, clearance=None):
         # A passing star can overlap the repair footprint despite its centre
         # being farther away. Preserve every pixel in its protected wings.
         weight = taper if clearance is None else taper * clearance[index][:, :, None]
-        patch -= amount * weight * np.maximum(patch - background, 0)
+        patch += amount * weight * (background - patch)
 
 
 def _line_sources(dog, noise, x, y):

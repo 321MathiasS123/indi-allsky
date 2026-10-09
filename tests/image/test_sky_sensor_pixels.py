@@ -56,7 +56,7 @@ def test_sensor_candidates_reject_broad_signal_edges_and_nearby_stars():
     assert len(sky_denoise._single_colour_points(dog, scores, support, distance, None)) == 1
 
 
-def test_local_repair_preserves_gradient_dark_pixels_and_distant_detail():
+def test_local_repair_interpolates_both_signs_without_changing_distant_detail():
     y, x = np.mgrid[:40, :40]
     image = np.repeat((.1 + x*.001 + y*.002)[:,:,None], 3, axis=2).astype(np.float32)
     background = image.copy()
@@ -65,10 +65,17 @@ def test_local_repair_preserves_gradient_dark_pixels_and_distant_detail():
     original = image.copy()
     sky_denoise._repair_sensor_pixels(image, np.array([[20,20,1.]]))
     np.testing.assert_allclose(image[20,20], background[20,20], atol=1e-6)
-    np.testing.assert_array_equal(image[21,21], original[21,21])
-    assert np.all(image <= original)
+    np.testing.assert_allclose(image[21,21], background[20,20], atol=1e-6)
     np.testing.assert_array_equal(image[:16], original[:16])
     np.testing.assert_array_equal(image[25:], original[25:])
+
+
+def test_repair_does_not_leave_a_negative_noise_bias_in_unaffected_channels():
+    image = np.full((40,40,3), .1, np.float32)
+    image[20,20] += [.01, -.01, .3]
+    image[21,20] += [-.01, .01, .05]
+    sky_denoise._repair_sensor_pixels(image, np.array([[20,20,1.]]))
+    np.testing.assert_allclose(image[20:22,20], .1, atol=1e-7)
 
 
 def test_proven_defect_is_removed_from_filtered_output_without_changing_distant_pixels():
@@ -105,6 +112,37 @@ def test_nearby_star_wings_remain_identical_when_the_repair_footprint_overlaps()
                                   capture_context=context)
     assert filtered[96,96,2] < baseline[96,96,2] - .05
     np.testing.assert_array_equal(filtered[protected], baseline[protected])
+
+
+def test_proven_normal_source_does_not_protect_itself_but_preserves_nearby_star(monkeypatch):
+    class KnownDefect:
+        def weights(self, points, support, sensor_points, **kwargs):
+            stationary = np.linalg.norm(points[:, :2] - [96,96], axis=1) < 1
+            return (~stationary).astype(np.float32), dict(stationary_mask=stationary,
+                sensor_stationary=np.zeros(len(sensor_points), bool),
+                sensor_weights=np.ones(len(sensor_points), np.float32))
+
+    y, x = np.mgrid[:192, :192]
+    image = np.random.default_rng(674).normal(.08, .001, (192,192,3)).astype(np.float32)
+    image += (.06 * np.exp(-((x-104)**2 + (y-96)**2)/3))[:, :, None]
+    image[96,96] += [.08, .02, .3]
+    context = {'capture_time': 1000}
+    measured = sky_denoise._source_evidence(image, catalogue=KnownDefect(), capture_context=context)
+    assert np.any(np.linalg.norm(measured['points'][:, :2] - [96,96], axis=1) < 1)
+    assert np.any(np.linalg.norm(measured['sensor_defects'][:, :2] - [96,96], axis=1) < 1)
+    protected = np.zeros((192,192), bool)
+    for cx, cy, _ in measured['points']:
+        if (cx,cy) != (96,96):
+            protected |= (x-cx)**2 + (y-cy)**2 <= 6.5**2
+    assert np.any(protected & ((x-96)**2 + (y-96)**2 < 4**2))
+    with monkeypatch.context() as patch:
+        patch.setattr(sky_denoise, '_repair_sensor_pixels', lambda *args: None)
+        baseline = sky_denoise.denoise(image, {}, catalogue=KnownDefect(), capture_context=context)
+    filtered = sky_denoise.denoise(image, {}, catalogue=KnownDefect(), capture_context=context)
+    assert filtered[96,96,2] < baseline[96,96,2] - .03
+    np.testing.assert_array_equal(filtered[protected], baseline[protected])
+    footprint = (x-96)**2 + (y-96)**2 < 4**2
+    np.testing.assert_array_equal(filtered[~footprint], baseline[~footprint])
 
 
 @pytest.mark.parametrize('context,protection', [(None, 1), ({'capture_time': 1000}, 0)])
@@ -157,3 +195,35 @@ def test_capture_sequence_repairs_fixed_colour_impulses_but_not_moving_ones(chan
         sky_denoise._repair_sensor_pixels(image, evidence['sensor_defects'])
         cx,cy = center
         assert image[cy,cx,channel] < before[cy,cx,channel] - .25
+
+
+@pytest.mark.parametrize('moving', [False, True])
+def test_capture_sequence_keeps_proof_when_colour_noise_switches_source_tables(moving):
+    catalogue = SkySourceCatalogue()
+    classified, repaired = [], []
+    for frame in range(9):
+        image, center = scene(frame, moving=moving)
+        cx, cy = center
+        if frame % 2:
+            image[cy,cx,0] += .03
+        baseline = sky_denoise._source_evidence(image, np.ones((400,400), bool))
+        evidence = sky_denoise._source_evidence(image, np.ones((400,400), bool),
+            catalogue=catalogue, capture_context=dict(capture_time=1000+frame*30,
+                capture_interval=30, geometry_key='switching-colour', sensor_shape=(400,400)))
+        assert evidence['catalogue']['status'] == 'tracking'
+        for key in ('mask', 'points', 'lum', 'noise'):
+            np.testing.assert_array_equal(evidence[key], baseline[key])
+        ordinary = np.any(np.linalg.norm(evidence['points'][:, :2]-center, axis=1) < 1)
+        classified.append(bool(ordinary))
+        selected = evidence.get('sensor_defects', np.empty((0,3)))
+        nearby = np.linalg.norm(selected[:, :2]-center, axis=1) < 1
+        repaired.append(float(selected[nearby,2].max()) if nearby.any() else 0)
+    assert classified[0] is False
+    assert all(classified[1::2])
+    assert not all(classified[5:])  # Both paths occur after proof is established.
+    if moving:
+        assert repaired == [0]*9
+    else:
+        assert repaired[:3] == [0]*3
+        assert repaired[3:6] == [.5, .75, 1]
+        assert repaired[6:] == [1, 1, 1]
