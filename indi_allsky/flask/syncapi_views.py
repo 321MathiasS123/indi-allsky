@@ -69,7 +69,7 @@ class SyncApiBaseView(BaseView):
             self.image_dir = Path(__file__).parent.parent.parent.joinpath('html', 'images').absolute()
 
 
-    def dispatch_request(self):
+    def dispatch_request(self, lookup=False):
         try:
             #time.sleep(10)  # testing
             self.authorize(request.files['metadata'].stream.read())  # authenticate the request
@@ -79,6 +79,10 @@ class SyncApiBaseView(BaseView):
 
 
         try:
+            # Only the POST-only /lookup routes set this routing argument.
+            # Authentication is shared; lookup requests never reach upload handlers.
+            if lookup:
+                return self.lookup()
             if request.method == 'POST':
                 return self.post()
             elif request.method == 'PUT':
@@ -105,7 +109,10 @@ class SyncApiBaseView(BaseView):
         media_file_size = tmp_media_file_p.stat().st_size
         if media_file_size != metadata.get('file_size', -1):
             tmp_media_file_p.unlink()
-            raise AuthenticationFailure('Media file size does not match')
+            # Authentication already succeeded. Reject damaged media without
+            # misreporting a valid account/API key as an authentication failure.
+            app.logger.error('Media file size does not match: expected %s bytes, received %d bytes', metadata.get('file_size'), media_file_size)
+            return jsonify({'error': 'media_size_mismatch'}), 400
 
 
         try:
@@ -175,6 +182,63 @@ class SyncApiBaseView(BaseView):
         })
 
 
+    def lookup(self):
+        if self.model == IndiAllSkyDbCameraTable:
+            return self.get()
+
+        metadata = self.saveMetadata(request.files['metadata'])
+        try:
+            # Unlike getCamera(), a lookup must not update the camera's timezone.
+            camera = IndiAllSkyDbCameraTable.query.filter_by(uuid=metadata['camera_uuid']).one()
+        except NoResultFound:
+            return jsonify({'error': 'camera not found'}), 400
+        return self.lookupSource(metadata, camera)
+
+
+    def lookupSource(self, metadata, camera):
+        """Check a pending source file without transferring its media payload."""
+        try:
+            expected_size = metadata['expected_size']
+            expected_hash = metadata['sha256']
+            if type(expected_size) is not int or expected_size <= 0 or not isinstance(expected_hash, str) or len(expected_hash) != 64:
+                raise ValueError()
+            int(expected_hash, 16)
+            query = self.model.query.filter(self.model.camera_id == camera.id)
+            if self.model == IndiAllSkyDbThumbnailTable:
+                query = query.filter(self.model.uuid == metadata['uuid'])
+            else:
+                offset = metadata['utc_offset'] - datetime.now().astimezone().utcoffset().total_seconds()
+                created = self.receiverDate(metadata['createDate'] + offset)
+                query = query.filter(self.model.createDate == created)
+            entry = query.first()
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return jsonify({'error': 'invalid source lookup'}), 400
+        result = {'lookup_supported': True, 'present': False}
+        # Only acknowledge a complete match. Missing/corrupt files and changed
+        # thumbnail references must follow the normal upload/repair path.
+        if entry and entry.thumbnail_uuid == metadata.get('thumbnail_uuid'):
+            path = entry.getFilesystemPath()
+            try:
+                if path.stat().st_size == expected_size:
+                    digest = hashlib.sha256()
+                    with path.open('rb') as source:
+                        for block in iter(lambda: source.read(1024 * 1024), b''):
+                            digest.update(block)
+                    if digest.hexdigest() == expected_hash:
+                        result.update(present=True, id=entry.id)
+            except FileNotFoundError:
+                pass
+        return jsonify(result)
+
+
+    def receiverDate(self, timestamp):
+        # The model's MySQL/MariaDB DATETIME columns have second precision.
+        # Match the stored value when recovering an interrupted upload.
+        if db.engine.dialect.name in ('mysql', 'mariadb'):
+            timestamp = math.floor(timestamp)
+        return datetime.fromtimestamp(timestamp)
+
+
     def processPost(self, camera, metadata, tmp_file_p, overwrite=False):
         # offset createDate to account for difference between local and remote sites
         metadata['createDate'] += (metadata['utc_offset'] - datetime.now().astimezone().utcoffset().total_seconds())
@@ -194,14 +258,17 @@ class SyncApiBaseView(BaseView):
 
 
         try:
+            # Several mini timelapses may belong to the same day/night period.
+            identity = [self.model.dayDate == d_dayDate, self.model.night == bool(metadata['night'])]
+            if self.model == IndiAllSkyDbMiniVideoTable:
+                identity.append(self.model.createDate == self.receiverDate(metadata['createDate']))
             # delete old entry if it exists
             old_entry = self.model.query\
                 .join(self.model.camera)\
                 .filter(
                     and_(
                         IndiAllSkyDbCameraTable.id == camera.id,
-                        self.model.dayDate == d_dayDate,
-                        self.model.night == bool(metadata['night']),
+                        *identity,
                     )
                 )\
                 .one()
@@ -485,7 +552,7 @@ class SyncApiBaseImageView(SyncApiBaseView):
         # offset createDate to account for difference between local and remote sites
         image_metadata['createDate'] += (image_metadata['utc_offset'] - datetime.now().astimezone().utcoffset().total_seconds())
 
-        camera_createDate = datetime.fromtimestamp(image_metadata['createDate'])
+        camera_createDate = self.receiverDate(image_metadata['createDate'])
         folder = self.getImageFolder(camera_createDate, image_metadata['night'], camera)
 
         date_str = camera_createDate.strftime('%Y%m%d_%H%M%S')
@@ -601,7 +668,7 @@ class SyncApiImageView(SyncApiBaseImageView):
                 image_metadata['keogram_pixels'],
             )
 
-        return super(SyncApiImageView, self).processPost(camera, image_metadata, tmp_file_p, overwrite=False)
+        return super(SyncApiImageView, self).processPost(camera, image_metadata, tmp_file_p, overwrite=overwrite)
 
 
 class SyncApiVideoView(SyncApiBaseView):
@@ -826,3 +893,17 @@ bp_syncapi_allsky.add_url_rule('/sync/v1/panoramaimage', view_func=SyncApiPanora
 bp_syncapi_allsky.add_url_rule('/sync/v1/panoramavideo', view_func=SyncApiPanoramaVideoView.as_view('syncapi_v1_panorama_video_view'), methods=['GET', 'POST', 'PUT', 'DELETE'])
 bp_syncapi_allsky.add_url_rule('/sync/v1/thumbnail', view_func=SyncApiThumbnailView.as_view('syncapi_v1_thumbnail_view'), methods=['GET', 'POST', 'PUT', 'DELETE'])
 
+
+# Separate lookup routes keep POST's existing upload semantics intact.
+bp_syncapi_allsky.add_url_rule('/sync/v1/camera/lookup', view_func=SyncApiCameraView.as_view('syncapi_v1_camera_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/image/lookup', view_func=SyncApiImageView.as_view('syncapi_v1_image_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/video/lookup', view_func=SyncApiVideoView.as_view('syncapi_v1_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/minivideo/lookup', view_func=SyncApiMiniVideoView.as_view('syncapi_v1_min_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/keogram/lookup', view_func=SyncApiKeogramView.as_view('syncapi_v1_keogram_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/startrail/lookup', view_func=SyncApiStartrailView.as_view('syncapi_v1_startrail_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/startrailvideo/lookup', view_func=SyncApiStartrailVideoView.as_view('syncapi_v1_startrail_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/rawimage/lookup', view_func=SyncApiRawImageView.as_view('syncapi_v1_rawimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/fitsimage/lookup', view_func=SyncApiFitsImageView.as_view('syncapi_v1_fitsimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/panoramaimage/lookup', view_func=SyncApiPanoramaImageView.as_view('syncapi_v1_panoramaimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/panoramavideo/lookup', view_func=SyncApiPanoramaVideoView.as_view('syncapi_v1_panoramavideo_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/thumbnail/lookup', view_func=SyncApiThumbnailView.as_view('syncapi_v1_thumbnail_lookup_view'), defaults={'lookup': True}, methods=['POST'])
