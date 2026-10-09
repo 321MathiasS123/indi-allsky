@@ -6355,9 +6355,9 @@ class AjaxConfigView(BaseView):
 
 
         # save new config
-        from ..syncapi import on_demand_enabled
+        from ..syncapi import archive_sync_enabled
         from ..syncapi_sync import validate_destination, set_state, DESTINATION_KEY
-        if on_demand_enabled(self.indi_allsky_config):
+        if archive_sync_enabled(self.indi_allsky_config):
             try:
                 sync_destination = validate_destination(self.indi_allsky_config, {'SYNCAPI': previous_syncapi})
             except ValueError as exc:
@@ -6437,7 +6437,7 @@ class AjaxSyncApiRunView(BaseView):
     def dispatch_request(self):
         from ..syncapi_sync import request_sync, cancel_sync, status, DEFAULT_TYPES
         from ..syncapi_schedule import status as schedule_status
-        from ..syncapi import on_demand_enabled
+        from ..syncapi import archive_sync_enabled
         if not app.config.get('LOGIN_DISABLED') and not current_user.is_admin:
             return jsonify({'error': 'Administrator access required.'}), 403
         if request.method == 'POST':
@@ -6457,7 +6457,7 @@ class AjaxSyncApiRunView(BaseView):
             except (ValueError, NoResultFound) as exc:
                 return jsonify({'error': str(exc) if isinstance(exc, ValueError) else 'The indi-allsky service has not started yet.'}), 400
         result = status()
-        result['enabled'] = on_demand_enabled(self.indi_allsky_config)
+        result['enabled'] = archive_sync_enabled(self.indi_allsky_config)
         result['schedule'] = schedule_status()
         return jsonify(result)
 

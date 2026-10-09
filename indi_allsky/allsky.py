@@ -1835,7 +1835,7 @@ class IndiAllSky(object):
 
                 action = task.data['action']
 
-                if action == 'on_demand_sync':
+                if action == 'archive_sync':
                     if self.sync_task_id is not None or (self.sync_worker and self.sync_worker.is_alive()):
                         task.setExpired()
                         continue

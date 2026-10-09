@@ -57,7 +57,7 @@ def config_endpoint(sync_env):
             with env.db.engine.connect() as connection:
                 previous = connection.execute(select(env.models.IndiAllSkyDbConfigTable.data)
                     .order_by(env.models.IndiAllSkyDbConfigTable.createDate.desc())).scalar()
-                control.before_commit.append(previous['SYNCAPI'].get('ON_DEMAND_INTERVAL'))
+                control.before_commit.append(previous['SYNCAPI'].get('ARCHIVE_INTERVAL'))
             if control.fail_save:
                 env.db.session.flush()
                 raise ConfigSaveException('Configuration save failed')
@@ -197,6 +197,7 @@ def test_schedule_preference_can_be_saved_with_syncapi_disabled(config_endpoint)
 def test_schedule_defaults_match_normal_config_template(config_endpoint):
     ctx = config_endpoint
     assert ctx.schedule.configured_settings({}) == ctx.schedule.configured_settings(ctx.defaults)
+    assert ctx.defaults['SYNCAPI']['ARCHIVE_DELAY'] == 0
 
 
 def test_saved_preferences_are_versioned_exported_and_restored(config_endpoint):
@@ -227,8 +228,8 @@ def test_saved_preferences_are_versioned_exported_and_restored(config_endpoint):
     assert all(ctx.schedule.settings()[key] == value for key, value in options().items())
 
 
-@pytest.mark.parametrize('key,value', [('ON_DEMAND_SCHEDULE', 'yes'), ('ON_DEMAND_INTERVAL', 0),
-    ('ON_DEMAND_DELAY', -1), ('ON_DEMAND_UPLOAD_LIMIT', 123), ('ON_DEMAND_TYPES', ['unknown']),
+@pytest.mark.parametrize('key,value', [('ARCHIVE_SCHEDULE', 'yes'), ('ARCHIVE_INTERVAL', 0),
+    ('ARCHIVE_DELAY', -1), ('ARCHIVE_UPLOAD_LIMIT', 123), ('ARCHIVE_TYPES', ['unknown']),
     (None, None), (None, []), (None, True)])
 def test_config_restore_validates_schedule_before_writing(config_endpoint, key, value):
     ctx = config_endpoint
@@ -253,7 +254,7 @@ def test_config_save_resumes_identical_paused_preferences(config_endpoint):
     assert not ctx.schedule.settings()['enabled']
     # The switch displays effective paused state, while the saved preference
     # remains a config value. Enabling and saving it explicitly clears pause.
-    assert ctx.env.config['SYNCAPI']['ON_DEMAND_SCHEDULE'] is True
+    assert ctx.env.config['SYNCAPI']['ARCHIVE_SCHEDULE'] is True
     response = ctx.client.post('/ajax/config', json={'SYNCAPI_SCHEDULE': options()}, headers=ctx.headers)
     assert response.status_code == 200
     resumed = ctx.schedule.settings()

@@ -46,7 +46,7 @@ def sync_env(tmp_path, monkeypatch, request):
     models = load('indi_allsky.flask.models', 'indi_allsky/flask/models.py')
     flask_package.models = models
     misc_db = load('indi_allsky.flask.miscDb', 'indi_allsky/flask/miscDb.py')
-    config = {'SYNCAPI': {'ENABLE': True, 'MODE': 'on_demand', 'BASEURL': 'https://nas/indi-allsky',
+    config = {'SYNCAPI': {'ENABLE': True, 'MODE': 'archive', 'BASEURL': 'https://nas/indi-allsky',
                          'USERNAME': 'tester', 'APIKEY': 'test-api-key', 'CERT_BYPASS': False}, 'IMAGE_FOLDER': str(tmp_path / 'source')}
     config_module = types.ModuleType('indi_allsky.config')
     config_module.IndiAllSkyConfig = lambda: types.SimpleNamespace(config=deepcopy(models.IndiAllSkyDbConfigTable.query.order_by(models.IndiAllSkyDbConfigTable.id.desc()).first().data))

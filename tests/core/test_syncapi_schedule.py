@@ -121,12 +121,29 @@ def test_config_defaults_ignore_old_state_preferences(schedule_env):
     ctx.env.sync.set_state('SYNCAPI_SCHEDULE_SETTINGS', dict(enabled=True, interval=1, delay=0,
                            upload_limit=512, types=['rawimage'], revision='old'))
     defaults = ctx.module.settings()
-    assert not defaults['enabled'] and defaults['interval'] == 10 and defaults['delay'] == 3
+    assert not defaults['enabled'] and defaults['interval'] == 10 and defaults['delay'] == 0
     assert defaults['upload_limit'] == 0 and defaults['types'] == ctx.env.sync.DEFAULT_TYPES
     ctx.env.save_schedule(dict(enabled=False, interval=5, delay=3, upload_limit=512, types=['image']))
     assert ctx.module.settings()['upload_limit'] == 512
     task = ctx.env.sync.request_sync(ctx.env.config, ['image'])
     assert task.data['upload_limit'] == 512
+
+
+def test_default_delay_starts_run_after_first_successful_check(schedule_env):
+    ctx = schedule_env
+    ctx.env.asset()
+    # Omit timing overrides: exercise the defaults used by a newly enabled schedule.
+    options = ctx.module.configured_settings({'SYNCAPI': {'ARCHIVE_SCHEDULE': True}})
+    ctx.env.save_schedule(options)
+    assert options['delay'] == 0
+    ctx.tick()
+    ctx.tick(600)
+    ctx.probes[-1].finish()
+    ctx.tick()
+    task = ctx.env.sync.active_task()
+    assert task is not None and task.data['action'] == 'archive_sync'
+    assert len(ctx.probes) == 1
+    assert task.data['schedule_revision'] == ctx.module.settings()['revision']
 
 
 def test_receiver_disappearing_during_startup_delay_restarts_cycle(schedule_env):

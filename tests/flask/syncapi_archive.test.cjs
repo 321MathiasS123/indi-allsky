@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {formatStatus, mount, schedulePayload} = require('../../indi_allsky/flask/static/js/syncapi-on-demand.js');
+const {formatStatus, mount, schedulePayload} = require('../../indi_allsky/flask/static/js/syncapi-archive.js');
 
 function statusText(state) { return Object.values(formatStatus(state)).join('\n'); }
 

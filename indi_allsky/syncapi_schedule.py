@@ -1,4 +1,4 @@
-"""Optional availability scheduling for finite on-demand archive runs.
+"""Optional availability scheduling for finite archive runs.
 
 Only the main service calls tick(). Browser requests save settings/read status;
 the probe thread owns no Flask context, database session or upload queue.
@@ -17,7 +17,7 @@ from threading import Thread
 import time
 from uuid import uuid4
 
-from .syncapi import on_demand_enabled
+from .syncapi import archive_sync_enabled
 from . import syncapi_sync as sync
 
 
@@ -32,11 +32,11 @@ def configured_settings(config):
     if not isinstance(options, dict):
         raise ValueError('Invalid SyncAPI configuration.')
     return validate_settings(dict(
-        enabled=options.get('ON_DEMAND_SCHEDULE', False),
-        interval=options.get('ON_DEMAND_INTERVAL', 10),
-        delay=options.get('ON_DEMAND_DELAY', 3),
-        upload_limit=options.get('ON_DEMAND_UPLOAD_LIMIT', 0),
-        types=options.get('ON_DEMAND_TYPES', list(sync.DEFAULT_TYPES)),
+        enabled=options.get('ARCHIVE_SCHEDULE', False),
+        interval=options.get('ARCHIVE_INTERVAL', 10),
+        delay=options.get('ARCHIVE_DELAY', 0),
+        upload_limit=options.get('ARCHIVE_UPLOAD_LIMIT', 0),
+        types=options.get('ARCHIVE_TYPES', list(sync.DEFAULT_TYPES)),
     ))
 
 
@@ -89,11 +89,11 @@ def save_settings(config, payload):
         raise ValueError('Cancel the running synchronization before changing its schedule.')
     # Keep the preference when SyncAPI is off or in automatic-upload mode.
     # The scheduler already requires an applied Archive sync configuration.
-    if changed and options['enabled'] and on_demand_enabled(config):
+    if changed and options['enabled'] and archive_sync_enabled(config):
         sync.validate_destination(config)
     keys = dict(enabled='SCHEDULE', interval='INTERVAL', delay='DELAY',
                 upload_limit='UPLOAD_LIMIT', types='TYPES')
-    config.setdefault('SYNCAPI', {}).update({'ON_DEMAND_' + keys[key]: value for key, value in options.items()})
+    config.setdefault('SYNCAPI', {}).update({'ARCHIVE_' + keys[key]: value for key, value in options.items()})
     # Do not commit here: a failed config save must also leave the pause intact.
     if changed:
         sync.set_state(CONTROL_KEY, dict(revision=str(uuid4())), commit=False)
@@ -142,7 +142,7 @@ def probe_receiver(config, camera_id, camera_uuid):
         client.connect(hostname=options['BASEURL'].rstrip('/') + '/sync/v1/camera',
                        username=options['USERNAME'], apikey=options['APIKEY'],
                        cert_bypass=options.get('CERT_BYPASS', False))
-        # This signed, read-only lookup predates on-demand sync. A missing camera
+        # This signed, read-only lookup predates archive synchronization. A missing camera
         # also proves authentication/database readiness; the run registers it.
         client.put(local_file='camera', empty_file=True, lookup=True, availability_probe=True,
                    metadata={'id': camera_id or 0, 'camera_uuid': camera_uuid})
@@ -205,7 +205,7 @@ class SyncApiScheduler:
         latest = sync.models.IndiAllSkyDbConfigTable.query.order_by(sync.models.IndiAllSkyDbConfigTable.createDate.desc()).first()
         options = settings(latest.data if latest else config)
         applied = latest is not None and latest.id == config_id
-        enabled = options['enabled'] and on_demand_enabled(config) and applied
+        enabled = options['enabled'] and archive_sync_enabled(config) and applied
         signature = options['revision'], config_id, enabled
         if signature != self.signature:
             self.signature = signature

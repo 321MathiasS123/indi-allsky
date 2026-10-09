@@ -21,11 +21,11 @@ from sqlalchemy import and_, or_, func
 from . import constants
 from .flask import db
 from .flask import models
-from .syncapi import destination_fingerprint, on_demand_enabled
+from .syncapi import destination_fingerprint, archive_sync_enabled
 
 
 logger = logging.getLogger('indi_allsky')
-TASK_ACTION = 'on_demand_sync'
+TASK_ACTION = 'archive_sync'
 STATUS_KEY = 'SYNCAPI_RUN'
 CANCEL_KEY = 'SYNCAPI_CANCEL'
 DESTINATION_KEY = 'SYNCAPI_DESTINATION'
@@ -107,7 +107,7 @@ def validate_upload_limit(value):
 
 
 def request_sync(config, types, schedule_revision=None, upload_limit=None):
-    if not on_demand_enabled(config):
+    if not archive_sync_enabled(config):
         raise ValueError('Save and apply Archive sync mode before starting a synchronization.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
@@ -198,7 +198,7 @@ class SyncApiSyncWorker(Thread):
     retry_delays = (5, 15)
 
     def __init__(self, app, task_id):
-        super().__init__(name='SyncAPI-on-demand')
+        super().__init__(name='SyncAPI-archive')
         self.app = app
         self.task_id = task_id
         # None identifies a manual run, even while the availability schedule is
@@ -230,7 +230,7 @@ class SyncApiSyncWorker(Thread):
                 raise SyncStopped('Automatic synchronization paused or its settings changed.')
         latest = models.IndiAllSkyDbConfigTable.query.order_by(models.IndiAllSkyDbConfigTable.createDate.desc()).first()
         config = latest.data if latest else self.config
-        if not on_demand_enabled(config) or destination_fingerprint(config) != self.destination:
+        if not archive_sync_enabled(config) or destination_fingerprint(config) != self.destination:
             raise SyncStopped('SyncAPI configuration changed. Press Sync now after applying the desired settings.')
         db.session.commit()
 

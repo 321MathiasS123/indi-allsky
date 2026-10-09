@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from indi_allsky.syncapi import automatic_sync_enabled, destination_fingerprint
+from indi_allsky.syncapi import automatic_sync_enabled, archive_sync_enabled, destination_fingerprint
 
 
 def media_puts(env):
@@ -22,8 +22,11 @@ def retry_waits(sync_env, monkeypatch):
 
 def test_mode_defaults_and_fingerprint():
     assert automatic_sync_enabled({'SYNCAPI': {'ENABLE': True}})
-    assert not automatic_sync_enabled({'SYNCAPI': {'ENABLE': True, 'MODE': 'on_demand'}})
+    assert not automatic_sync_enabled({'SYNCAPI': {'ENABLE': True, 'MODE': 'archive'}})
     assert not automatic_sync_enabled({'SYNCAPI': {'ENABLE': False}})
+    assert archive_sync_enabled({'SYNCAPI': {'ENABLE': True, 'MODE': 'archive'}})
+    assert not archive_sync_enabled({'SYNCAPI': {'ENABLE': False, 'MODE': 'archive'}})
+    assert not archive_sync_enabled({'SYNCAPI': {'ENABLE': True}})
     first = {'SYNCAPI': {'BASEURL': 'https://NAS:443/indi-allsky/', 'USERNAME': 'user', 'APIKEY': 'one'}}
     second = {'SYNCAPI': {'BASEURL': 'https://nas/indi-allsky', 'USERNAME': 'user', 'APIKEY': 'two'}}
     assert destination_fingerprint(first) == destination_fingerprint(second)

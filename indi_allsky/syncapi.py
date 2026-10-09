@@ -9,9 +9,9 @@ def automatic_sync_enabled(config):
     return bool(sync.get('ENABLE')) and sync.get('MODE', 'automatic') == 'automatic'
 
 
-def on_demand_enabled(config):
+def archive_sync_enabled(config):
     sync = config.get('SYNCAPI', {})
-    return bool(sync.get('ENABLE')) and sync.get('MODE') == 'on_demand'
+    return bool(sync.get('ENABLE')) and sync.get('MODE') == 'archive'
 
 
 def destination_fingerprint(config):
