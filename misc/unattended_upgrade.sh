@@ -965,6 +965,18 @@ if [ "${GPIO_PYTHON_MODULES}" == "true" ]; then
 fi
 
 
+echo "**** Setting up indi-allsky service ****"
+TMP_ALLSKY=$(mktemp)
+sed \
+ -e "s|%ALLSKY_DIRECTORY%|$ALLSKY_DIRECTORY|g" \
+ -e "s|%ALLSKY_ETC%|$ALLSKY_ETC|g" \
+ "${ALLSKY_DIRECTORY}/service/indi-allsky.service" > "$TMP_ALLSKY"
+
+cp -f "$TMP_ALLSKY" "${HOME}/.config/systemd/user/${ALLSKY_SERVICE_NAME}.service"
+chmod 644 "${HOME}/.config/systemd/user/${ALLSKY_SERVICE_NAME}.service"
+[[ -f "$TMP_ALLSKY" ]] && rm -f "$TMP_ALLSKY"
+
+
 echo "**** Setting up upgrade-indi-allsky service ****"
 TMP_UPGRADE=$(mktemp)
 sed \

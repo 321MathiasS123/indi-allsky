@@ -346,6 +346,27 @@ def test_service_stop_signals_only_supervisor_before_bounded_cgroup_kill(unit):
     assert 'TimeoutStopSec=infinity' not in text
 
 
+def test_unattended_upgrade_refreshes_the_capture_unit_before_reload_and_start():
+    upgrade = (ROOT / 'misc/unattended_upgrade.sh').read_text()
+    setup = (ROOT / 'setup.sh').read_text()
+    start = upgrade.index('TMP_ALLSKY=$(mktemp)')
+    finish = upgrade.index('[[ -f "$TMP_ALLSKY" ]] && rm -f "$TMP_ALLSKY"', start)
+    block = upgrade[start:finish].replace('TMP_ALLSKY', 'TMP2')
+    setup_start = setup.index('TMP2=$(mktemp)', setup.index('Setting up indi-allsky service'))
+    setup_finish = setup.index('[[ -f "$TMP2" ]] && rm -f "$TMP2"', setup_start)
+    assert block == setup[setup_start:setup_finish]
+    reload_at = upgrade.index('systemctl --user daemon-reload', finish)
+    restart_at = upgrade.index('systemctl --user start "${ALLSKY_SERVICE_NAME}.service"', reload_at)
+    assert start < finish < reload_at < restart_at
+    template = (ROOT / 'service/indi-allsky.service').read_text()
+    rendered = template.replace('%ALLSKY_DIRECTORY%', '/opt/camera').replace('%ALLSKY_ETC%', '/etc/camera')
+    assert 'WorkingDirectory=/opt/camera' in rendered
+    assert 'EnvironmentFile=/etc/camera/indi-allsky.env' in rendered
+    assert 'ExecStart=/opt/camera/virtualenv/indi-allsky/bin/python3 allsky.py --log syslog run' in rendered
+    assert 'KillMode=mixed' in rendered
+    assert '%ALLSKY_' not in rendered
+
+
 def test_repeated_service_term_requests_a_graceful_drain_without_disarming_hard_abort():
     parent = capture_parent(())
     parent._shutdown = False
