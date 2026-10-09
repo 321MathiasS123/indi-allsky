@@ -28,6 +28,7 @@ def test_brightening_dawn_cannot_turn_stale_reductions_into_signal_increases(nam
     history = []
     for frame in range(120):
         exposure, gain = pending.pop(0)
+        instance._expUtils.EXPOSURE_CURRENT, instance._expUtils.GAIN_CURRENT = pending[-1] if pending else (exposure, gain)
         adu = 80 * 1.04 ** frame * signal(exposure, gain) / reference
         # Cross the clipping boundary after ADU already requires a reduction,
         # matching the ordering in the observed sunrise reversal.
