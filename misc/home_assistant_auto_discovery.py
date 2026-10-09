@@ -317,6 +317,21 @@ class HADiscovery(object):
 
         basic_sensor_list = [
             {
+                'component' : 'event',
+                'object_id' : 'indi_allsky_timelapse_complete',
+                'config' : {
+                    'name' : 'Timelapse completed',
+                    'unique_id' : 'indi_allsky_timelapse_complete_{0}'.format(self.unique_id_base),
+                    'state_topic' : '/'.join((indi_allsky_base_topic, 'timelapse/complete')),
+                    'event_types' : ['success', 'failed'],
+                    'icon' : 'mdi:movie-check',
+                    'device' : {
+                        'name' : self.device_name,
+                        'identifiers' : [self.device_name],
+                    },
+                },
+            },
+            {
                 'component' : 'image',
                 'object_id' : 'indi_allsky_latest',
                 'config' : {

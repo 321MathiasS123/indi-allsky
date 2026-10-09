@@ -43,6 +43,7 @@ def completion_payload(task, dependencies):
     )
     return {
         'event': 'timelapse_complete',
+        'event_type': 'success' if success else 'failed',
         'event_id': 'timelapse-{0}'.format(task.id),
         'camera_id': kwargs['camera_id'],
         'date': datetime.strptime(kwargs['timespec'], '%Y%m%d').date().isoformat(),
