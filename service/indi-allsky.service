@@ -9,6 +9,7 @@ WorkingDirectory=%ALLSKY_DIRECTORY%
 ExecStart=%ALLSKY_DIRECTORY%/virtualenv/indi-allsky/bin/python3 allsky.py --log syslog run
 ExecReload=/bin/kill -HUP $MAINPID
 ExecStop=/bin/kill -TERM $MAINPID
+KillMode=mixed
 RestartSec=5
 PrivateTmp=true
 UMask=0022

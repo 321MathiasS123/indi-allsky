@@ -273,7 +273,7 @@ class ImageWorker(Process):
             interrupted = read_inflight(self.period_inflight)
             if interrupted:
                 self._miscDb.setState(failure_key(interrupted), 'Image worker stopped before saving its frame')
-                logger.error('Capture period %s is incomplete after image worker failure; end jobs will not run', interrupted)
+                logger.error('Capture period %s is incomplete after image worker failure; end jobs will use available images', interrupted)
                 set_inflight(self.period_inflight, None)
 
         while True:
@@ -333,7 +333,7 @@ class ImageWorker(Process):
     def _checkCaptureSequence(self, item, marker=False):
         for identifier in self.capture_sequence.check(item, marker=marker):
             self._miscDb.setState(failure_key(identifier), 'Captured frame missing or out of order')
-            logger.error('Capture period %s has an incomplete or out-of-order frame stream; end jobs will not run', identifier)
+            logger.error('Capture period %s has an incomplete or out-of-order frame stream; end jobs will use available images', identifier)
 
 
     def _releasePeriodEnd(self, marker):
@@ -347,12 +347,7 @@ class ImageWorker(Process):
             except NoResultFound:
                 pass
         if failed:
-            logger.error('Capture period %s is incomplete; suppressing end-of-period jobs', marker['period_id'])
-            for item in marker['tasks']:
-                task = IndiAllSkyDbTaskQueueTable.query.filter_by(id=item['task_id']).one()
-                if task.state == TaskQueueState.QUEUED:
-                    task.setFailed('Capture period incomplete after image processing failure')
-            return
+            logger.warning('Capture period %s is incomplete; generating end-of-period outputs from available images', marker['period_id'])
         # Reaching this FIFO item means the preceding processImage calls have
         # completed their local file writes and database commits.
         self.image_processor.realtimeKeogramDataSave()
