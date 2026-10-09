@@ -336,6 +336,7 @@ class IndiAllSky_Exposure_Base(object):
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
         reducing = next_exposure < current_exposure
+        scale = next_exposure / current_exposure if highlight and reducing else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
 
         if highlight and reducing and self._highlight_request_pending(current_exposure, current_gain):
@@ -345,15 +346,38 @@ class IndiAllSky_Exposure_Base(object):
             # Compare achieved signal using the selected mode's gain model;
             # discrete ISO may trade lower gain for a longer exposure. Fixed
             # and legacy modes do not exchange exposure for gain on this path.
-            if hasattr(self, 'gain2dB'):
-                gain_change = self.gain2dB(next_gain) - self.gain2dB(pending_gain)
-                weaker = math.log(next_exposure / pending_exposure) + gain_change * math.log(10) / 20 > 1e-9
-            else:
-                weaker = next_exposure > pending_exposure + 0.0000005 or next_gain > pending_gain + 0.0005
+            change = self._highlight_signal_change(next_exposure, next_gain, pending_exposure, pending_gain)
+            weaker = (change > 1e-9 if hasattr(self, 'gain2dB') else
+                      next_exposure > pending_exposure + 0.0000005 or next_gain > pending_gain + 0.0005)
             if weaker:
                 logger.info('Highlight reduction held: keeping stronger pending %.6fs @ gain %.3f; source %.6fs @ gain %.3f',
                             pending_exposure, pending_gain, current_exposure, current_gain)
                 return
+
+            # With a later capture already in flight, two interleaved control
+            # tracks can alternate large/small cuts. Limit the step from that
+            # command to half the measured logarithmic correction. Approach
+            # the original absolute target; never compound a cut on pending
+            # settings or predict how clipped patch areas would scale.
+            previous_change = self._highlight_signal_change(pending_exposure, pending_gain, current_exposure, current_gain)
+            if (change is not None and previous_change is not None and previous_change < -1e-9
+                    and 0 < scale < 1 and change < math.log(scale) / 2
+                    and math.isclose(self._expUtils.EXPOSURE_CURRENT, pending_exposure,
+                                     rel_tol=0, abs_tol=0.0000005)
+                    and math.isclose(self.effective_gain(self._expUtils.GAIN_CURRENT), pending_gain,
+                                     rel_tol=0, abs_tol=0.0005)):
+                limited_exposure, limited_gain, _, _ = self._calculate_exposure(
+                    pending_exposure, pending_gain, pending_exposure * math.sqrt(scale), highlight=True)
+                limited_change = self._highlight_signal_change(
+                    limited_exposure, limited_gain, pending_exposure, pending_gain)
+                # Rounding, gain floors and discrete ISO can make a smaller
+                # step unrepresentable. Retain the original safe request then.
+                if limited_change is not None and change < limited_change < 0:
+                    next_exposure, next_gain = limited_exposure, limited_gain
+                    exposure_delta = next_exposure - current_exposure
+                    gain_delta = next_gain - current_gain
+                    logger.info('Highlight delayed reduction slewed from pending %.6fs @ gain %.3f',
+                                pending_exposure, pending_gain)
 
         # Binning
         if self.night_av[constants.NIGHT_NIGHT]:
@@ -392,6 +416,16 @@ class IndiAllSky_Exposure_Base(object):
         self._expUtils.GAIN_DELTA = gain_delta
 
         self._expUtils.BINNING_NEXT = next_binning
+
+
+    def _highlight_signal_change(self, exposure, gain, reference_exposure, reference_gain):
+        if hasattr(self, 'gain2dB'):
+            gain_change = (self.gain2dB(gain) - self.gain2dB(reference_gain)) * math.log(10) / 20
+        elif gain == reference_gain:
+            gain_change = 0.0
+        else:
+            return None  # Legacy gain steps have no declared signal units.
+        return math.log(exposure / reference_exposure) + gain_change
 
 
 
