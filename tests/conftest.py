@@ -53,6 +53,7 @@ def sync_env(tmp_path, monkeypatch, request):
     monkeypatch.setitem(sys.modules, 'indi_allsky.config', config_module)
     transfers = package('indi_allsky.filetransfer', root / 'indi_allsky/filetransfer')
     exceptions = load('indi_allsky.filetransfer.exceptions', 'indi_allsky/filetransfer/exceptions.py')
+    transfers.exceptions = exceptions
     for name in ('ConnectionFailure', 'TransferFailure', 'AuthenticationFailure', 'CertificateValidationFailure', 'PermissionFailure'):
         setattr(transfers, name, getattr(exceptions, name))
     load('indi_allsky.filetransfer.generic', 'indi_allsky/filetransfer/generic.py')
