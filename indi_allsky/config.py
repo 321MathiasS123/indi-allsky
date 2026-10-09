@@ -601,6 +601,12 @@ class IndiAllSkyConfigBase(object):
         },
         "SYNCAPI" : {
             "ENABLE"                 : False,
+            "MODE"                   : "automatic",
+            "ON_DEMAND_SCHEDULE"     : False,
+            "ON_DEMAND_INTERVAL"     : 10,
+            "ON_DEMAND_DELAY"        : 3,
+            "ON_DEMAND_UPLOAD_LIMIT" : 0,
+            "ON_DEMAND_TYPES"        : ["image", "panoramaimage", "video", "minivideo", "keogram", "startrail", "startrailvideo", "panoramavideo"],
             "BASEURL"                : "https://example.com/indi-allsky",
             "USERNAME"               : "",
             "APIKEY"                 : "",
@@ -1246,6 +1252,13 @@ class IndiAllSkyConfig(IndiAllSkyConfigBase):
 
 
     def _validateConfig(self):
+        # Also validate restores/imports, which do not pass through the web form.
+        from .syncapi_schedule import configured_settings
+        try:
+            configured_settings(self.config)
+        except ValueError as exc:
+            raise ConfigSaveException(str(exc)) from exc
+
         skip_keys = [
             'INDI_CONFIG_DEFAULTS',
             'INDI_CONFIG_DAY',
