@@ -2,11 +2,6 @@
     'use strict';
 
     function formatStatus(state) {
-        const scheduleParts = [];
-        if (state.schedule) {
-            if (state.schedule.message) scheduleParts.push(state.schedule.message);
-            if (state.schedule.next_action) scheduleParts.push('Next check: ' + state.schedule.next_action.replace('T', ' ') + '.');
-        }
         const scheduled = !state.active && state.enabled && state.schedule && state.schedule.settings && state.schedule.settings.enabled;
         let message = state.message || state.state || 'Idle';
         if (scheduled && ['cancelled', 'interrupted', 'failed', 'complete'].includes(state.state)) {
@@ -15,26 +10,36 @@
             message = 'Previous run: ' + message.replace(/ Press Sync now[^.]*\./g, '')
                 .replace(' The schedule will check the receiver again.', '');
         }
-        const parts = scheduled ? scheduleParts.concat(message) : [message];
-        if (!state.enabled) parts.push('Enable Sync API, select On demand, then save and apply.');
-        if (!scheduled) parts.push(...scheduleParts);
-        if (state.cutoff) parts.push(`Includes completed files through ${state.cutoff.replace('T', ' ').replace(/\.\d+/, '')}.`);
+        if (state.active && typeof state.scheduled === 'boolean') {
+            message = (state.scheduled ? 'Scheduled run — ' : 'Manual run — ') + message;
+        }
+        // Every state uses the same rows. Clear unused values instead of adding
+        // or removing lines as uploads, acknowledgements and errors arrive.
+        const rows = {
+            schedule: state.schedule ? state.schedule.message || '' : '',
+            next: state.schedule && state.schedule.next_action ? state.schedule.next_action.replace('T', ' ') : '',
+            run: message,
+            cutoff: state.cutoff ? state.cutoff.replace('T', ' ').replace(/\.\d+/, '') : '',
+            items: '', transferred: '', speed: '', file: '', progress: '', notice: '',
+        };
         if (typeof state.completed === 'number') {
-            parts.push(`${state.completed} of ${state.total} items completed; ${state.skipped} skipped; ${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent.`);
+            rows.items = `${state.completed} of ${state.total} items completed; ${state.skipped} skipped`;
+            rows.transferred = `${state.files} files, ${(state.bytes / 1048576).toFixed(1)} MiB sent`;
         }
         if (state.active && state.state === 'running') {
-            parts.push(state.rates ? `Recent speed: ${(state.rates.bytes / 1000000).toFixed(2)} MB/s · ${state.rates.items.toFixed(2)} items/s · ${state.rates.files.toFixed(2)} files/s.`
-                : 'Speed: waiting for a progress update.');
+            rows.speed = state.rates ? `${(state.rates.bytes / 1000000).toFixed(2)} MB/s · ${state.rates.items.toFixed(2)} items/s · ${state.rates.files.toFixed(2)} files/s`
+                : 'Waiting for a progress update';
         }
-        // File details appear and disappear; keep them below the stable summary.
         if (state.active && state.upload && state.upload.total > 0) {
             const upload = state.upload;
             const percent = Math.min(100, Math.floor(upload.bytes / upload.total * 100));
-            parts.push(`Uploading ${upload.name}: ${(upload.bytes / 1048576).toFixed(1)} of ${(upload.total / 1048576).toFixed(1)} MiB (${percent}%).`);
-            if (upload.bytes >= upload.total) parts.push('Waiting for the receiver to acknowledge this file.');
+            rows.file = upload.name;
+            rows.progress = `${(upload.bytes / 1048576).toFixed(1)} of ${(upload.total / 1048576).toFixed(1)} MiB (${percent}%)`;
+            if (upload.bytes >= upload.total) rows.notice = 'Waiting for the receiver to acknowledge this file.';
         }
-        if (state.cancel_requested) parts.push('Cancellation requested; waiting for the upload or current network operation to stop.');
-        return parts.join('\n');
+        if (state.cancel_requested) rows.notice = 'Cancellation requested; waiting for the upload or current network operation to stop.';
+        if (!state.enabled) rows.notice = 'Enable Sync API, select On demand, then save and apply.';
+        return rows;
     }
 
     function selectedTypes(document) {
@@ -57,6 +62,7 @@
         const cancel = document.getElementById('syncapi-run-cancel');
         const choices = document.getElementById('syncapi-run-types');
         const output = document.getElementById('syncapi-run-status');
+        const statusFields = output.querySelectorAll('[data-sync-status]');
         const error = document.getElementById('syncapi-run-error');
         const controls = document.getElementById('syncapi-run-schedule-controls');
         const enabled = document.getElementById('syncapi-run-schedule-enabled');
@@ -77,8 +83,14 @@
             cancel.disabled = commandPending || !value.active || value.cancel_requested;
             choices.disabled = commandPending || value.active;
             controls.disabled = commandPending || value.active;
-            output.textContent = formatStatus(value);
+            const rows = formatStatus(value);
+            for (const field of statusFields) {
+                const content = rows[field.dataset.syncStatus];
+                if (field.textContent !== content) field.textContent = content;
+                field.title = content;
+            }
             error.textContent = commandError || pollError;
+            error.title = error.textContent;
         }
 
         async function request(payload) {
@@ -135,7 +147,7 @@
                 if (revision === requestRevision) {
                     state = value;
                     pollError = '';
-                    if (payload && payload.action === 'cancel' && value.schedule) {
+                    if (payload && payload.action === 'cancel' && value.schedule && value.scheduled && value.task_id === payload.task_id) {
                         enabled.checked = value.schedule.settings.enabled;
                     }
                 }

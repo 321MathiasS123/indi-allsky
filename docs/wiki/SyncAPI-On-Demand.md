@@ -6,7 +6,7 @@ Update **both the sending Pi and the receiver** to a version containing this fea
 
 In the Pi's configuration, open **SyncAPI**, enable Sync API, and choose **On demand**. Keep the existing working URL, account, API key, and certificate settings. Save the configuration and wait for the service reload; changing the synchronization mode requests a reload automatically.
 
-When the NAS is available, select the desired media types in **On-demand synchronization** and press **Sync now**. The run happens in the background and continues after the page is closed. Images, panoramas, timelapses, mini timelapses, keograms, star trails and their videos are selected by default. RAW and FITS files are optional. Camera metadata, associated thumbnails, custom metadata and the long-term keogram samples attached to images are included.
+When the NAS is available, select the desired media types in **On-demand archive sync** and press **Sync now**. The run happens in the background and continues after the page is closed. Images, panoramas, timelapses, mini timelapses, keograms, star trails and their videos are selected by default. RAW and FITS files are optional. Camera metadata, associated thumbnails, custom metadata and the long-term keogram samples attached to images are included.
 
 The run covers retained local-camera data, including images older than thirty days. Completed files from the last ten minutes are deferred. A fixed upper bound prevents ongoing capture from extending the run indefinitely. Hidden cameras and unfinished generated media are excluded. Automatic image sampling, waiting for S3, and empty-file uploads do not apply to the manual archive operation.
 
@@ -17,6 +17,8 @@ Pending media are transferred oldest first by creation time across all selected 
 Large files show their current upload progress approximately every five seconds. These bytes have been read into the outgoing request; the completed file/byte totals increase only after the receiver acknowledges the file. The current-file counter resets on retry. Cancel is checked during uploads as well as between files; a blocked network operation still has to finish or time out.
 
 The status also shows recent transfer speed in MB/s (1 MB = 1,000,000 bytes), completed items/s and acknowledged uploaded files/s, calculated between progress updates. Transfer speed includes the current file and retransmitted media; completed totals do not count retries twice. Items recovered through a successful lookup can complete without uploading files. Rates include time spent on lookups and retry waits, disappear when a run ends, and show a waiting message if progress has not updated for 15 seconds.
+
+Status labels stay in fixed rows, with empty values when a detail does not apply. Schedule and run information appear first; current-file progress, notices and errors appear last. Long values scroll horizontally within their row without changing the panel height.
 
 The existing receiver authentication window allows about 20 minutes for an upload. If the selected cap alone would take longer for a file, the run stops with an explicit instruction to increase the speed limit, before uploading it. This preserves authentication checks and existing transfer records. A slower-than-expected connection can still exceed that window.
 
@@ -34,7 +36,7 @@ If the receiver is unavailable, the Pi quietly waits another check interval. If 
 
 The schedule continues with the browser closed and after a Pi/service restart. A restart begins a fresh check interval, using existing transfer checkpoints when a new run starts. Only one run is admitted at a time; a manual run suspends availability checks. The most recently saved content selection is used for scheduled runs. Unsaved checkbox edits only affect **Sync now**.
 
-**Cancel also pauses the schedule.** To resume, enable it and use **Save Configuration**. Authentication, certificate, unexpected response and non-connection transfer errors also pause it, with one warning instead of repeatedly trying the same broken configuration. Correct the problem, then enable and save again. A single status area displays transfer progress, the schedule's current phase, next action time and pause reason. Switching away from On demand mode or disabling Sync API prevents scheduled checks and uploads.
+**Cancel stops the current run.** Cancelling a manual run leaves the schedule unchanged; an enabled schedule resumes its check interval after the run stops. Cancelling a scheduled run also disables the schedule. To resume it, enable **Automatically sync when available** and use **Save Configuration**. Authentication, certificate, unexpected response and non-connection transfer errors also pause it, with one warning instead of repeatedly trying the same broken configuration. Correct the problem, then enable and save again. A single status area displays transfer progress, the schedule's current phase, next action time and pause reason. Switching away from On demand mode or disabling Sync API prevents scheduled checks and uploads.
 
 This scheduler is part of the existing on-demand worker; it adds no Home Assistant control API or reboot/recovery service.
 
