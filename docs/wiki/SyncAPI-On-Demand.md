@@ -45,3 +45,9 @@ The panel reports progress and the last outcome using the Pi's database. It neve
 Those records belong to one destination. Archive sync mode records the configured URL/account and rejects silent reuse after a destination change; restore the original URL/account to continue. API-key rotation is allowed. Moving to a different server requires a separate, deliberate migration of the transfer records.
 
 This is an incremental media archive, not a filesystem mirror or a backup of the Pi's configuration. It does not recheck previously acknowledged files for manual deletion/corruption on the NAS, detect a replacement receiver database at the same URL, or track later edits to acknowledged media. Removing expired files on the Pi does not delete their NAS copies.
+
+## Maintenance boundary
+
+The feature set is frozen: retain Live sync and Archive sync, manual and availability-triggered runs, content selection, speed limits, incremental recovery, integrity checks and the existing status controls. Maintenance should preserve these capabilities without adding new modes or transfer policies.
+
+Keep archive policy, scheduling and transfer orchestration in the separate `syncapi` modules and browser controls in `syncapi-on-demand.js`. Changes to existing capture and upload-queue code should be limited to mode gates; service integration should only admit, stop and report the archive worker. Receiver lookups and the fixes for multipart integrity, interrupted uploads and mini-timelapse identity are necessary for reliable archive transfers. Keep unrelated transfer protocols, capture processing and database models unchanged. The configuration values `automatic` and `on_demand` remain stable even though the displayed names are Live sync and Archive sync.

@@ -2,9 +2,25 @@
 
 from copy import deepcopy
 from datetime import datetime, timedelta
+import logging
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.mark.parametrize('options,level', [({}, logging.INFO), ({'quiet': True}, logging.DEBUG)])
+def test_archive_logging_is_opt_in_without_changing_live_upload_logs(sync_env, monkeypatch, caplog, options, level):
+    env = sync_env
+    client = env.transport.requests_syncapi_v1(env.config, **options)
+    client.connect(hostname='https://nas/indi-allsky/sync/v1/camera', username='tester', apikey='test-api-key')
+    monkeypatch.setattr(env.transport.requests, 'put', lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, text='{"id": 1}'))
+    with caplog.at_level(logging.DEBUG, logger='indi_allsky'):
+        assert client.put(local_file='camera', metadata={}, empty_file=True) == {'id': 1}
+    transfer_logs = [record for record in caplog.records
+                     if record.getMessage().startswith(('Uploading ', 'File transferred '))]
+    assert len(transfer_logs) == 2
+    assert all(record.levelno == level for record in transfer_logs)
 
 
 def upload_worker(env, monkeypatch, limit=256):

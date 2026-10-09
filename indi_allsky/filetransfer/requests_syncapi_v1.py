@@ -37,6 +37,7 @@ class requests_syncapi_v1(GenericFileTransfer):
         self._port = 443
         self.url = None
         self.apikey = None
+        self.quiet = kwargs.get('quiet', False)
 
 
     def connect(self, *args, **kwargs):
@@ -72,7 +73,11 @@ class requests_syncapi_v1(GenericFileTransfer):
 
 
     def put(self, *args, **kwargs):
-        super(requests_syncapi_v1, self).put(*args, **kwargs)
+        # Quiet archive logging is specific to SyncAPI, not other protocols.
+        if self.quiet and not self.delete:
+            logger.debug('Uploading %s', kwargs['local_file'])
+        else:
+            super(requests_syncapi_v1, self).put(*args, **kwargs)
 
         metadata = kwargs['metadata']
         local_file = kwargs['local_file']
