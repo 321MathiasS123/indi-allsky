@@ -153,9 +153,12 @@ def test_real_capture_job_builder_defers_all_jobs_until_last_callback(night, ext
     for method, label in [('_expireData', 'expire'), ('_generateNightKeogram', 'night-keogram'),
                           ('_generateNightTimelapse', 'night-video'), ('_uploadAllskyEndOfNight', 'end-night'),
                           ('_generateDayKeogram', 'day-keogram'), ('_generateDayTimelapse', 'day-video')]:
-        def create(*args, _label=label, task_ids):
+        def create(*args, _label=label, task_ids, completion_task_ids=None):
             calls.append(_label)
+            if _label.endswith('video'):
+                assert completion_task_ids == [len(calls) - 1]
             task_ids.append({'task_id': len(calls)})
+            return len(calls)
         setattr(worker, method, create)
     worker._queuePeriodEnd(DAY, night, expire_twice=extra_expire)
     assert calls == expected

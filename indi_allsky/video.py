@@ -24,6 +24,7 @@ from . import asi676mc_calibration
 from . import customKeogram
 
 from .timelapse import TimelapseGenerator
+from .timelapse_completion import record_media, completion_payload
 from .panorama import buildPanoramaCropFilter
 from .panorama import buildPanoramaPanFilter
 from .panorama import buildPanoramaTimedPanFilter
@@ -259,6 +260,22 @@ class VideoWorker(Process):
 
         # perform the action
         action_method(task, **kwargs)
+
+        if 'completion_task_ids' in task.data and self.config.get('MQTTPUBLISH', {}).get('ENABLE'):
+            try:
+                task_ids = task.data['completion_task_ids'] + [task.id]
+                dependencies = {
+                    task_id: db.session.get(IndiAllSkyDbTaskQueueTable, task_id)
+                    if task_id is not None else None
+                    for task_id in task_ids
+                }
+                self._miscUpload.mqtt_publish_event(
+                    'timelapse/complete', completion_payload(task, dependencies),
+                )
+            except Exception:
+                # Notification failure must not interrupt capture or later batches.
+                db.session.rollback()
+                logger.exception('Unable to queue timelapse completion notification')
 
 
     def _loadAsi676mcCalibrationDatabase(self, source_details, progress_callback):
@@ -780,6 +797,7 @@ class VideoWorker(Process):
             return
 
 
+        record_media(task, {'timelapse': (video_entry, video_file)})
         task.setSuccess('Generated timelapse: {0:s}'.format(str(video_file)))
 
 
@@ -1550,6 +1568,7 @@ class VideoWorker(Process):
             return
 
 
+        record_media(task, {'panorama': (video_entry, video_file)})
         task.setSuccess('Generated timelapse: {0:s}'.format(str(video_file)))
 
         ### Upload ###
@@ -2247,6 +2266,11 @@ class VideoWorker(Process):
                 pass
 
 
+        record_media(task, {
+            'keogram': (keogram_entry, keogram_file),
+            'startrail': (startrail_entry, startrail_file),
+            'startrail_timelapse': (startrail_video_entry, startrail_video_file),
+        })
         task.setSuccess('Generated keogram and/or star trail')
 
 

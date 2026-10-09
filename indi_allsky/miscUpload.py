@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+import json
 import logging
 
 from . import constants
@@ -922,6 +923,24 @@ class miscUpload(object):
         db.session.commit()
 
         self.upload_q.put({'task_id' : upload_task.id})
+
+
+    def mqtt_publish_event(self, topic, payload):
+        if not self.config.get('MQTTPUBLISH', {}).get('ENABLE'):
+            return
+
+        task = IndiAllSkyDbTaskQueueTable(
+            queue=TaskQueueQueue.UPLOAD,
+            state=TaskQueueState.QUEUED,
+            data={
+                'action': constants.TRANSFER_MQTT,
+                'metadata': {topic: json.dumps(payload)},
+                'mqtt_event': True,
+            },
+        )
+        db.session.add(task)
+        db.session.commit()
+        self.upload_q.put({'task_id': task.id})
 
 
     def mqtt_publish_image(self, upload_filename, image_topic, mq_data):

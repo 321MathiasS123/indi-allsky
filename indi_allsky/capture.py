@@ -2188,19 +2188,19 @@ class CaptureWorker(Process):
         self._expireData(self.camera_id, task_ids=tasks)
         timespec = day_date.strftime('%Y%m%d')
         if night:
-            self._generateNightKeogram(timespec, self.camera_id, task_ids=tasks)
-            self._generateNightTimelapse(timespec, self.camera_id, task_ids=tasks)
+            keogram_task_id = self._generateNightKeogram(timespec, self.camera_id, task_ids=tasks)
+            self._generateNightTimelapse(timespec, self.camera_id, task_ids=tasks, completion_task_ids=[keogram_task_id])
             self._uploadAllskyEndOfNight(self.camera_id, task_ids=tasks)
         else:
-            self._generateDayKeogram(timespec, self.camera_id, task_ids=tasks)
-            self._generateDayTimelapse(timespec, self.camera_id, task_ids=tasks)
+            keogram_task_id = self._generateDayKeogram(timespec, self.camera_id, task_ids=tasks)
+            self._generateDayTimelapse(timespec, self.camera_id, task_ids=tasks, completion_task_ids=[keogram_task_id])
         if expire_twice:
             self._expireData(self.camera_id, task_ids=tasks)
         self._period_queue.end_period(self.camera_id, day_date.isoformat(), night, tasks)
         self.generate_timelapse_flag = False
 
 
-    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
+    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None, completion_task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2226,6 +2226,9 @@ class CaptureWorker(Process):
             }
         }
 
+        if completion_task_ids is not None and not self.config.get('FISH2PANO', {}).get('ENABLE'):
+            video_jobdata['completion_task_ids'] = completion_task_ids
+
         video_task = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO,
             state=task_state,
@@ -2247,6 +2250,9 @@ class CaptureWorker(Process):
                 },
             }
 
+            if completion_task_ids is not None:
+                panorama_video_jobdata['completion_task_ids'] = completion_task_ids + [video_task.id]
+
             panorama_video_task = IndiAllSkyDbTaskQueueTable(
                 queue=TaskQueueQueue.VIDEO,
                 state=task_state,
@@ -2258,7 +2264,7 @@ class CaptureWorker(Process):
             self._queueVideoTask(panorama_video_task.id, task_ids)
 
 
-    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
+    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None, completion_task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2280,6 +2286,9 @@ class CaptureWorker(Process):
             },
         }
 
+        if completion_task_ids is not None and not self.config.get('FISH2PANO', {}).get('ENABLE'):
+            video_jobdata['completion_task_ids'] = completion_task_ids
+
         video_task = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO,
             state=task_state,
@@ -2300,6 +2309,9 @@ class CaptureWorker(Process):
                     'camera_id'   : camera.id,
                 },
             }
+
+            if completion_task_ids is not None:
+                panorama_video_jobdata['completion_task_ids'] = completion_task_ids + [video_task.id]
 
             panorama_video_task = IndiAllSkyDbTaskQueueTable(
                 queue=TaskQueueQueue.VIDEO,
@@ -2343,6 +2355,7 @@ class CaptureWorker(Process):
         db.session.commit()
 
         self._queueVideoTask(task.id, task_ids)
+        return task.id
 
 
     def _generateDayKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, task_ids=None):
@@ -2380,6 +2393,7 @@ class CaptureWorker(Process):
         db.session.commit()
 
         self._queueVideoTask(task.id, task_ids)
+        return task.id
 
 
     def shoot(self, exposure, gain, binning, sync=True, timeout=None, sqm_exposure=False):

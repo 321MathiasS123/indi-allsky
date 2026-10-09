@@ -81,7 +81,7 @@ class paho_mqtt(GenericFileTransfer):
         image_topic = kwargs['image_topic']
         publish_image = kwargs['publish_image']
 
-        local_file_p = Path(local_file)
+        local_file_p = Path(local_file) if local_file is not None else None
 
 
         message_list = list()
@@ -102,7 +102,7 @@ class paho_mqtt(GenericFileTransfer):
                 'topic'    : '/'.join((base_topic, k)),
                 'payload'  : v,
                 'qos'      : qos,
-                'retain'   : True,
+                'retain'   : kwargs.get('retain', True),
             })
 
         # message list can be empty when panorama publish happens and publish_image is off
@@ -141,7 +141,7 @@ class paho_mqtt(GenericFileTransfer):
             raise TransferFailure(str(e)) from e
 
         upload_elapsed_s = time.time() - start
-        local_file_size = local_file_p.stat().st_size
+        local_file_size = local_file_p.stat().st_size if local_file_p else 0
         logger.info('File transferred in %0.4f s (%0.2f kB/s)', upload_elapsed_s, local_file_size / upload_elapsed_s / 1024)
 
 
