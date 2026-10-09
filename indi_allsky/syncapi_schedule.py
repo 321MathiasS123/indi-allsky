@@ -2,6 +2,8 @@
 
 Only the main service calls tick(). Browser requests save settings/read status;
 the probe thread owns no Flask context, database session or upload queue.
+Schedule preferences are local database state, not versioned configuration.
+Revision tokens invalidate stale probes/jobs when preferences change or pause.
 """
 
 from copy import deepcopy

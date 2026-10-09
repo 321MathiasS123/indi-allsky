@@ -144,14 +144,18 @@ def test_receiver_disappearing_during_startup_delay_restarts_cycle(schedule_env)
     assert len(ctx.probes) == 3
 
 
-def test_connection_failure_rearms_but_authentication_failure_pauses(schedule_env, monkeypatch):
+@pytest.mark.parametrize('failure', ['connection', 'http'])
+def test_connection_failure_rearms_but_authentication_failure_pauses(schedule_env, monkeypatch, failure):
     ctx = schedule_env
     ctx.env.asset()
     ctx.enable(delay=0)
     task = ctx.queue_run()
     monkeypatch.setattr(ctx.env.sync.SyncApiSyncWorker, 'retry_delays', ())
-    monkeypatch.setattr(ctx.env.transport.requests, 'put', lambda *a, **k: (_ for _ in ()).throw(
-        ctx.env.transport.requests.exceptions.ConnectionError('offline')))
+    def unavailable(*args, **kwargs):
+        if failure == 'http':
+            return SimpleNamespace(status_code=503)
+        raise ctx.env.transport.requests.exceptions.ConnectionError('offline')
+    monkeypatch.setattr(ctx.env.transport.requests, 'put', unavailable)
     ctx.env.sync.SyncApiSyncWorker(ctx.env.app, task.id).execute()
     assert ctx.env.sync.status()['reason'] == 'connection'
     assert ctx.tick()['settings']['enabled']

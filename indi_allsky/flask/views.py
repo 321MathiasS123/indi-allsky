@@ -4568,6 +4568,8 @@ class AjaxSyncApiRunView(BaseView):
                     if str(self._miscDb.getState('CONFIG_ID')) != str(self.indi_allsky_config_id):
                         raise ValueError('Apply the saved configuration and wait for the service reload before syncing.')
                     if payload['action'] == 'schedule':
+                        # Retain the action for older open pages. Current pages
+                        # save config and schedule together in AjaxConfigView.
                         save_settings(self.indi_allsky_config, payload)
                     else:
                         request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES),
@@ -4581,6 +4583,8 @@ class AjaxSyncApiRunView(BaseView):
         result = status()
         result['enabled'] = on_demand_enabled(self.indi_allsky_config)
         result['schedule'] = schedule_status()
+        # Older panels build their choices from this response. Current panels
+        # render them in the template so polling preserves unsaved edits.
         selected = result['schedule']['settings']['types']
         result['types'] = [{'id': key, 'label': value[2], 'selected': key in selected} for key, value in MEDIA.items()]
         return jsonify(result)

@@ -6,7 +6,7 @@ function statusText(state) { return Object.values(formatStatus(state)).join('\n'
 
 function harness() {
     function element() {
-        return {children: [], handlers: {}, appendChild(child) { this.children.push(child); },
+        return {children: [], handlers: {},
             addEventListener(event, handler) { this.handlers[event] = handler; },
             querySelectorAll(selector) { if (selector === '[data-sync-status]') return this.children; return this.children.flatMap(label => label.children || []).filter(node => node.type === 'checkbox' && (selector === 'input' || node.checked)); }};
     }
@@ -23,8 +23,7 @@ function harness() {
     nodes['upload-limit'].value = '0';
     const document = {handlers: {}, addEventListener(event, handler) { this.handlers[event] = handler; },
         dispatchEvent(event) { return this.handlers[event.type](event); },
-        getElementById: id => nodes[id.replace('syncapi-run-', '')],
-        createElement: element, createTextNode: text => ({textContent: text})};
+        getElementById: id => nodes[id.replace('syncapi-run-', '')]};
     const panel = {dataset: {url: '/indi-allsky/ajax/syncapi/run', csrf: 'token'}};
     return {nodes, document, panel};
 }

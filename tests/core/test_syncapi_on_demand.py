@@ -495,3 +495,76 @@ def test_mysql_timestamp_precision(sync_env, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(env.db.engine.dialect, 'name', 'mysql')
         assert view.receiverDate(value).microsecond == 0
+
+
+@pytest.mark.parametrize('status_code', [429, 500, 502, 503, 504])
+@pytest.mark.parametrize('stage', ['camera', 'lookup', 'upload'])
+def test_temporary_http_failure_recovers_without_duplicate_uploads(sync_env, monkeypatch, caplog, retry_waits, status_code, stage):
+    from types import SimpleNamespace
+    env = sync_env
+    entry = env.asset()
+    method = 'get' if stage == 'lookup' else 'put'
+    original = getattr(env.transport.requests, method)
+    attempts = []
+
+    def unavailable(url, **kwargs):
+        if url.endswith('/camera' if stage == 'camera' else '/image') and not attempts:
+            attempts.append(1)
+            # A proxy may lose the upload response after the receiver committed.
+            # The retry must recover its ID through a lookup, without resending.
+            if stage == 'upload':
+                original(url, **kwargs)
+            return SimpleNamespace(status_code=status_code, json=lambda: None)
+        return original(url, **kwargs)
+
+    monkeypatch.setattr(env.transport.requests, method, unavailable)
+    with caplog.at_level(logging.WARNING, logger='indi_allsky'):
+        result = env.run()
+    assert result['state'] == 'complete', result
+    assert result['completed'] == 1 and entry.sync_id
+    assert len(media_puts(env)) == 1 and retry_waits == [5]
+    assert not [record for record in caplog.records if record.name == 'indi_allsky']
+
+
+def test_cancel_during_source_hash_stops_before_reading_the_whole_file(sync_env, monkeypatch):
+    from contextlib import contextmanager
+    from pathlib import Path
+    from types import SimpleNamespace
+    env = sync_env
+    entry = env.asset()
+    path = entry.getFilesystemPath()
+    path.write_bytes(b'x' * (3 * 1024 * 1024))
+    task = env.sync.request_sync(env.config, ['image'])
+    worker = env.sync.SyncApiSyncWorker(env.app, task.id)
+    clock = SimpleNamespace(now=100)
+    monkeypatch.setattr(env.sync, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    original = Path.open
+    reads = []
+
+    @contextmanager
+    def slow_source(source, *args, **kwargs):
+        with original(source, *args, **kwargs) as stream:
+            def read(size):
+                reads.append(size)
+                clock.now += 6
+                env.sync.cancel_sync(task.id)
+                return stream.read(size)
+            yield SimpleNamespace(read=read) if source == path else stream
+
+    monkeypatch.setattr(Path, 'open', slow_source)
+    worker.execute()
+    assert env.sync.status()['state'] == 'cancelled'
+    assert reads == [1024 * 1024]
+    assert entry.sync_id is None and media_puts(env) == []
+
+
+@pytest.mark.parametrize('quiet', [False, True])
+def test_temporary_http_classification_preserves_automatic_upload_behavior(sync_env, monkeypatch, quiet):
+    from types import SimpleNamespace
+    env = sync_env
+    client = env.transport.requests_syncapi_v1(env.config, quiet=quiet)
+    client.connect(hostname='https://nas/indi-allsky/sync/v1/camera', username='tester', apikey='test-api-key')
+    monkeypatch.setattr(env.transport.requests, 'put', lambda *args, **kwargs: SimpleNamespace(status_code=503))
+    expected = env.errors.ConnectionFailure if quiet else env.errors.TransferFailure
+    with pytest.raises(expected, match='503'):
+        client.put(local_file='camera', metadata={}, empty_file=True)

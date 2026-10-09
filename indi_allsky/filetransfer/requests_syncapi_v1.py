@@ -203,9 +203,13 @@ class requests_syncapi_v1(GenericFileTransfer):
             f_media.close()
 
 
+        # A receiver/proxy can restart between a successful probe and an upload.
+        # Use the archive worker's bounded retries and lookup-before-resend path
+        # for these responses too. Keep legacy automatic-upload handling intact.
+        if (self.quiet or kwargs.get('availability_probe')) and r.status_code in (429, 500, 502, 503, 504):
+            raise ConnectionFailure('Receiver is temporarily unavailable (HTTP {0:d}).'.format(r.status_code))
+
         if kwargs.get('availability_probe'):
-            if r.status_code in (429, 500, 502, 503, 504):
-                raise ConnectionFailure('Receiver is still starting or temporarily unavailable.')
             try:
                 response = r.json()
             except ValueError:

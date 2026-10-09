@@ -85,7 +85,7 @@ def active_task():
 
 
 def status():
-    result = get_state(STATUS_KEY, {'state': 'idle', 'message': 'No manual synchronization has run yet.'})
+    result = get_state(STATUS_KEY, {'state': 'idle', 'message': 'No archive synchronization has run yet.'})
     task = active_task()
     if task and result.get('task_id') != task.id:
         result = {'task_id': task.id, 'state': 'queued', 'message': 'Waiting for the indi-allsky service.'}
@@ -116,6 +116,8 @@ def request_sync(config, types, schedule_revision=None, upload_limit=None):
         upload_limit = settings()['upload_limit']
     upload_limit = validate_upload_limit(upload_limit)
     fingerprint = validate_destination(config)
+    # This check avoids ordinary duplicate clicks. The main service's
+    # _queueManualTasks() is the final admission gate for concurrent requests.
     task = active_task()
     if task:
         return task
@@ -199,6 +201,9 @@ class SyncApiSyncWorker(Thread):
         super().__init__(name='SyncAPI-on-demand')
         self.app = app
         self.task_id = task_id
+        # None identifies a manual run, even while the availability schedule is
+        # enabled. Scheduled runs carry the saved revision in their task data.
+        self.schedule_revision = None
         self.stop_event = Event()
         self.progress = {}
         self.last_progress = 0
@@ -218,7 +223,7 @@ class SyncApiSyncWorker(Thread):
         db.session.commit()
         if self.stop_event.is_set() or get_state(CANCEL_KEY, 0) >= self.task_id:
             raise SyncStopped('Synchronization cancelled. Press Sync now to continue.')
-        if getattr(self, 'schedule_revision', None) is not None:
+        if self.schedule_revision is not None:
             from .syncapi_schedule import settings
             schedule = settings()
             if not schedule['enabled'] or schedule['revision'] != self.schedule_revision:
@@ -348,13 +353,19 @@ class SyncApiSyncWorker(Thread):
                     for block in iter(lambda: source.read(1024 * 1024), b''):
                         if self.stop_event.is_set():
                             raise SyncStopped('Synchronization cancelled. Press Sync now to continue.')
+                        # UI cancellation lives in the database, not stop_event.
+                        # Check it while hashing large files without querying
+                        # once per block on fast disks; keep status fresh too.
+                        if time.monotonic() - self.last_progress >= 5:
+                            self.check_control()
+                            self.publish()
                         digest.update(block)
                 lookup = dict(metadata, source_lookup=True, id=-1, expected_size=path.stat().st_size, sha256=digest.hexdigest())
                 self.check_control()
                 stage = 'Lookup'
                 response = client.put(local_file=path, metadata=lookup, empty_file=False, lookup=True)
                 if not isinstance(response, dict) or response.get('lookup_supported') is not True:
-                    raise TransferFailure('Update the NAS receiver to a version supporting on-demand synchronization.')
+                    raise TransferFailure('Update the receiver to a version supporting on-demand synchronization.')
                 if response.get('present') is True:
                     # bool is an int subclass, but cannot be a valid remote ID.
                     if type(response.get('id')) is not int or response['id'] <= 0:
@@ -416,7 +427,8 @@ class SyncApiSyncWorker(Thread):
         if not task or task.state not in ACTIVE_STATES:
             return
         self.schedule_revision = task.data.get('schedule_revision')
-        self.progress = dict(task_id=self.task_id, state='running', scheduled=self.schedule_revision is not None, started=datetime.now().isoformat(),
+        self.progress = dict(task_id=self.task_id, state='running', scheduled=self.schedule_revision is not None,
+                             started=datetime.now().isoformat(),
                              completed=0, total=0, skipped=0, files=0, bytes=0, message='Preparing synchronization.')
         outcome = 'complete'
         reason = None
@@ -440,7 +452,7 @@ class SyncApiSyncWorker(Thread):
             self.progress['message'] = 'Synchronization running.'
             task.setRunning()
             self.publish(force=True)
-            logger.info('Manual SyncAPI run %d started: %d pending items', self.task_id, self.progress['total'])
+            logger.info('Archive SyncAPI run %d started: %d pending items', self.task_id, self.progress['total'])
             cameras = models.IndiAllSkyDbCameraTable.query.filter_by(local=True, hidden=False).all()
             for camera in cameras:
                 camera.sync_id = self.transfer(camera, metadata_for(camera, constants.CAMERA))
@@ -462,7 +474,7 @@ class SyncApiSyncWorker(Thread):
                 self.progress['completed' if complete else 'skipped'] += 1
                 self.publish()
                 if time.monotonic() - last_log >= 30:
-                    logger.info('Manual SyncAPI run %d: %d completed, %d skipped', self.task_id, self.progress['completed'], self.progress['skipped'])
+                    logger.info('Archive SyncAPI run %d: %d completed, %d skipped', self.task_id, self.progress['completed'], self.progress['skipped'])
                     last_log = time.monotonic()
             message = 'Synchronization finished.' if not self.progress['skipped'] else 'Finished with missing local files; skipped items remain unsynchronized.'
         except SyncStopped as exc:
@@ -482,7 +494,7 @@ class SyncApiSyncWorker(Thread):
             reason = 'configuration_or_receiver'
         except Exception:
             outcome, message = 'failed', 'Synchronization stopped due to a local or receiver error. Details are available at debug log level.'
-            logger.debug('Manual SyncAPI exception', exc_info=True)
+            logger.debug('Archive SyncAPI exception', exc_info=True)
             reason = 'unexpected'
         # This run is terminal. A manual request or an enabled schedule may
         # create a separate run for the remaining items.
@@ -498,5 +510,5 @@ class SyncApiSyncWorker(Thread):
                 task.setFailed(message[:255])
         self.publish(force=True)
         log = logger.warning if outcome == 'failed' else logger.info
-        log('Manual SyncAPI run %d: %s (%d completed, %d skipped)', self.task_id, message,
+        log('Archive SyncAPI run %d: %s (%d completed, %d skipped)', self.task_id, message,
             self.progress['completed'], self.progress['skipped'])
