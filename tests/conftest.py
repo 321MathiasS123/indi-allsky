@@ -174,6 +174,17 @@ def sync_env(tmp_path, monkeypatch, request):
             worker.execute()
             return worker_module.status()
 
+        def save_schedule(payload, apply=True):
+            from indi_allsky.syncapi_schedule import save_settings
+            save_settings(config, payload)
+            row = models.IndiAllSkyDbConfigTable(level='test', note='schedule', data=deepcopy(config))
+            database.session.add(row)
+            database.session.commit()
+            if apply:
+                worker_module.set_state('CONFIG_ID', row.id)
+            return row.id
+
         yield types.SimpleNamespace(app=source_app, nas=receiver_app, db=database, models=models, sync=worker_module,
                                     config=config, camera=camera, asset=asset, thumbnail=thumbnail, run=run,
-                                    transport=transport, errors=exceptions, calls=calls, send=send, load=load, receiver=receiver)
+                                    transport=transport, errors=exceptions, calls=calls, send=send, load=load, receiver=receiver,
+                                    save_schedule=save_schedule)

@@ -113,7 +113,7 @@ def request_sync(config, types, schedule_revision=None, upload_limit=None):
         raise ValueError('Select at least one supported media type.')
     if upload_limit is None:
         from .syncapi_schedule import settings
-        upload_limit = settings()['upload_limit']
+        upload_limit = settings(config)['upload_limit']
     upload_limit = validate_upload_limit(upload_limit)
     fingerprint = validate_destination(config)
     # This check avoids ordinary duplicate clicks. The main service's

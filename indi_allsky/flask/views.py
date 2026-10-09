@@ -3508,7 +3508,7 @@ class ConfigView(FormView):
 
         from ..syncapi_schedule import settings as sync_schedule_settings
         from ..syncapi_sync import MEDIA
-        context['syncapi_schedule'] = sync_schedule_settings()
+        context['syncapi_schedule'] = sync_schedule_settings(self.indi_allsky_config)
         context['syncapi_types'] = [(key, value[2]) for key, value in MEDIA.items()]
 
         context['form_config'] = IndiAllskyConfigForm(data=form_data)
@@ -4490,9 +4490,9 @@ class AjaxConfigView(BaseView):
         if 'SYNCAPI_SCHEDULE' in request.json:
             from ..syncapi_schedule import save_settings
             try:
-                # The config save below commits both records together. Older
-                # configuration pages omit this key and preserve the schedule.
-                if save_settings(self.indi_allsky_config, request.json['SYNCAPI_SCHEDULE'], commit=False):
+                # Save preferences in this config version; commit any runtime
+                # resume control in the same transaction below.
+                if save_settings(self.indi_allsky_config, request.json['SYNCAPI_SCHEDULE']):
                     reload_on_save = True
             except ValueError as exc:
                 return jsonify({'syncapi-run-schedule-controls': [str(exc)], 'form_global': [str(exc)]}), 400
@@ -4554,8 +4554,8 @@ class AjaxSyncApiRunView(BaseView):
     decorators = [login_required]
 
     def dispatch_request(self):
-        from ..syncapi_sync import request_sync, cancel_sync, status, MEDIA, DEFAULT_TYPES
-        from ..syncapi_schedule import save_settings, status as schedule_status
+        from ..syncapi_sync import request_sync, cancel_sync, status, DEFAULT_TYPES
+        from ..syncapi_schedule import status as schedule_status
         from ..syncapi import on_demand_enabled
         if not app.config.get('LOGIN_DISABLED') and not current_user.is_admin:
             return jsonify({'error': 'Administrator access required.'}), 403
@@ -4564,16 +4564,11 @@ class AjaxSyncApiRunView(BaseView):
             if not isinstance(payload, dict):
                 return jsonify({'error': 'Invalid synchronization request.'}), 400
             try:
-                if payload.get('action') in ('start', 'schedule'):
+                if payload.get('action') == 'start':
                     if str(self._miscDb.getState('CONFIG_ID')) != str(self.indi_allsky_config_id):
                         raise ValueError('Apply the saved configuration and wait for the service reload before syncing.')
-                    if payload['action'] == 'schedule':
-                        # Retain the action for older open pages. Current pages
-                        # save config and schedule together in AjaxConfigView.
-                        save_settings(self.indi_allsky_config, payload)
-                    else:
-                        request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES),
-                                     upload_limit=payload.get('upload_limit'))
+                    request_sync(self.indi_allsky_config, payload.get('types', DEFAULT_TYPES),
+                                 upload_limit=payload.get('upload_limit'))
                 elif payload.get('action') == 'cancel' and type(payload.get('task_id')) is int:
                     cancel_sync(payload['task_id'])
                 else:
@@ -4583,10 +4578,6 @@ class AjaxSyncApiRunView(BaseView):
         result = status()
         result['enabled'] = on_demand_enabled(self.indi_allsky_config)
         result['schedule'] = schedule_status()
-        # Older panels build their choices from this response. Current panels
-        # render them in the template so polling preserves unsaved edits.
-        selected = result['schedule']['settings']['types']
-        result['types'] = [{'id': key, 'label': value[2], 'selected': key in selected} for key, value in MEDIA.items()]
         return jsonify(result)
 
 
