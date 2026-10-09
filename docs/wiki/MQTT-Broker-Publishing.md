@@ -84,6 +84,17 @@ event to `<base topic>/timelapse/complete` (normally
 `indi-allsky/timelapse/complete`). No additional indi-allsky setting is needed.
 It works even when publishing image bytes is disabled.
 
+After updating indi-allsky, run `indi-allsky-ctl ha-discovery` once more to add
+the **Timelapse completed** event entity under your existing MQTT Allsky device.
+Keep the same discovery device name and unique-ID base as your existing setup.
+The discovery configuration is retained by default; the completion events are not.
+The entity shows the time HA last received an event, with `event_type` set to
+`success` or `failed`. The camera, capture date, period, output results and
+`completed_at` are event attributes. Its state remains unknown until the first
+completion arrives after discovery. In an automation, select this event entity
+and filter its `event_type` to `success` when only successful batches should act.
+No Home Assistant YAML configuration or restart is required for discovery.
+
 The event is queued after the final local generation job: panorama when enabled,
 otherwise the normal timelapse. It checks the exact keogram/startrail and video
 tasks belonging to that batch, their generation results, and the local files.
@@ -95,6 +106,7 @@ Example successful night event:
 ```json
 {
   "event": "timelapse_complete",
+  "event_type": "success",
   "event_id": "timelapse-12345",
   "camera_id": 1,
   "date": "2026-10-08",
