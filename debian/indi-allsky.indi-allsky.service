@@ -13,6 +13,7 @@ EnvironmentFile=-/etc/indi-allsky/indi-allsky.env
 ExecStart=/var/lib/indi-allsky/venv/bin/python3 /usr/share/indi-allsky/allsky.py --log syslog run
 ExecReload=/bin/kill -HUP $MAINPID
 ExecStop=/bin/kill -TERM $MAINPID
+KillMode=mixed
 Restart=always
 RestartSec=5
 PrivateTmp=true
