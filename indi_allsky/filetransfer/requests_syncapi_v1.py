@@ -178,11 +178,13 @@ class requests_syncapi_v1(GenericFileTransfer):
                         kwargs['progress_callback'](f_media.tell(), metadata['file_size'])
 
                 mp_enc = MultipartEncoderMonitor(mp_enc, monitor_upload)
-            # put allows overwrites
-            request_method = self.client.get if kwargs.get('lookup') else self.client.put
-            request_options = {'allow_redirects': False} if kwargs.get('availability_probe') else {}
+            # POST lookup bodies pass through proxies that reject GET bodies.
+            # Use a dedicated read-only route; POST on the upload route writes.
+            request_method = self.client.post if kwargs.get('lookup') else self.client.put
+            request_url = self.url.rstrip('/') + '/lookup' if kwargs.get('lookup') else self.url
+            request_options = {'allow_redirects': False} if kwargs.get('lookup') else {}
             r = request_method(
-                self.url,
+                request_url,
                 data=mp_enc,
                 headers=headers,
                 verify=self.verify,

@@ -360,7 +360,7 @@ class SyncApiSyncWorker(Thread):
                             self.check_control()
                             self.publish()
                         digest.update(block)
-                lookup = dict(metadata, source_lookup=True, id=-1, expected_size=path.stat().st_size, sha256=digest.hexdigest())
+                lookup = dict(metadata, expected_size=path.stat().st_size, sha256=digest.hexdigest())
                 self.check_control()
                 stage = 'Lookup'
                 response = client.put(local_file=path, metadata=lookup, empty_file=False, lookup=True)

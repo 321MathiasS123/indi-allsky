@@ -156,3 +156,4 @@ Normally, in a REST service, data is added using a JSON request, however in orde
 * PUT - upload and add/overwrite file
 * DELETE - delete file
 
+Archive sync uses `POST` on each endpoint's `/lookup` path (for example, `sync/v1/image/lookup`) for authenticated checks without uploading or changing media. This avoids `GET` request bodies that some proxies reject. `sync/v1/camera/lookup` checks receiver readiness; media lookups compare file size and SHA-256. Update both installations to use these endpoints.

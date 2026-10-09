@@ -123,6 +123,7 @@ def sync_env(tmp_path, monkeypatch, request):
 
     monkeypatch.setattr(transport.requests, 'put', lambda url, **kwargs: send('PUT', url, **kwargs))
     monkeypatch.setattr(transport.requests, 'get', lambda url, **kwargs: send('GET', url, **kwargs))
+    monkeypatch.setattr(transport.requests, 'post', lambda url, **kwargs: send('POST', url, **kwargs))
     with source_app.app_context():
         camera = models.IndiAllSkyDbCameraTable(name='Local camera', uuid=str(uuid.uuid4()), local=True, hidden=False)
         database.session.add(camera)

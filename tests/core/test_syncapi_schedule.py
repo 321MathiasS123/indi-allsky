@@ -309,21 +309,21 @@ def test_probe_error_is_reported_once_and_pauses(schedule_env, caplog):
     assert ctx.module.status()['state'] == 'paused'
 
 
-def test_authenticated_probe_is_read_only_and_works_with_existing_receiver(sync_env):
+def test_authenticated_probe_is_read_only(sync_env):
     env = sync_env
     module = importlib.import_module('indi_allsky.syncapi_schedule')
     env.asset()
     env.run()
     env.calls.clear()
     assert module.probe_receiver(env.config, env.camera.sync_id, env.camera.uuid)[0] == 'ready'
-    assert len(env.calls) == 1 and env.calls[0][0] == 'GET'
+    assert len(env.calls) == 1 and env.calls[0][0] == 'POST'
     assert env.calls[0][2]['id'] == env.camera.sync_id
     bad_key = deepcopy(env.config)
     bad_key['SYNCAPI']['APIKEY'] = 'wrong-key'
     assert module.probe_receiver(bad_key, env.camera.sync_id, env.camera.uuid)[0] == 'blocked'
     # A brand-new sender can register its camera during its first real run.
     assert module.probe_receiver(env.config, None, env.camera.uuid)[0] == 'ready'
-    assert all(call[0] == 'GET' for call in env.calls)
+    assert all(call[0] == 'POST' for call in env.calls)
 
 
 @pytest.mark.parametrize('code,body,outcome', [
@@ -337,7 +337,7 @@ def test_authenticated_probe_is_read_only_and_works_with_existing_receiver(sync_
 def test_probe_response_classification(sync_env, monkeypatch, code, body, outcome):
     env = sync_env
     module = importlib.import_module('indi_allsky.syncapi_schedule')
-    monkeypatch.setattr(env.transport.requests, 'get', lambda *a, **k: SimpleNamespace(status_code=code, json=lambda: body))
+    monkeypatch.setattr(env.transport.requests, 'post', lambda *a, **k: SimpleNamespace(status_code=code, json=lambda: body))
     assert module.probe_receiver(env.config, 1, env.camera.uuid)[0] == outcome
 
 
@@ -345,14 +345,14 @@ def test_probe_uses_existing_certificate_setting_and_short_timeouts(sync_env, mo
     env = sync_env
     module = importlib.import_module('indi_allsky.syncapi_schedule')
     captured = []
-    def get(url, **kwargs):
+    def post(url, **kwargs):
         captured.append((url, kwargs))
         return SimpleNamespace(status_code=200, json=lambda: {'id': 1})
-    monkeypatch.setattr(env.transport.requests, 'get', get)
+    monkeypatch.setattr(env.transport.requests, 'post', post)
     env.config['SYNCAPI']['CERT_BYPASS'] = True
     assert module.probe_receiver(env.config, 1, env.camera.uuid)[0] == 'ready'
     url, kwargs = captured[0]
-    assert url == 'https://nas/indi-allsky/sync/v1/camera'
+    assert url == 'https://nas/indi-allsky/sync/v1/camera/lookup'
     assert kwargs['verify'] is False and kwargs['allow_redirects'] is False
     assert kwargs['timeout'] == (5, 10)
     assert kwargs['headers']['Authorization'].startswith('Bearer tester:')

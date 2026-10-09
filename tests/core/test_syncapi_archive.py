@@ -185,12 +185,12 @@ def test_lost_acknowledgement_retry_recovers_without_copy(sync_env, monkeypatch,
 def test_temporary_failure_recovers_quietly(sync_env, monkeypatch, caplog, retry_waits, stage):
     env = sync_env
     entry = env.asset()
-    method = 'get' if stage == 'lookup' else 'put'
+    method = 'post' if stage == 'lookup' else 'put'
     original = getattr(env.transport.requests, method)
     failures = []
 
     def temporary_failure(url, **kwargs):
-        target = '/camera' if stage == 'camera' else '/image'
+        target = '/camera' if stage == 'camera' else '/image/lookup' if stage == 'lookup' else '/image'
         if url.endswith(target) and len(failures) < 2:
             failures.append(1)
             raise env.transport.requests.exceptions.ConnectTimeout('connection timed out')
@@ -210,12 +210,12 @@ def test_temporary_failure_recovers_quietly(sync_env, monkeypatch, caplog, retry
 def test_exhausted_retries_report_file_stage_and_cause(sync_env, monkeypatch, caplog, retry_waits, stage, failure):
     env = sync_env
     entry = env.asset('video')
-    method = 'get' if stage == 'lookup' else 'put'
+    method = 'post' if stage == 'lookup' else 'put'
     original = getattr(env.transport.requests, method)
     failures = []
 
     def fail(url, **kwargs):
-        if url.endswith('/video'):
+        if url.endswith('/video/lookup' if stage == 'lookup' else '/video'):
             failures.append(1)
             raise getattr(env.transport.requests.exceptions, failure)('test network failure')
         return original(url, **kwargs)
@@ -237,7 +237,7 @@ def test_lost_acknowledgement_then_offline_resumes_without_copy(sync_env, monkey
     env = sync_env
     entry = env.asset()
     thumb = env.thumbnail(entry)
-    original_put, original_get = env.transport.requests.put, env.transport.requests.get
+    original_put, original_post = env.transport.requests.put, env.transport.requests.post
     offline = False
 
     def lose_response(url, **kwargs):
@@ -251,15 +251,15 @@ def test_lost_acknowledgement_then_offline_resumes_without_copy(sync_env, monkey
     def unavailable_lookup(url, **kwargs):
         if offline:
             raise env.transport.requests.exceptions.ConnectionError('still offline')
-        return original_get(url, **kwargs)
+        return original_post(url, **kwargs)
 
     monkeypatch.setattr(env.transport.requests, 'put', lose_response)
-    monkeypatch.setattr(env.transport.requests, 'get', unavailable_lookup)
+    monkeypatch.setattr(env.transport.requests, 'post', unavailable_lookup)
     assert env.run()['state'] == 'failed'
     assert entry.sync_id is None and thumb.sync_id is None
     assert retry_waits == [5, 15]
     monkeypatch.setattr(env.transport.requests, 'put', original_put)
-    monkeypatch.setattr(env.transport.requests, 'get', original_get)
+    monkeypatch.setattr(env.transport.requests, 'post', original_post)
     env.calls.clear()
     assert env.run()['state'] == 'complete'
     assert [call[1].split('/')[-1] for call in media_puts(env)] == ['thumbnail']
@@ -444,7 +444,7 @@ def test_old_receiver_stops_with_upgrade_message(sync_env, monkeypatch):
     from types import SimpleNamespace
     env = sync_env
     env.asset()
-    monkeypatch.setattr(env.transport.requests, 'get', lambda *args, **kwargs: SimpleNamespace(status_code=400))
+    monkeypatch.setattr(env.transport.requests, 'post', lambda *args, **kwargs: SimpleNamespace(status_code=400))
     result = env.run()
     assert result['state'] == 'failed'
     assert 'Update the receiver' in result['message']
@@ -463,7 +463,7 @@ def test_lookup_authentication_failure_is_not_an_upgrade_error(sync_env, monkeyp
         requests.append(1)
         return SimpleNamespace(status_code=http_status, json=lambda: {'error': error})
 
-    monkeypatch.setattr(env.transport.requests, 'get', rejected_lookup)
+    monkeypatch.setattr(env.transport.requests, 'post', rejected_lookup)
     result = env.run()
     assert result['state'] == 'failed'
     assert 'authentication failed' in result['message']
@@ -475,15 +475,17 @@ def test_lookup_does_not_open_local_media(sync_env, monkeypatch, tmp_path):
     env = sync_env
     requests = []
 
-    def lookup(*args, **kwargs):
+    def lookup(url, **kwargs):
+        assert url == 'https://nas/indi-allsky/sync/v1/image/lookup'
+        assert kwargs['allow_redirects'] is False
         requests.append(kwargs['data'].fields['media'][1].read())
         return SimpleNamespace(status_code=200, text='{"lookup_supported": true, "present": false}')
 
-    monkeypatch.setattr(env.transport.requests, 'get', lookup)
+    monkeypatch.setattr(env.transport.requests, 'post', lookup)
     client = env.transport.requests_syncapi_v1(env.config, quiet=True)
     client.connect(hostname='https://nas/indi-allsky/sync/v1/image', username='tester', apikey='test-api-key')
     try:
-        result = client.put(local_file=tmp_path / 'not-present.jpg', metadata={'source_lookup': True}, empty_file=False, lookup=True)
+        result = client.put(local_file=tmp_path / 'not-present.jpg', metadata={}, empty_file=False, lookup=True)
     finally:
         client.close()
     assert result == {'lookup_supported': True, 'present': False}
@@ -506,12 +508,12 @@ def test_temporary_http_failure_recovers_without_duplicate_uploads(sync_env, mon
     from types import SimpleNamespace
     env = sync_env
     entry = env.asset()
-    method = 'get' if stage == 'lookup' else 'put'
+    method = 'post' if stage == 'lookup' else 'put'
     original = getattr(env.transport.requests, method)
     attempts = []
 
     def unavailable(url, **kwargs):
-        if url.endswith('/camera' if stage == 'camera' else '/image') and not attempts:
+        if url.endswith('/camera' if stage == 'camera' else '/image/lookup' if stage == 'lookup' else '/image') and not attempts:
             attempts.append(1)
             # A proxy may lose the upload response after the receiver committed.
             # The retry must recover its ID through a lookup, without resending.

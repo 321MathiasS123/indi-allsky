@@ -69,7 +69,7 @@ class SyncApiBaseView(BaseView):
             self.image_dir = Path(__file__).parent.parent.parent.joinpath('html', 'images').absolute()
 
 
-    def dispatch_request(self):
+    def dispatch_request(self, lookup=False):
         try:
             #time.sleep(10)  # testing
             self.authorize(request.files['metadata'].stream.read())  # authenticate the request
@@ -79,6 +79,10 @@ class SyncApiBaseView(BaseView):
 
 
         try:
+            # Only the POST-only /lookup routes set this routing argument.
+            # Authentication is shared; lookup requests never reach upload handlers.
+            if lookup:
+                return self.lookup()
             if request.method == 'POST':
                 return self.post()
             elif request.method == 'PUT':
@@ -165,8 +169,6 @@ class SyncApiBaseView(BaseView):
             app.logger.error('Camera not found: %s', metadata['camera_uuid'])
             return jsonify({'error' : 'camera not found'}), 400
 
-        if metadata.get('source_lookup'):
-            return self.lookupSource(metadata, camera)
 
         try:
             file_entry = self.getEntry(metadata, camera)
@@ -178,6 +180,19 @@ class SyncApiBaseView(BaseView):
             'id'   : file_entry.id,
             'url'  : str(file_entry.getUrl(local=True)),
         })
+
+
+    def lookup(self):
+        if self.model == IndiAllSkyDbCameraTable:
+            return self.get()
+
+        metadata = self.saveMetadata(request.files['metadata'])
+        try:
+            # Unlike getCamera(), a lookup must not update the camera's timezone.
+            camera = IndiAllSkyDbCameraTable.query.filter_by(uuid=metadata['camera_uuid']).one()
+        except NoResultFound:
+            return jsonify({'error': 'camera not found'}), 400
+        return self.lookupSource(metadata, camera)
 
 
     def lookupSource(self, metadata, camera):
@@ -878,3 +893,17 @@ bp_syncapi_allsky.add_url_rule('/sync/v1/panoramaimage', view_func=SyncApiPanora
 bp_syncapi_allsky.add_url_rule('/sync/v1/panoramavideo', view_func=SyncApiPanoramaVideoView.as_view('syncapi_v1_panorama_video_view'), methods=['GET', 'POST', 'PUT', 'DELETE'])
 bp_syncapi_allsky.add_url_rule('/sync/v1/thumbnail', view_func=SyncApiThumbnailView.as_view('syncapi_v1_thumbnail_view'), methods=['GET', 'POST', 'PUT', 'DELETE'])
 
+
+# Separate lookup routes keep POST's existing upload semantics intact.
+bp_syncapi_allsky.add_url_rule('/sync/v1/camera/lookup', view_func=SyncApiCameraView.as_view('syncapi_v1_camera_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/image/lookup', view_func=SyncApiImageView.as_view('syncapi_v1_image_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/video/lookup', view_func=SyncApiVideoView.as_view('syncapi_v1_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/minivideo/lookup', view_func=SyncApiMiniVideoView.as_view('syncapi_v1_min_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/keogram/lookup', view_func=SyncApiKeogramView.as_view('syncapi_v1_keogram_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/startrail/lookup', view_func=SyncApiStartrailView.as_view('syncapi_v1_startrail_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/startrailvideo/lookup', view_func=SyncApiStartrailVideoView.as_view('syncapi_v1_startrail_video_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/rawimage/lookup', view_func=SyncApiRawImageView.as_view('syncapi_v1_rawimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/fitsimage/lookup', view_func=SyncApiFitsImageView.as_view('syncapi_v1_fitsimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/panoramaimage/lookup', view_func=SyncApiPanoramaImageView.as_view('syncapi_v1_panoramaimage_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/panoramavideo/lookup', view_func=SyncApiPanoramaVideoView.as_view('syncapi_v1_panoramavideo_lookup_view'), defaults={'lookup': True}, methods=['POST'])
+bp_syncapi_allsky.add_url_rule('/sync/v1/thumbnail/lookup', view_func=SyncApiThumbnailView.as_view('syncapi_v1_thumbnail_lookup_view'), defaults={'lookup': True}, methods=['POST'])

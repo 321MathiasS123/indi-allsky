@@ -142,8 +142,8 @@ def probe_receiver(config, camera_id, camera_uuid):
         client.connect(hostname=options['BASEURL'].rstrip('/') + '/sync/v1/camera',
                        username=options['USERNAME'], apikey=options['APIKEY'],
                        cert_bypass=options.get('CERT_BYPASS', False))
-        # This signed, read-only lookup predates archive synchronization. A missing camera
-        # also proves authentication/database readiness; the run registers it.
+        # A signed camera lookup proves authentication/database readiness even
+        # before the camera exists; the first actual run registers it.
         client.put(local_file='camera', empty_file=True, lookup=True, availability_probe=True,
                    metadata={'id': camera_id or 0, 'camera_uuid': camera_uuid})
         return 'ready', 'Receiver is available.'
