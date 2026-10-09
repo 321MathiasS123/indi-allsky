@@ -203,6 +203,9 @@ class FileUploader(Thread):
             # use given file name
             local_file_p = Path(local_file)
             entry = None
+        elif action == constants.TRANSFER_MQTT and task.data.get('mqtt_event'):
+            local_file_p = None
+            entry = None
         else:
             logger.error('Entry model or filename not defined')
             task.setFailed('Entry model or filename not defined')
@@ -345,7 +348,8 @@ class FileUploader(Thread):
                 'base_topic'  : self.config['MQTTPUBLISH']['BASE_TOPIC'],
                 'qos'         : self.config['MQTTPUBLISH']['QOS'],
                 'mq_data'     : metadata,
-                'publish_image' : self.config['MQTTPUBLISH'].get('PUBLISH_IMAGE', True),
+                'publish_image' : not task.data.get('mqtt_event') and self.config['MQTTPUBLISH'].get('PUBLISH_IMAGE', True),
+                'retain'       : not task.data.get('mqtt_event'),
             }
 
 

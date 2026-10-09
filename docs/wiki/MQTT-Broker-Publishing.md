@@ -77,6 +77,81 @@ The default base topic is `indi-allsky/`. This can be overridden in the config s
 | indi-allsky/sensor_user_8<br>indi-allsky/sensor_user_9<br> | float  | Reserved |
 | indi-allsky/sensor_user_10<br>indi-allsky/sensor_user_11<br>...<br>indi-allsky/sensor_user_29 | float  | User sensor data |
 
+## Local timelapse completion
+
+When MQTT publishing is enabled, automatic day/night generation publishes a JSON
+event to `<base topic>/timelapse/complete` (normally
+`indi-allsky/timelapse/complete`). No additional indi-allsky setting is needed.
+It works even when publishing image bytes is disabled.
+
+The event is queued after the final local generation job: panorama when enabled,
+otherwise the normal timelapse. It checks the exact keogram/startrail and video
+tasks belonging to that batch, their generation results, and the local files.
+It does not wait for remote uploads. Delivery uses the existing MQTT upload
+workers, so a busy upload queue or broker outage can delay or prevent delivery.
+
+Example successful night event:
+
+```json
+{
+  "event": "timelapse_complete",
+  "event_id": "timelapse-12345",
+  "camera_id": 1,
+  "date": "2026-10-08",
+  "period": "night",
+  "status": "success",
+  "completed_at": "2026-10-09T06:42:15+00:00",
+  "outputs": {
+    "keogram": "success",
+    "startrail": "success",
+    "startrail_timelapse": "success",
+    "timelapse": "success",
+    "panorama": "success"
+  },
+  "failed_task_ids": []
+}
+```
+
+`date` identifies the capture day/night, not the date the work finished.
+`completed_at` is UTC. `status` is `success` only if all batch tasks succeeded
+and every generated output exists locally and is nonempty; otherwise it is
+`failed`. Optional startrail outputs skipped during daytime or because too few
+frames qualified have output status `skipped`. A disabled panorama is omitted.
+A failed task can have no output entries; its ID appears in `failed_task_ids`.
+A startrail encoder failure is reported even when its combined keogram task
+succeeded.
+
+Events are not retained, so reconnecting does not replay an old completion.
+They are not a durable notification history: Home Assistant must be connected
+to receive them. MQTT QoS can redeliver a message; use `event_id` to deduplicate
+if your action requires this. Manual regenerations and mini-timelapses do not
+emit this automatic-batch event. A worker interrupted before reaching its final
+job does not emit a successful completion.
+
+In Home Assistant, use an MQTT trigger filtered to successful completion:
+
+```yaml
+alias: Allsky local timelapses ready
+triggers:
+  - trigger: mqtt
+    topic: indi-allsky/timelapse/complete
+    payload: success
+    value_template: "{{ value_json.status }}"
+actions:
+  - action: persistent_notification.create
+    data:
+      title: Allsky timelapses ready
+      message: >-
+        Camera {{ trigger.payload_json.camera_id }}:
+        {{ trigger.payload_json.date }} {{ trigger.payload_json.period }}
+        finished locally at {{ trigger.payload_json.completed_at }}.
+mode: queued
+```
+
+Adjust the topic if you use a different MQTT base topic. Filter on
+`trigger.payload_json.camera_id` or `period` in a condition when desired.
+Use `payload: failed` in a second automation to receive failure notifications.
+
 ## Local broker
 Included in the repository is a script that an quickly deploy a Mosquitto MQTT broker to your system.
 

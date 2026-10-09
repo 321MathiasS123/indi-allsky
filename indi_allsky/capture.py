@@ -446,8 +446,8 @@ class CaptureWorker(Process):
                         ### Generate timelapse at end of night
                         yesterday_ref = dayDate - timedelta(days=1)
                         timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateNightTimelapse(timespec, self.camera_id)
+                        keogram_task_id = self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
+                        self._generateNightTimelapse(timespec, self.camera_id, completion_task_ids=[keogram_task_id])
                         self._uploadAllskyEndOfNight(self.camera_id)
 
                         # prevent duplicate generation until reconfigureCcd() is called
@@ -459,8 +459,8 @@ class CaptureWorker(Process):
                         ### Generate timelapse at end of day
                         today_ref = dayDate
                         timespec = today_ref.strftime('%Y%m%d')
-                        self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateDayTimelapse(timespec, self.camera_id)
+                        keogram_task_id = self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
+                        self._generateDayTimelapse(timespec, self.camera_id, completion_task_ids=[keogram_task_id])
 
                         # prevent duplicate generation until reconfigureCcd() is called
                         self.generate_timelapse_flag = False
@@ -498,8 +498,8 @@ class CaptureWorker(Process):
                         ### Generate timelapse at end of day
                         yesterday_ref = dayDate - timedelta(days=1)
                         timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateDayTimelapse(timespec, self.camera_id)
+                        keogram_task_id = self._generateDayKeogram(timespec, self.camera_id)  # keogram/st first
+                        self._generateDayTimelapse(timespec, self.camera_id, completion_task_ids=[keogram_task_id])
                         self._expireData(self.camera_id)  # cleanup old images and folders
 
                         # prevent duplicate generation until reconfigureCcd() is called
@@ -511,8 +511,8 @@ class CaptureWorker(Process):
                         ### Generate timelapse at end of night
                         yesterday_ref = dayDate - timedelta(days=1)
                         timespec = yesterday_ref.strftime('%Y%m%d')
-                        self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
-                        self._generateNightTimelapse(timespec, self.camera_id)
+                        keogram_task_id = self._generateNightKeogram(timespec, self.camera_id)  # keogram/st first
+                        self._generateNightTimelapse(timespec, self.camera_id, completion_task_ids=[keogram_task_id])
                         self._uploadAllskyEndOfNight(self.camera_id)
 
                         # prevent duplicate generation until reconfigureCcd() is called
@@ -2099,7 +2099,7 @@ class CaptureWorker(Process):
         self.moonmode = False
 
 
-    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _generateDayTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, completion_task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2125,6 +2125,9 @@ class CaptureWorker(Process):
             }
         }
 
+        if completion_task_ids is not None and not self.config.get('FISH2PANO', {}).get('ENABLE'):
+            video_jobdata['completion_task_ids'] = completion_task_ids
+
         video_task = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO,
             state=task_state,
@@ -2146,6 +2149,9 @@ class CaptureWorker(Process):
                 },
             }
 
+            if completion_task_ids is not None:
+                panorama_video_jobdata['completion_task_ids'] = completion_task_ids + [video_task.id]
+
             panorama_video_task = IndiAllSkyDbTaskQueueTable(
                 queue=TaskQueueQueue.VIDEO,
                 state=task_state,
@@ -2157,7 +2163,7 @@ class CaptureWorker(Process):
             self.video_q.put({'task_id' : panorama_video_task.id})
 
 
-    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
+    def _generateNightTimelapse(self, timespec, camera_id, task_state=TaskQueueState.QUEUED, completion_task_ids=None):
         if not self.config.get('TIMELAPSE_ENABLE', True):
             logger.warning('Timelapse creation disabled')
             return
@@ -2179,6 +2185,9 @@ class CaptureWorker(Process):
             },
         }
 
+        if completion_task_ids is not None and not self.config.get('FISH2PANO', {}).get('ENABLE'):
+            video_jobdata['completion_task_ids'] = completion_task_ids
+
         video_task = IndiAllSkyDbTaskQueueTable(
             queue=TaskQueueQueue.VIDEO,
             state=task_state,
@@ -2199,6 +2208,9 @@ class CaptureWorker(Process):
                     'camera_id'   : camera.id,
                 },
             }
+
+            if completion_task_ids is not None:
+                panorama_video_jobdata['completion_task_ids'] = completion_task_ids + [video_task.id]
 
             panorama_video_task = IndiAllSkyDbTaskQueueTable(
                 queue=TaskQueueQueue.VIDEO,
@@ -2242,6 +2254,7 @@ class CaptureWorker(Process):
         db.session.commit()
 
         self.video_q.put({'task_id' : task.id})
+        return task.id
 
 
     def _generateDayKeogram(self, timespec, camera_id, task_state=TaskQueueState.QUEUED):
@@ -2279,6 +2292,7 @@ class CaptureWorker(Process):
         db.session.commit()
 
         self.video_q.put({'task_id' : task.id})
+        return task.id
 
 
     def shoot(self, exposure, gain, binning, sync=True, timeout=None, sqm_exposure=False):
