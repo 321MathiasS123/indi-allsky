@@ -111,13 +111,94 @@ def test_low_bit_depth_data_in_uint16_container_is_denoised():
 def test_cold_bayer_repair_is_local_and_does_not_mutate_capture():
     image = np.full((128, 128), 10000, np.uint16)
     image[60, 60] = 100
-    image[70, 70] = image[70, 72] = 100  # Connected feature, not an isolated outlier.
+    image[70, 70] = image[70, 72] = image[70, 74] = 100  # Larger connected feature.
     image[1, 1] = 100  # Incomplete neighbourhood.
     original = image.copy()
     result = sky_denoise.repair_bayer(image, {})
     assert result[60, 60] == 10000
     assert np.count_nonzero(result != image) == 1
     np.testing.assert_array_equal(image, original)
+
+
+@pytest.mark.parametrize('phase', [(0, 0), (0, 1), (1, 0), (1, 1)])
+@pytest.mark.parametrize('offset', [(0, 2), (2, 0), (2, 2), (2, -2)])
+def test_cold_bayer_pairs_use_same_colour_surroundings_without_mutating_capture(phase, offset):
+    image = np.full((128, 128), 10000, np.uint16)
+    for y in range(2):
+        for x in range(2):
+            image[y::2, x::2] += 1000 * x + 2000 * y
+    expected = image.copy()
+    y, x = 60 + phase[0], 60 + phase[1]
+    image[y, x] = image[y + offset[0], x + offset[1]] = 100
+    original = image.copy()
+    np.testing.assert_array_equal(sky_denoise.repair_bayer(image, {}), expected)
+    np.testing.assert_array_equal(image, original)
+
+
+@pytest.mark.parametrize('offset', [(0, 2), (2, 0), (2, 2), (2, -2)])
+def test_cold_bayer_pair_guard_preserves_points_with_a_dark_intervening_colour(offset):
+    image = np.full((128, 128), 10000, np.uint16)
+    image[60, 60] = image[60 + offset[0], 60 + offset[1]] = 100
+    image[60 + offset[0] // 2, 60 + offset[1] // 2] = 100
+    result = sky_denoise.repair_bayer(image, {})
+    # The new pair repair must not turn a shared dark feature into two bright points.
+    assert result[60, 60] == result[60 + offset[0], 60 + offset[1]] == 100
+
+
+@pytest.mark.parametrize('sigma,depth,perimeter', [(100, 500, 10000), (1000, 7000, 4000)])
+def test_cold_bayer_pairs_need_significance_and_separation_from_noisy_perimeter(
+        monkeypatch, sigma, depth, perimeter):
+    image = np.full((128, 128), 10000, np.uint16)
+    image[60, 60] = image[60, 62] = 10000 - depth
+    image[58, 60] = perimeter
+    monkeypatch.setattr(sky_denoise, '_noise_grid',
+                        lambda data, tile: np.full(data.shape, sigma, np.float32))
+    np.testing.assert_array_equal(sky_denoise.repair_bayer(image, {}), image)
+
+
+def test_cold_bayer_pair_repair_keeps_existing_isolated_replacement(monkeypatch):
+    image = np.broadcast_to(10000 + 100 * np.arange(128), (128, 128)).astype(np.uint16)
+    image[60, 60], image[60, 62] = 100, 2000
+    monkeypatch.setattr(sky_denoise, '_noise_grid',
+                        lambda data, tile: np.full(data.shape, 100, np.float32))
+    expected = image.copy()
+    # The deeper sample already qualifies for isolated repair. Its original
+    # 3x3 median differs from the pair perimeter median in this sloping background.
+    expected[60, 60], expected[60, 62] = 15800, 16100
+    np.testing.assert_array_equal(sky_denoise.repair_bayer(image, {}), expected)
+
+
+@pytest.mark.parametrize('diameter,binning', [(40, 1), (0, 1), (80, 2)])
+def test_cold_bayer_repair_leaves_degenerate_sky_radius_unchanged(diameter, binning):
+    image = np.full((64, 64), 10000, np.uint16)
+    image[32, 36] = 100
+    result = sky_denoise.repair_bayer(image, {'LENS_IMAGE_CIRCLE': diameter}, binning)
+    assert not np.shares_memory(result, image)
+    np.testing.assert_array_equal(result, image)
+
+
+@pytest.mark.parametrize('x,repaired', [(104, True), (108, False)])
+def test_cold_bayer_repair_uses_six_pixel_circle_inset_without_changing_denoiser_guard(x, repaired):
+    image = np.full((128, 128), 10000, np.uint16)
+    image[64, x] = image[64, x + 2] = 100
+    config = {'LENS_IMAGE_CIRCLE': 100}
+    assert sky_denoise._sky_geometry(image.shape, config, 1) == (64, 64, 30)
+    result = sky_denoise.repair_bayer(image, config)
+    assert result[64, x] == result[64, x + 2] == (10000 if repaired else 100)
+    assert np.count_nonzero(result != image) == (2 if repaired else 0)
+
+
+@pytest.mark.parametrize('points', [
+    [(2, 60), (2, 62)], [(124, 60), (124, 62)],
+    [(60, 2), (62, 2)], [(60, 124), (62, 124)],
+])
+def test_cold_bayer_pairs_leave_incomplete_image_edge_neighbourhoods_unchanged(points):
+    image = np.full((128, 128), 10000, np.uint16)
+    for y, x in points:
+        image[y, x] = 100
+    # Include the entire array in the lens circle so only the image-edge guard applies.
+    np.testing.assert_array_equal(
+        sky_denoise.repair_bayer(image, {'LENS_IMAGE_CIRCLE': 400}), image)
 
 
 def test_geometry_undoes_orientation_and_binning():
