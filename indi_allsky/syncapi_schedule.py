@@ -88,7 +88,7 @@ def save_settings(config, payload):
     if changed and sync.active_task():
         raise ValueError('Cancel the running synchronization before changing its schedule.')
     # Keep the preference when SyncAPI is off or in automatic-upload mode.
-    # The scheduler already requires an applied On demand configuration.
+    # The scheduler already requires an applied Archive sync configuration.
     if changed and options['enabled'] and on_demand_enabled(config):
         sync.validate_destination(config)
     keys = dict(enabled='SCHEDULE', interval='INTERVAL', delay='DELAY',
@@ -218,7 +218,7 @@ class SyncApiScheduler:
             if options['enabled'] and not applied:
                 self.publish(options, 'applying', APPLYING_MESSAGE)
             else:
-                self.publish(options, 'disabled', 'Save and apply On demand mode to use the schedule.')
+                self.publish(options, 'disabled', 'Save and apply Archive sync mode to use the schedule.')
             return
 
         task = sync.active_task()

@@ -85,10 +85,10 @@ Navigate to the config URL in the local server and enable the SyncAPI and add th
 Save and restart
 
 ### Synchronization mode
-**Automatic** is the default and sends new captures and generated media as they become ready. Choose **On demand** for an incremental archive run, started manually or by an optional receiver-availability schedule. See [On-demand synchronization](SyncAPI-On-Demand) for setup, receiver requirements, speed limits and recovery behaviour.
+**Live sync** is the default and sends new captures and generated media as they become ready. Choose **Archive sync** for an incremental archive run, started manually or by an optional receiver-availability schedule. See [Archive sync](SyncAPI-On-Demand) for setup, receiver requirements, speed limits and recovery behaviour.
 
 ### Enable multiple upload workers (optional)
-You may also enable multiple upload workers so that a single transfer does not halt all upload activities.  More workers requires more memory to support the additional processes.  2GB of memory is recommended for additional workers. These workers handle Automatic uploads; an On demand run uses one archive worker.
+You may also enable multiple upload workers so that a single transfer does not halt all upload activities.  More workers requires more memory to support the additional processes.  2GB of memory is recommended for additional workers. These workers handle Live sync uploads; an Archive sync run uses one archive worker.
 
 
 ## Timestamps and Timezones
@@ -147,8 +147,8 @@ Normally, in a REST service, data is added using a JSON request, however in orde
 | PANORAMA_IMAGE   | sync/v1/panoramaimage   |      |
 | PANORAMA_VIDEO   | sync/v1/panoramavideo   |      |
 | THUMBNAIL        | sync/v1/thumbnail       |      |
-| RAW_IMAGE        | sync/v1/rawimage        | optional in On demand mode |
-| FITS_IMAGE       | sync/v1/fitsimage       | optional in On demand mode |
+| RAW_IMAGE        | sync/v1/rawimage        | optional in Archive sync mode |
+| FITS_IMAGE       | sync/v1/fitsimage       | optional in Archive sync mode |
 
 ## Methods
 * GET - returns file ID and URI

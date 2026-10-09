@@ -236,7 +236,7 @@ class requests_syncapi_v1(GenericFileTransfer):
                 if r.status_code in (401, 403) or error == 'authentication failed':
                     raise AuthenticationFailure('Receiver authentication failed')
                 if kwargs.get('lookup'):
-                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting on-demand synchronization and check its logs.'.format(r.status_code))
+                    raise TransferFailure('Receiver lookup failed (HTTP {0:d}). Update the receiver to a version supporting archive synchronization and check its logs.'.format(r.status_code))
                 raise TransferFailure('Receiver rejected the transfer (HTTP {0:d}). Check its storage and service logs.'.format(r.status_code))
             raise TransferFailure('Sync error: {0:d}'.format(r.status_code))
 

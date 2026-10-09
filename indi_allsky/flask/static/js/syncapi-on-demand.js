@@ -38,7 +38,7 @@
             if (upload.bytes >= upload.total) rows.notice = 'Waiting for the receiver to acknowledge this file.';
         }
         if (state.cancel_requested) rows.notice = 'Cancellation requested; waiting for the upload or current network operation to stop.';
-        if (!state.enabled) rows.notice = 'Enable Sync API, select On demand, then save and apply.';
+        if (!state.enabled) rows.notice = 'Enable Sync API, select Archive sync, then save and apply.';
         return rows;
     }
 

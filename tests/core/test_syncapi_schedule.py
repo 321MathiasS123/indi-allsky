@@ -250,7 +250,7 @@ def test_applied_automatic_mode_still_explains_why_schedule_cannot_run(schedule_
     ctx.enable()
     result = ctx.module.status()
     assert result['state'] == 'disabled'
-    assert result['message'] == 'Save and apply On demand mode to use the schedule.'
+    assert result['message'] == 'Save and apply Archive sync mode to use the schedule.'
     assert ctx.probes == []
 
 

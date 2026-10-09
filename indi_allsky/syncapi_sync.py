@@ -108,7 +108,7 @@ def validate_upload_limit(value):
 
 def request_sync(config, types, schedule_revision=None, upload_limit=None):
     if not on_demand_enabled(config):
-        raise ValueError('Save and apply On demand mode before starting a synchronization.')
+        raise ValueError('Save and apply Archive sync mode before starting a synchronization.')
     if not isinstance(types, list) or not types or any(not isinstance(t, str) or t not in MEDIA for t in types):
         raise ValueError('Select at least one supported media type.')
     if upload_limit is None:
@@ -365,7 +365,7 @@ class SyncApiSyncWorker(Thread):
                 stage = 'Lookup'
                 response = client.put(local_file=path, metadata=lookup, empty_file=False, lookup=True)
                 if not isinstance(response, dict) or response.get('lookup_supported') is not True:
-                    raise TransferFailure('Update the receiver to a version supporting on-demand synchronization.')
+                    raise TransferFailure('Update the receiver to a version supporting archive synchronization.')
                 if response.get('present') is True:
                     # bool is an int subclass, but cannot be a valid remote ID.
                     if type(response.get('id')) is not int or response['id'] <= 0:
