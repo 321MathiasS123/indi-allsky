@@ -8,6 +8,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import queue
+import signal
 from threading import Event, Thread
 from types import SimpleNamespace
 
@@ -182,7 +183,8 @@ class StateStore:
 
 
 def capture_parent(receipts):
-    Worker = methods('allsky.py', 'IndiAllSky', ['_settleCapturePeriods', '_stopCaptureWorker'],
+    Worker = methods('allsky.py', 'IndiAllSky', ['_settleCapturePeriods', '_stopCaptureWorker', '_stopImageWorker',
+                                              'sigterm_handler_main'],
                      dict(app=SimpleNamespace(app_context=nullcontext), logger=logging.getLogger(__name__),
                           failure_key=failure_key, read_inflight=read_inflight, set_inflight=set_inflight))
     worker = Worker()
@@ -196,25 +198,32 @@ def capture_parent(receipts):
     return worker
 
 
-@pytest.mark.parametrize('alive,exitcode,forced,failed', [
-    (True, 0, False, False),   # acknowledged parent stop, with feeder joined
-    (False, 0, False, True),   # unexpected early return is not a planned stop
-    (False, 9, False, True),
-    (True, 9, False, True),    # worker failed during its requested drain
-    (True, 0, True, True),     # forced termination never certifies a drain
+@pytest.mark.parametrize('alive,exitcode,forced,requested,failed', [
+    (True, 0, False, False, False),   # acknowledged parent stop, with feeder joined
+    (False, 0, False, False, True),   # unexpected early return is not a planned stop
+    (False, 0, False, True, False),   # a requested drain completed before this check
+    (False, 9, False, True, True),
+    (False, 9, False, False, True),
+    (True, 9, False, False, True),    # worker failed during its requested drain
+    (True, 0, True, False, True),     # forced termination never certifies a drain
+    (False, 0, True, True, True),
 ])
-def test_capture_parent_only_clears_receipts_after_a_clean_requested_stop(alive, exitcode, forced, failed):
+def test_capture_parent_only_clears_receipts_after_a_clean_requested_stop(alive, exitcode, forced, requested, failed):
     receipts = tuple(multiprocessing.RawArray(ctypes.c_char, 256) for _ in range(2))
     set_inflight(receipts[0], PERIOD)
     parent = capture_parent(receipts)
-    child = SimpleNamespace(alive=alive, exitcode=exitcode, terminate=lambda: None)
+    terminated = []
+    child = SimpleNamespace(alive=alive, exitcode=exitcode, terminate=lambda: terminated.append(True))
     child.is_alive = lambda: child.alive
     child.join = lambda timeout=None: setattr(child, 'alive', False)
     parent.capture_worker = child
     parent._terminate = forced
+    parent._capture_worker_stop_requested = requested
     parent._stopCaptureWorker()
     assert (failure_key(PERIOD) in parent._miscDb.values) is failed
     assert all(read_inflight(receipt) is None for receipt in receipts)
+    assert not parent._capture_worker_stop_requested
+    assert bool(terminated) is (forced and alive)
 
 
 def test_capture_receipts_survive_delivery_and_keep_the_adjacent_period():
@@ -301,12 +310,119 @@ def test_image_worker_releases_jobs_only_after_save_returns_and_before_stop():
     assert read_inflight(receipt) is None
 
 
+def test_prior_gap_does_not_bypass_saving_the_remaining_fifo_prefix(caplog):
+    worker = image_worker(None)
+    worker._miscDb.setState(failure_key(PERIOD), 'Earlier capture interrupted')
+    saving, complete = Event(), Event()
+    def save(frame):
+        saving.set()
+        assert complete.wait(3)
+        worker.events.append('saved')
+    worker.processImage = save
+    worker.image_q.put(numbered_frame(1))
+    worker.image_q.put({'period_end': closing_marker(1)})
+    worker.image_q.put({'stop': True})
+    consumer = Thread(target=worker.saferun)
+    consumer.start()
+    try:
+        assert saving.wait(3)
+        assert worker.video_q.empty()
+    finally:
+        complete.set()
+        consumer.join(3)
+    assert not consumer.is_alive()
+    assert worker.events == ['saved', 'flush', 'flush']
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert worker._miscDb.values[failure_key(PERIOD)] == 'Earlier capture interrupted'
+    assert 'generating end-of-period outputs from available images' in caplog.text
+
+
+@pytest.mark.parametrize('unit', ['service/indi-allsky.service', 'debian/indi-allsky.indi-allsky.service'])
+def test_service_stop_signals_only_supervisor_before_bounded_cgroup_kill(unit):
+    text = (ROOT / unit).read_text()
+    assert 'ExecStop=/bin/kill -TERM $MAINPID' in text
+    assert 'KillMode=mixed' in text
+    assert 'SendSIGKILL=no' not in text
+    assert 'TimeoutStopSec=infinity' not in text
+
+
+def test_repeated_service_term_requests_a_graceful_drain_without_disarming_hard_abort():
+    parent = capture_parent(())
+    parent._shutdown = False
+    parent._terminate = False
+    # ExecStop and systemd can both signal the supervisor during one stop.
+    parent.sigterm_handler_main(signal.SIGTERM, None)
+    parent.sigterm_handler_main(signal.SIGTERM, None)
+    assert parent._shutdown
+    assert not parent._terminate
+    parent._terminate = True
+    parent.sigterm_handler_main(signal.SIGTERM, None)
+    assert parent._terminate
+
+
+def deliver_final_frame_during_stop(capture_queue, image_queue, receipts):
+    producer = CapturePeriodQueue(image_queue, capture_receipts=receipts)
+    producer.begin(1, (1, 0), DAY, 30)
+    assert capture_queue.get(timeout=10) == {'stop': True}
+    producer.put({'filename': 'last-delivery.fit'})
+    producer.end_period(1, DAY.isoformat(), True, [{'task_id': 5}])
+
+
+def save_final_frame_during_stop(image_queue, video_queue, saved):
+    worker = image_worker(None)
+    worker.image_q, worker.video_q = image_queue, video_queue
+    worker.processImage = lambda frame: saved.put(frame['filename'])
+    worker.saferun()
+
+
+def test_graceful_parent_stop_saves_late_capture_before_stopping_renderer():
+    ctx = multiprocessing.get_context('spawn')
+    capture_queue, image_queue, video_queue, saved = [ctx.Queue() for _ in range(4)]
+    receipts = tuple(ctx.RawArray(ctypes.c_char, 256) for _ in range(2))
+    capture = ctx.Process(target=deliver_final_frame_during_stop, args=(capture_queue, image_queue, receipts))
+    renderer = ctx.Process(target=save_final_frame_during_stop, args=(image_queue, video_queue, saved))
+    parent = capture_parent(receipts)
+    parent.capture_q, parent.image_q = capture_queue, image_queue
+    parent.capture_worker, parent.image_worker = capture, renderer
+    parent._terminate = False
+    errors = []
+    def stop():
+        try:
+            parent.sigterm_handler_main(signal.SIGTERM, None)
+            parent._stopCaptureWorker()
+            parent._stopImageWorker()
+        except BaseException as exc:
+            errors.append(exc)
+    renderer.start()
+    capture.start()
+    stopping = Thread(target=stop)
+    stopping.start()
+    try:
+        stopping.join(15)
+        assert not stopping.is_alive(), 'Ordered shutdown did not drain its queues'
+        assert not errors
+        assert capture.exitcode == renderer.exitcode == 0
+        assert saved.get(timeout=3) == 'last-delivery.fit'
+        assert video_queue.get(timeout=3) == {'task_id': 5}
+        assert not parent._miscDb.values
+        assert all(read_inflight(receipt) is None for receipt in receipts)
+    finally:
+        for child in (capture, renderer):
+            if child.is_alive():
+                child.terminate()
+                child.join(5)
+        stopping.join(5)
+        for channel in (capture_queue, image_queue, video_queue, saved):
+            channel.close()
+            channel.join_thread()
+
+
 def die_with_frame(receipt):
     set_inflight(receipt, PERIOD)
     os._exit(9)
 
 
-def test_worker_death_receipt_survives_and_replacement_fails_closed():
+def test_worker_death_receipt_survives_without_vetoing_available_outputs():
     ctx = multiprocessing.get_context('spawn')
     receipt = ctx.RawArray(ctypes.c_char, 256)
     process = ctx.Process(target=die_with_frame, args=(receipt,))
@@ -325,14 +441,14 @@ def test_worker_death_receipt_survives_and_replacement_fails_closed():
     worker.image_q.put({'period_end': {'period_id': PERIOD, 'tasks': [{'task_id': 5}]}})
     worker.image_q.put({'stop': True})
     worker.saferun()
-    assert worker.video_q.empty()
-    assert len(failed) == 1
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert not failed
     assert failure_key(PERIOD) in worker._miscDb.values
     assert read_inflight(receipt) is None
 
 
 @pytest.mark.parametrize('value', [b'partial:1', b'\xff', b'UNKNOWN'])
-def test_corrupt_receipt_blocks_any_period(value):
+def test_corrupt_receipt_warns_without_vetoing_any_period(value, caplog):
     receipt = multiprocessing.RawArray(ctypes.c_char, 256)
     receipt.value = value
     failed = []
@@ -340,8 +456,10 @@ def test_corrupt_receipt_blocks_any_period(value):
     worker.image_q.put({'period_end': {'period_id': PERIOD, 'tasks': [{'task_id': 5}]}})
     worker.image_q.put({'stop': True})
     worker.saferun()
-    assert worker.video_q.empty()
-    assert failed
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert not failed
+    assert failure_key('UNKNOWN') in worker._miscDb.values
+    assert 'generating end-of-period outputs from available images' in caplog.text
 
 
 def test_oversize_receipt_never_truncates_to_another_valid_period():
@@ -366,13 +484,14 @@ def test_processing_exception_keeps_receipt_for_replacement():
 
 @pytest.mark.parametrize('reason', ['Captured frame file was not found', 'Captured frame file was empty',
                                    'Captured frame could not be decoded'])
-def test_failed_frame_blocks_finalization_even_when_processing_returns(reason):
+def test_failed_frame_preserves_evidence_and_releases_available_outputs(reason):
     failed = []
     worker = image_worker(None, task_rows={5: SimpleNamespace(state='queued', setFailed=failed.append)})
     worker._failCapturePeriod({'capture_period_id': PERIOD}, reason)
     worker._releasePeriodEnd({'period_id': PERIOD, 'tasks': [{'task_id': 5}]})
-    assert worker.video_q.empty()
-    assert failed
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert not failed
+    assert worker._miscDb.values[failure_key(PERIOD)] == reason
 
 
 @pytest.mark.parametrize('mode,config,filename,expected_failure', [
@@ -516,8 +635,8 @@ def test_renderer_detects_lost_feeder_frames_even_without_an_inflight_receipt(de
     worker.image_q.put({'period_end': closing_marker(last_sequence)})
     worker.image_q.put({'stop': True})
     worker.saferun()
-    assert worker.video_q.empty()
-    assert failed
+    assert worker.video_q.get_nowait() == {'task_id': 5}
+    assert not failed
     assert failure_key(PERIOD) in worker._miscDb.values
 
 
@@ -644,7 +763,8 @@ def test_capture_restart_cannot_hide_a_lost_tail_across_the_period_boundary():
         parent._stopCaptureWorker()
         assert set(parent._miscDb.values) == {failure_key(PERIOD), failure_key('1:2026-10-09:0')}
         # A replacement stream starting at 1 cannot reveal the prior lost tail
-        # by sequence alone. The parent's exact-period failure still blocks it.
+        # by sequence alone. Preserve the parent's exact-period warning while
+        # allowing outputs from the images that did reach the renderer.
         output.put(numbered_frame(1, period='1:2026-10-09:0', stream='b' * 32))
         replacement_frame = output.get(timeout=5)
         assert not CaptureSequenceTracker().check(replacement_frame)
@@ -653,8 +773,9 @@ def test_capture_restart_cannot_hide_a_lost_tail_across_the_period_boundary():
             renderer = image_worker(None, state=parent._miscDb,
                                     task_rows={5: SimpleNamespace(state='queued', setFailed=failed.append)})
             renderer._releasePeriodEnd(closing_marker(1, period=identifier, stream='b' * 32))
-            assert renderer.video_q.empty()
-            assert len(failed) == 1
+            assert renderer.video_q.get_nowait() == {'task_id': 5}
+            assert not failed
+            assert failure_key(identifier) in renderer._miscDb.values
     finally:
         if child.is_alive():
             child.terminate()

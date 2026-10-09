@@ -246,6 +246,7 @@ class IndiAllSky(object):
         self.capture_error_q = Queue()
         self.capture_worker = None
         self.capture_worker_idx = 0
+        self._capture_worker_stop_requested = False
         self.capture_receipts = tuple(Array(ctypes.c_char, 256, lock=False) for _ in range(2))
 
         self.image_q = Queue()
@@ -325,7 +326,8 @@ class IndiAllSky(object):
 
         # set flag for program to stop processes
         self._shutdown = True
-        self._terminate = True
+        # The supervisor drains capture before stopping its consumers.  The
+        # service stop timeout still bounds this drain with a cgroup SIGKILL.
 
 
     def sigint_handler_main(self, signum, frame):
@@ -456,7 +458,9 @@ class IndiAllSky(object):
             if self.capture_worker.is_alive():
                 return
 
-            self._settleCapturePeriods(interrupted=True)
+            self._settleCapturePeriods(interrupted=(
+                self._terminate or not self._capture_worker_stop_requested or self.capture_worker.exitcode != 0
+            ))
 
             try:
                 capture_error, capture_traceback = self.capture_error_q.get_nowait()
@@ -467,6 +471,7 @@ class IndiAllSky(object):
 
 
         self.capture_worker_idx += 1
+        self._capture_worker_stop_requested = False
 
         logger.info('Starting Capture-%d worker', self.capture_worker_idx)
         self.capture_worker = CaptureWorker(
@@ -501,17 +506,21 @@ class IndiAllSky(object):
             with app.app_context():
                 for identifier in identifiers:
                     self._miscDb.setState(failure_key(identifier), 'Capture worker stopped before its delivered frame prefix was confirmed')
-                    logger.error('Capture period %s is incomplete after capture worker failure; end jobs will not run', identifier)
+                    logger.error('Capture period %s is incomplete after capture worker failure; end jobs will use available images', identifier)
         for receipt in self.capture_receipts:
             set_inflight(receipt, None)
 
 
     def _stopCaptureWorker(self):
         if not self.capture_worker:
+            self._capture_worker_stop_requested = False
             return
 
         if not self.capture_worker.is_alive():
-            self._settleCapturePeriods(interrupted=True)
+            self._settleCapturePeriods(interrupted=(
+                self._terminate or not self._capture_worker_stop_requested or self.capture_worker.exitcode != 0
+            ))
+            self._capture_worker_stop_requested = False
             return
 
         if self._terminate:
@@ -520,9 +529,12 @@ class IndiAllSky(object):
 
         logger.info('Stopping Capture worker')
 
-        self.capture_q.put({'stop' : True})
+        if not self._capture_worker_stop_requested:
+            self._capture_worker_stop_requested = True
+            self.capture_q.put({'stop' : True})
         self.capture_worker.join()
         self._settleCapturePeriods(interrupted=self._terminate or self.capture_worker.exitcode != 0)
+        self._capture_worker_stop_requested = False
 
 
     def _startImageWorker(self):
