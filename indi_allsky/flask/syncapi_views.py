@@ -8,6 +8,7 @@ import hmac
 import json
 import tempfile
 import shutil
+from uuid import UUID
 
 
 from flask import request
@@ -95,39 +96,33 @@ class SyncApiBaseView(BaseView):
                 app.logger.error('Invalid method: %s', str(request.method))
                 return jsonify({}), 400
 
-        except AuthenticationFailure as e:
-            app.logger.error('Authentication failure: %s', str(e))
-            return jsonify({'error' : 'authentication failed'}), 400
+        except InvalidMetadata as e:
+            app.logger.warning('Invalid SyncAPI metadata: %s', str(e))
+            return jsonify({'error': 'invalid metadata'}), 400
 
 
     def post(self, overwrite=False):
         metadata = self.saveMetadata(request.files['metadata'])
-
         tmp_media_file_p = self.saveMedia(request.files['media'])
-
-
-        media_file_size = tmp_media_file_p.stat().st_size
-        if media_file_size != metadata.get('file_size', -1):
-            tmp_media_file_p.unlink()
-            # Authentication already succeeded. Reject damaged media without
-            # misreporting a valid account/API key as an authentication failure.
-            app.logger.error('Media file size does not match: expected %s bytes, received %d bytes', metadata.get('file_size'), media_file_size)
-            return jsonify({'error': 'media_size_mismatch'}), 400
-
-
         try:
-            camera = self.getCamera(metadata)
-        except NoResultFound:
-            app.logger.error('Camera not found: %s', metadata['camera_uuid'])
-            return jsonify({'error' : 'camera not found'}), 400
-
-
-        try:
+            media_file_size = tmp_media_file_p.stat().st_size
+            if media_file_size != metadata.get('file_size', -1):
+                # Authentication already succeeded. Reject damaged media without
+                # misreporting a valid account/API key as an authentication failure.
+                app.logger.error('Media file size does not match: expected %s bytes, received %d bytes', metadata.get('file_size'), media_file_size)
+                return jsonify({'error': 'media_size_mismatch'}), 400
+            try:
+                camera = self.getCamera(metadata)
+            except NoResultFound:
+                app.logger.error('Camera not found: %s', metadata['camera_uuid'])
+                return jsonify({'error': 'camera not found'}), 400
             file_entry = self.processPost(camera, metadata, tmp_media_file_p, overwrite=overwrite)
         except EntryExists as e:
             app.logger.error('Transfer skipped: %s', str(e))
             return jsonify({'error' : 'file_exists'}), 400
-
+        finally:
+            # Rejected paths and failed copies must not accumulate temp files.
+            tmp_media_file_p.unlink(missing_ok=True)
 
         return jsonify({
             'id'   : file_entry.id,
@@ -187,9 +182,10 @@ class SyncApiBaseView(BaseView):
             return self.get()
 
         metadata = self.saveMetadata(request.files['metadata'])
+        camera_uuid = self.validateUuid(metadata.get('camera_uuid'))
         try:
             # Unlike getCamera(), a lookup must not update the camera's timezone.
-            camera = IndiAllSkyDbCameraTable.query.filter_by(uuid=metadata['camera_uuid']).one()
+            camera = IndiAllSkyDbCameraTable.query.filter_by(uuid=camera_uuid).one()
         except NoResultFound:
             return jsonify({'error': 'camera not found'}), 400
         return self.lookupSource(metadata, camera)
@@ -202,22 +198,26 @@ class SyncApiBaseView(BaseView):
             expected_hash = metadata['sha256']
             if type(expected_size) is not int or expected_size <= 0 or not isinstance(expected_hash, str) or len(expected_hash) != 64:
                 raise ValueError()
-            int(expected_hash, 16)
+            if any(c not in '0123456789abcdefABCDEF' for c in expected_hash):
+                raise ValueError()
             query = self.model.query.filter(self.model.camera_id == camera.id)
             if self.model == IndiAllSkyDbThumbnailTable:
-                query = query.filter(self.model.uuid == metadata['uuid'])
+                query = query.filter(self.model.uuid == self.validateUuid(metadata.get('uuid')))
             else:
+                for field in ('createDate', 'utc_offset'):
+                    if type(metadata[field]) not in (int, float) or not math.isfinite(metadata[field]):
+                        raise ValueError()
                 offset = metadata['utc_offset'] - datetime.now().astimezone().utcoffset().total_seconds()
                 created = self.receiverDate(metadata['createDate'] + offset)
                 query = query.filter(self.model.createDate == created)
             entry = query.first()
-        except (KeyError, TypeError, ValueError, OverflowError):
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
             return jsonify({'error': 'invalid source lookup'}), 400
         result = {'lookup_supported': True, 'present': False}
         # Only acknowledge a complete match. Missing/corrupt files and changed
         # thumbnail references must follow the normal upload/repair path.
         if entry and entry.thumbnail_uuid == metadata.get('thumbnail_uuid'):
-            path = entry.getFilesystemPath()
+            path = self.safePath(entry.getFilesystemPath())
             try:
                 if path.stat().st_size == expected_size:
                     digest = hashlib.sha256()
@@ -245,7 +245,7 @@ class SyncApiBaseView(BaseView):
 
         d_dayDate = datetime.strptime(metadata['dayDate'], '%Y%m%d').date()
 
-        date_folder = self.image_dir.joinpath('ccd_{0:s}'.format(camera.uuid), d_dayDate.strftime('%Y%m%d'))
+        date_folder = self.safePath(self.image_dir.joinpath('ccd_{0:s}'.format(camera.uuid), d_dayDate.strftime('%Y%m%d')))
         if not date_folder.exists():
             date_folder.mkdir(mode=0o755, parents=True)
 
@@ -255,7 +255,15 @@ class SyncApiBaseView(BaseView):
         else:
             timeofday_str = 'day'
 
-
+        filename_p = self.safePath(date_folder.joinpath(
+            self.filename_t.format(
+                camera.id,
+                d_dayDate.strftime('%Y%m%d'),
+                timeofday_str,
+                int(metadata['createDate']),
+                tmp_file_p.suffix,  # suffix includes dot
+            )
+        ))
 
         try:
             # Several mini timelapses may belong to the same day/night period.
@@ -278,6 +286,7 @@ class SyncApiBaseView(BaseView):
                 raise EntryExists('Entry Exists: {0:s}'.format(old_entry.filename))
 
 
+            self.validateAssetPath(old_entry)
             old_entry.deleteAsset()
 
             db.session.delete(old_entry)
@@ -289,28 +298,9 @@ class SyncApiBaseView(BaseView):
             pass
 
 
-        filename_p = date_folder.joinpath(
-            self.filename_t.format(
-                camera.id,
-                d_dayDate.strftime('%Y%m%d'),
-                timeofday_str,
-                int(metadata['createDate']),
-                tmp_file_p.suffix,  # suffix includes dot
-            )
-        )
-
         if filename_p.exists():
             app.logger.warning('Removing orphaned file: %s', filename_p)
             filename_p.unlink()
-
-
-        # do not sync these metadata keys for now
-        exclude_keys = []
-        for k in exclude_keys:
-            try:
-                metadata.pop(k)
-            except KeyError:
-                pass
 
 
         addFunction_method = getattr(self._miscDb, self.add_function)
@@ -329,8 +319,6 @@ class SyncApiBaseView(BaseView):
             filename_p.chmod(0o644)
 
 
-        tmp_file_p.unlink()
-
         app.logger.info('Uploaded file: %s', filename_p)
 
         return new_entry
@@ -346,6 +334,7 @@ class SyncApiBaseView(BaseView):
                 .one()
 
 
+            self.safePath(entry.getFilesystemPath())
             entry.deleteFile()
 
             app.logger.warning('Deleting entry %d', entry.id)
@@ -372,13 +361,44 @@ class SyncApiBaseView(BaseView):
 
     def saveMetadata(self, metadata_file):
         metadata_file.seek(0)  # rewind file
-        metadata_json = json.load(metadata_file)
-
-        # Not updating createDate here incase we need it for authentication
-
-        #app.logger.info('Json: %s', metadata_json)
-
+        try:
+            metadata_json = json.load(metadata_file)
+        except (ValueError, RecursionError) as e:
+            raise InvalidMetadata('Expected a JSON object') from e
+        if not isinstance(metadata_json, dict):
+            raise InvalidMetadata('Expected a JSON object')
         return metadata_json
+
+
+    def validateUuid(self, value):
+        # Camera and thumbnail identifiers become directory/file names.
+        # Authentication does not make arbitrary path components safe.
+        if not isinstance(value, str) or len(value) != 36:
+            raise InvalidMetadata('Invalid UUID')
+        try:
+            UUID(value)
+        except ValueError as e:
+            raise InvalidMetadata('Invalid UUID') from e
+        return value
+
+
+    def safePath(self, path):
+        # Resolve existing symlinks as well as '..' before touching the path.
+        try:
+            path.resolve().relative_to(self.image_dir.resolve())
+        except (ValueError, OSError, RuntimeError) as e:
+            raise InvalidMetadata('Media path is outside the image folder') from e
+        return path
+
+
+    def validateAssetPath(self, entry):
+        # Replacing an asset also deletes its thumbnail. Check both before
+        # allowing either deletion, including records made by older receivers.
+        self.safePath(entry.getFilesystemPath())
+        if entry.thumbnail_uuid:
+            thumbnail = IndiAllSkyDbThumbnailTable.query.filter_by(uuid=entry.thumbnail_uuid).first()
+            if thumbnail:
+                self.safePath(thumbnail.getFilesystemPath())
 
 
     def saveMedia(self, media_file):
@@ -403,7 +423,7 @@ class SyncApiBaseView(BaseView):
     def authorize(self, data):
         auth_header = request.headers.get('Authorization')
         if not auth_header:
-            raise AuthenticationFailure('Missing Authoriation header')
+            raise AuthenticationFailure('Missing Authorization header')
 
         try:
             bearer, user_hmac_hash = auth_header.split(' ')
@@ -417,13 +437,19 @@ class SyncApiBaseView(BaseView):
             raise AuthenticationFailure('Malformed API key')
 
 
+        # compare_digest's string arguments must be ASCII. Reject malformed
+        # SHA3-512 signatures before comparison (and before looking up a user).
+        if (bearer.lower() != 'bearer' or len(received_hmac) != 128
+                or any(c not in '0123456789abcdef' for c in received_hmac)):
+            raise AuthenticationFailure('Malformed API key')
+
         user = IndiAllSkyDbUserTable.query\
             .filter(IndiAllSkyDbUserTable.username == username)\
             .first()
 
 
-        if not user:
-            raise AuthenticationFailure('Unknown user')
+        if not user or not user.active or not user.apikey:
+            raise AuthenticationFailure('Unknown, inactive or unconfigured user')
 
 
         apikey = user.getApiKey(app.config['PASSWORD_KEY'])
@@ -461,8 +487,9 @@ class SyncApiBaseView(BaseView):
 
     def getCamera(self, metadata):
         # not catching NoResultFound
+        camera_uuid = self.validateUuid(metadata.get('camera_uuid'))
         camera = IndiAllSkyDbCameraTable.query\
-            .filter(IndiAllSkyDbCameraTable.uuid == metadata['camera_uuid'])\
+            .filter(IndiAllSkyDbCameraTable.uuid == camera_uuid)\
             .one()
 
 
@@ -513,6 +540,9 @@ class SyncApiCameraView(SyncApiBaseView):
 
 
     def getEntry(self, metadata):
+        self.validateUuid(metadata.get('camera_uuid'))
+        if type(metadata.get('id')) is not int or not 0 <= metadata['id'] <= 2**63 - 1:
+            raise InvalidMetadata('Invalid camera ID')
         try:
             entry = self.model.query\
                 .filter(self.model.id == metadata['id'])\
@@ -527,6 +557,7 @@ class SyncApiCameraView(SyncApiBaseView):
 
 
     def processPost(self, camera_notUsed, metadata, file_notUsed, overwrite=True):
+        self.validateUuid(metadata.get('uuid'))
         addFunction_method = getattr(self._miscDb, self.add_function)
         entry = addFunction_method(
             metadata,
@@ -556,13 +587,13 @@ class SyncApiBaseImageView(SyncApiBaseView):
         folder = self.getImageFolder(camera_createDate, image_metadata['night'], camera)
 
         date_str = camera_createDate.strftime('%Y%m%d_%H%M%S')
-        image_file_p = folder.joinpath(
+        image_file_p = self.safePath(folder.joinpath(
             self.filename_t.format(
                 camera.id,
                 date_str,
                 tmp_file_p.suffix,
             )
-        )
+        ))
 
 
         try:
@@ -583,6 +614,7 @@ class SyncApiBaseImageView(SyncApiBaseView):
 
 
             app.logger.warning('Removing orphaned image entry')
+            self.validateAssetPath(old_entry)
             old_entry.deleteAsset()
 
             db.session.delete(old_entry)
@@ -612,8 +644,6 @@ class SyncApiBaseImageView(SyncApiBaseView):
             image_file_p.chmod(0o644)
 
 
-        tmp_file_p.unlink()
-
         app.logger.info('Uploaded image: %s', image_file_p)
 
         return new_entry
@@ -630,12 +660,12 @@ class SyncApiBaseImageView(SyncApiBaseView):
             timeofday_str = 'day'
 
 
-        day_folder = self.image_dir.joinpath(
+        day_folder = self.safePath(self.image_dir.joinpath(
             'ccd_{0:s}'.format(camera.uuid),
             self.type_folder,
             '{0:s}'.format(day_ref.strftime('%Y%m%d')),
             timeofday_str,
-        )
+        ))
 
         if not day_folder.exists():
             day_folder.mkdir(mode=0o755, parents=True)
@@ -643,7 +673,7 @@ class SyncApiBaseImageView(SyncApiBaseView):
 
         hour_str = exp_date.strftime('%d_%H')
 
-        hour_folder = day_folder.joinpath('{0:s}'.format(hour_str))
+        hour_folder = self.safePath(day_folder.joinpath('{0:s}'.format(hour_str)))
         if not hour_folder.exists():
             hour_folder.mkdir(mode=0o755)
 
@@ -756,6 +786,7 @@ class SyncApiThumbnailView(SyncApiBaseView):
 
 
     def processPost(self, camera, thumbnail_metadata, tmp_file_p, overwrite=False):
+        self.validateUuid(thumbnail_metadata.get('uuid'))
         # offset createDate to account for difference between local and remote sites
         thumbnail_metadata['createDate'] += (thumbnail_metadata['utc_offset'] - datetime.now().astimezone().utcoffset().total_seconds())
 
@@ -800,7 +831,7 @@ class SyncApiThumbnailView(SyncApiBaseView):
             )
 
 
-        thumbnail_file_p = thumbnail_dir_p.joinpath(self.filename_t.format(thumbnail_metadata['uuid'], tmp_file_p.suffix))  # suffix includes dot
+        thumbnail_file_p = self.safePath(thumbnail_dir_p.joinpath(self.filename_t.format(thumbnail_metadata['uuid'], tmp_file_p.suffix)))  # suffix includes dot
 
 
         if not thumbnail_file_p.exists():
@@ -819,7 +850,7 @@ class SyncApiThumbnailView(SyncApiBaseView):
 
         else:
             if not overwrite:
-                raise EntryExists('Entry Exists: {0:s}'.format(old_thumbnail_entry.filename))
+                raise EntryExists('Entry Exists: {0:s}'.format(str(thumbnail_file_p)))
 
             app.logger.warning('Replacing image')
             thumbnail_file_p.unlink()
@@ -857,11 +888,13 @@ class SyncApiThumbnailView(SyncApiBaseView):
             thumbnail_file_p.chmod(0o644)
 
 
-        tmp_file_p.unlink()
-
         app.logger.info('Uploaded thumbnail: %s', thumbnail_file_p)
 
         return new_entry
+
+
+class InvalidMetadata(Exception):
+    pass
 
 
 class EntryExists(Exception):

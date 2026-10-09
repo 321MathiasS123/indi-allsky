@@ -181,8 +181,8 @@
         document.addEventListener('indi-allsky:config-saved', function () { return refresh(); });
 
         async function poll() {
-            // This endpoint reads the Pi's saved status; polling never contacts
-            // the NAS. Only explicit button handlers send commands.
+            // This endpoint reads the sender's saved status; polling never
+            // contacts the receiver. Only button handlers send commands.
             await refresh();
             schedule(poll, 5000);
         }

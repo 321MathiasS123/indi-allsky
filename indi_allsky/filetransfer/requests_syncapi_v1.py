@@ -201,6 +201,10 @@ class requests_syncapi_v1(GenericFileTransfer):
             raise CertificateValidationFailure(str(e)) from e
         except requests.exceptions.ConnectionError as e:
             raise ConnectionFailure(str(e)) from e
+        except requests.exceptions.ChunkedEncodingError as e:
+            # A lost response is not proof that the upload failed. Archive
+            # retries check the receiver's size/hash before sending it again.
+            raise ConnectionFailure(str(e)) from e
         except requests.exceptions.ReadTimeout as e:
             raise ConnectionFailure(str(e)) from e
         except ssl.SSLCertVerificationError as e:

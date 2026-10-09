@@ -55,6 +55,8 @@ sudo apt install -y indi-allsky
 ## Generate API key
 On the remote indi-allsky server, after the web server is deployed, generate an API key for the remote user.  You may create a dedicated user account for the sync activity.
 
+The receiver account must be active. Deactivating it also blocks SyncAPI access with its existing key.
+
 * Create user
 
         source virtualenv/indi-allsky/bin/activate
