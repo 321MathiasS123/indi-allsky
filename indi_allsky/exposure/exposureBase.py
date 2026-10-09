@@ -153,6 +153,7 @@ class IndiAllSky_Exposure_Base(object):
         self._highlight_previous_reduction = 0.0
         self._highlight_sample = None
         self._highlight_mode = None
+        self._highlight_slew = None
 
 
     def compare_highlights(self, measurement, exposure, gain):
@@ -164,6 +165,10 @@ class IndiAllSky_Exposure_Base(object):
                      else self.config.get('TARGET_ADU_DEV', 10))
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
         mode = tuple(self.night_av)
+        # Keep this decision's prior strength across the clipping-history
+        # resets below. External resets and mode changes must still discard it.
+        previous_scale = (self._highlight_slew[1] if self._highlight_slew is not None
+                          and self._highlight_slew[0] == mode else None)
         if mode != self._highlight_mode:
             self.reset_highlights()
         self._highlight_mode = mode
@@ -212,7 +217,7 @@ class IndiAllSky_Exposure_Base(object):
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
         if scale != 1.0:
-            self._set_exposure(exposure, gain, exposure * scale, highlight=True)
+            self._set_exposure(exposure, gain, exposure * scale, highlight=True, previous_scale=previous_scale)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
         # Dry-run the same mode policy, ISO selection and storage rounding used
@@ -227,6 +232,7 @@ class IndiAllSky_Exposure_Base(object):
                                           output_needed=self.highlight_output.active)
         logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
                     self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
+        self._highlight_slew = (mode, scale) if 0 < scale < 1 else None
         return measurement.adu, measurement.adu
 
 
@@ -309,7 +315,7 @@ class IndiAllSky_Exposure_Base(object):
         return next_exposure, next_gain, exposure_delta, gain_delta
 
 
-    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False):
+    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None):
         reducing = next_exposure < current_exposure
         scale = next_exposure / current_exposure if highlight and reducing else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
@@ -333,9 +339,11 @@ class IndiAllSky_Exposure_Base(object):
             # tracks can alternate large/small cuts. Limit the step from that
             # command to half the measured logarithmic correction. Approach
             # the original absolute target; never compound a cut on pending
-            # settings or predict how clipped patch areas would scale.
+            # settings or predict how clipped patch areas would scale. A new
+            # stronger demand bypasses this limit immediately.
             previous_change = self._highlight_signal_change(pending_exposure, pending_gain, current_exposure, current_gain)
             if (change is not None and previous_change is not None and previous_change < -1e-9
+                    and previous_scale is not None and scale >= previous_scale - 1e-9
                     and 0 < scale < 1 and change < math.log(scale) / 2
                     and math.isclose(self._expUtils.EXPOSURE_CURRENT, pending_exposure,
                                      rel_tol=0, abs_tol=0.0000005)
