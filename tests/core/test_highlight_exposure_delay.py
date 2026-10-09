@@ -27,6 +27,7 @@ def signal(instance, exposure, gain):
 @pytest.mark.parametrize('inflight', [False, True])
 def test_slew_requires_a_later_capture_with_the_pending_settings(inflight):
     instance = controller('exposure_basic', night=False)
+    instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1.1, 0)
     instance._expUtils.EXPOSURE_CURRENT = 1
     set_command(instance, .99, 0, inflight)
     instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1, 0)
@@ -47,6 +48,41 @@ def test_brightening_after_an_inflight_increase_keeps_the_urgent_absolute_cut():
     instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1, 0)
     # Smooth only an established downward track, not a reversal that would
     # otherwise leave the next capture brighter than the overexposed source.
+    assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
+
+
+def test_first_observation_does_not_soften_a_stronger_pending_cut():
+    instance = controller('exposure_basic', night=False)
+    set_command(instance, .99, 0)
+    instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1, 0)
+    assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
+
+
+@pytest.mark.parametrize('initial_scale', [.999, .97, .91])
+def test_sharper_fresh_demand_on_an_existing_downward_track_is_immediate(initial_scale):
+    instance = controller('exposure_basic', night=False)
+    set_command(instance, 1, 0)
+    instance.compare_highlights(HighlightMeasurement(0, 0, 90 / initial_scale), 1, 0)
+    set_command(instance, *requested(instance))
+    instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1, 0)
+    assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
+
+
+@pytest.mark.parametrize('boundary', ['reset', 'mode', 'recovery', 'hold'])
+def test_slew_history_does_not_cross_untrusted_mode_or_recovery_boundaries(boundary):
+    instance = controller('exposure_basic', night=False)
+    instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1.1, 0)
+    if boundary == 'reset':
+        instance.reset_highlights()
+    elif boundary == 'mode':
+        instance._expUtils.GAIN_MAX_NIGHT = 0
+        instance.night_av[0] = 1
+    else:
+        set_command(instance, 1, 0)
+        adu = 40 if boundary == 'recovery' else 80
+        instance.compare_highlights(HighlightMeasurement(0, 0, adu), 1, 0)
+    set_command(instance, .99, 0)
+    instance.compare_highlights(HighlightMeasurement(0, 0, 110), 1, 0)
     assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
 
 
@@ -98,6 +134,7 @@ def test_changing_severity_never_cuts_past_the_measured_target_or_raises_pending
 def test_slew_crosses_gain_floor_with_the_remaining_signal_change_in_exposure():
     instance = controller('exposure_autogain_exp_prio_db_1_10')
     instance.gain_quantum = 1
+    instance.compare_highlights(HighlightMeasurement(0, 0, 100), 30, 10)
     set_command(instance, 30, 2)
     instance.compare_highlights(HighlightMeasurement(0, 0, 100), 30, 6)
     exposure, gain = requested(instance)
