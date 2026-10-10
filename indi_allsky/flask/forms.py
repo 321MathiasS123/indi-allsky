@@ -4663,6 +4663,7 @@ class IndiAllskyConfigForm(FlaskForm):
     HIGHLIGHT_PROTECTION__MAX_BOOST   = FloatField('Maximum shadow lift (stops)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0, max=4)], widget=NumberInput(step=0.1))
     HIGHLIGHT_PROTECTION__GAMMA       = FloatField('Highlight gamma (Night)', default=0.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__GAMMA_DAY   = FloatField('Highlight gamma (Day)', default=0.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0)], widget=NumberInput(step=0.01))
+    HIGHLIGHT_PROTECTION__FRINGE_REDUCTION = BooleanField('Reduce blue/purple highlight fringes (daytime)')
     HIGHLIGHT_PROTECTION__OUTPUT_ENABLE = BooleanField('Protect processed output (experimental)')
     HIGHLIGHT_PROTECTION__OUTPUT_FULL_TARGET = FloatField('Output near-white target (%)', default=1.5, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__OUTPUT_FULL_DEV = FloatField('Output near-white deviation (percentage points)', default=0.5, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.01))

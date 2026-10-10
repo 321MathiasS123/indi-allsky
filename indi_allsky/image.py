@@ -884,6 +884,7 @@ class ImageWorker(Process):
 
 
         # sharpening (unsharp mask)
+        self.image_processor.reduce_highlight_fringes()
         self.image_processor.sharpen()
         self.image_processor.finish_colour_precision()
 

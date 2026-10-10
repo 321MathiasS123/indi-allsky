@@ -23,6 +23,7 @@ import ephem
 
 from . import constants
 from . import asi676mc
+from .highlight_fringe import reduce_highlight_fringes
 
 from . import stretch as stretch_classes
 from .overlay.orb import IndiAllskyOrbGenerator
@@ -2768,6 +2769,23 @@ class ImageProcessor(object):
 
 
         self.image = self._gamma_lut[self.image]
+
+
+    def reduce_highlight_fringes(self):
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        if self.focus_mode or not settings.get('ENABLE', False) or not settings.get('FRINGE_REDUCTION', False):
+            return
+
+        # Use this capture's Sun elevation, including in the FITS viewer where
+        # the selected processing profile can deliberately use night settings.
+        try:
+            sun_alt = float(self.astrometric_data.get('sun_alt'))
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(sun_alt) or sun_alt < 0:
+            return
+
+        self.image = reduce_highlight_fringes(self.image)
 
 
     def sharpen(self):
