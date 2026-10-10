@@ -167,6 +167,7 @@ class IndiAllSkyConfigBase(object):
             "MAX_BOOST" : 2.0,
             "GAMMA" : 0.0,
             "GAMMA_DAY" : 0.0,
+            "FRINGE_REDUCTION" : False,
             # Optional rendered-output guard; old installations keep raw-only control.
             "OUTPUT_ENABLE" : False,
             "OUTPUT_FULL_TARGET" : 1.5,

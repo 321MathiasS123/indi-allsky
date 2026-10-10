@@ -4463,6 +4463,7 @@ class ConfigView(FormView):
             'HIGHLIGHT_PROTECTION__MAX_BOOST' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0),
             'HIGHLIGHT_PROTECTION__GAMMA'     : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA', 0.0),
             'HIGHLIGHT_PROTECTION__GAMMA_DAY' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('GAMMA_DAY', 0.0),
+            'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('FRINGE_REDUCTION', False),
             'HIGHLIGHT_PROTECTION__OUTPUT_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False),
             'HIGHLIGHT_PROTECTION__OUTPUT_FULL_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_FULL_TARGET', 1.5),
             'HIGHLIGHT_PROTECTION__OUTPUT_FULL_DEV' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_FULL_DEV', 0.5),
@@ -5577,6 +5578,7 @@ class AjaxConfigView(BaseView):
                 ('ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
                 ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),
                 ('GAMMA', float), ('GAMMA_DAY', float),
+                ('FRINGE_REDUCTION', bool),
                 ('OUTPUT_ENABLE', bool), ('OUTPUT_FULL_TARGET', float), ('OUTPUT_FULL_DEV', float),
                 ('OUTPUT_ANY_TARGET', float), ('OUTPUT_ANY_DEV', float),
             )
@@ -11896,6 +11898,7 @@ class JsonImageProcessingView(JsonView):
 
 
             # sharpening (unsharp mask)
+            image_processor.reduce_highlight_fringes()
             image_processor.sharpen()
             image_processor.finish_colour_precision()
 

@@ -1,6 +1,7 @@
 """Exercise the real fields and validators without Linux D-Bus services."""
 import ast
 from decimal import Decimal
+import json
 import math
 import re
 from pathlib import Path
@@ -92,6 +93,7 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
         assert form.validate(), form.errors
         assert not form.HIGHLIGHT_PROTECTION__ENABLE.data
         assert not form.HIGHLIGHT_PROTECTION__OUTPUT_ENABLE.data
+        assert not form.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION.data
         assert form.HIGHLIGHT_PROTECTION__GAMMA.data == 0
         assert form.HIGHLIGHT_PROTECTION__GAMMA_DAY.data == 0
         template = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
@@ -107,7 +109,12 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
             assert f'id="{field.id}-error"' in html
             assert registry.count("'" + field.id + "'") == 1
             # Moving a settings box must not leave a second copy of its controls.
-            assert len(re.findall(r'form_config\.' + field.id + r'\b', template)) == (2 if field.id.endswith('ENABLE') else 1)
+            assert len(re.findall(r'form_config\.' + field.id + r'\b', template)) == (2 if isinstance(field, BooleanField) else 1)
+        config_tree = ast.parse((ROOT.parent / 'config.py').read_text(encoding='utf-8'))
+        defaults = next(value for node in ast.walk(config_tree) if isinstance(node, ast.Dict)
+                        for key, value in zip(node.keys, node.values)
+                        if isinstance(key, ast.Constant) and key.value == 'HIGHLIGHT_PROTECTION')
+        assert ast.literal_eval(defaults)['FRINGE_REDUCTION'] is False
 
 
 def test_settings_round_trip_through_real_config_view_assignments(form_class):
@@ -127,9 +134,11 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
               'GAMMA_CORRECTION': 0.87, 'GAMMA_CORRECTION_DAY': 1.565}
     view = SimpleNamespace(indi_allsky_config=config)
     payload = eval(load, {'self': view})
+    assert payload['HIGHLIGHT_PROTECTION__FRINGE_REDUCTION'] is False
     payload.update(HIGHLIGHT_PROTECTION__ENABLE=True, HIGHLIGHT_PROTECTION__FULL_TARGET=0.9,
                    HIGHLIGHT_PROTECTION__OUTPUT_ENABLE=True, HIGHLIGHT_PROTECTION__OUTPUT_ANY_DEV=0.25,
-                   HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85)
+                   HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85,
+                   HIGHLIGHT_PROTECTION__FRINGE_REDUCTION=True)
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-highlight-fields', 'exec'),
          {'self': view, 'request': SimpleNamespace(json=payload)})
     assert config['TARGET_ADU'] == 70
@@ -137,8 +146,19 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
     assert config['GAMMA_CORRECTION_DAY'] == 1.565
     assert config['IMAGE_STRETCH'] == {'MODE2_MIDTONES': 0.4}
     assert eval(load, {'self': view}) == payload
+    view.indi_allsky_config = json.loads(json.dumps(config))
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        form = form_class(data=eval(load, {'self': view}))
+        assert form.validate(), form.errors
+        assert form.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION.data is True
     # A configuration tab opened before the upgrade does not supply new fields.
     # Saving it must neither fail nor switch off an already-enabled feature.
+    old_payload = {key: value for key, value in payload.items() if key != 'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION'}
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-old-form', 'exec'),
-         {'self': view, 'request': SimpleNamespace(json={})})
+         {'self': view, 'request': SimpleNamespace(json=old_payload)})
     assert eval(load, {'self': view}) == payload
+    exec(compile(ast.Module(body=[save], type_ignores=[]), 'disable-fringe', 'exec'),
+         {'self': view, 'request': SimpleNamespace(json={'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION': False})})
+    assert eval(load, {'self': view})['HIGHLIGHT_PROTECTION__FRINGE_REDUCTION'] is False
