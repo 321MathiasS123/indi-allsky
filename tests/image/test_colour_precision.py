@@ -291,6 +291,7 @@ def test_worker_cycle_timer_includes_context_teardown():
                      set_inflight=set_inflight)
     exec(compile(ast.Module(body=[method], type_ignores=[]), 'worker-cycle-method', 'exec'), namespace)
     worker = SimpleNamespace(image_q=SimpleNamespace(get=lambda **kwargs: next(tasks)), _shutdown=False,
+                             backlog_state=None,
                              period_inflight=None, capture_sequence=CaptureSequenceTracker(),
                              _checkCaptureSequence=lambda *args: None,
                              processImage=lambda task: events.append('process'),

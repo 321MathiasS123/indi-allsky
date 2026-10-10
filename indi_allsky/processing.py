@@ -1,4 +1,5 @@
 import io
+import copy
 import re
 from pathlib import Path
 from datetime import datetime
@@ -1617,6 +1618,108 @@ class ImageProcessor(object):
         logger.info('Fixed %d holes in %0.4f s', hole_count, holes_elapsed_s)
 
 
+    def measure_highlights(self):
+        """Meter an independent pre-dark view, leaving saved image data untouched."""
+        from .highlight import measure
+
+        i_ref = self.getLatestImage()
+        data = i_ref.hdulist[0].data
+        # Build a metering view without changing the mosaic, FITS header or
+        # eventual image format. Colour cameras still meter all three channels
+        # when the rendered image is configured as grayscale.
+        if i_ref.image_bitpix in (-32, 32):
+            data = numpy.clip(data, 0, 65535).astype(numpy.uint16)
+        if data.ndim == 3:
+            data = cv2.cvtColor(numpy.moveaxis(data, 0, -1), cv2.COLOR_RGB2BGR)
+        else:
+            bayer_pattern = self.config.get('CFA_PATTERN') or i_ref.image_bayerpat
+            if bayer_pattern:
+                data = cv2.cvtColor(data, self.__cfa_bgr_map[bayer_pattern])
+        if self._adu_mask_dict[i_ref.binning] is None:
+            self._generateAduMask(data, i_ref.binning)
+        # max_bit_depth already honours CCD_BIT_DEPTH or observed output range;
+        # FITS storage alone cannot distinguish native 12-bit from scaled 16-bit.
+        bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
+        return measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
+                       self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
+
+
+    def calibrate_highlights(self, measurement):
+        # Keep pre-dark clipping areas, but use the current calibrated capture
+        # for the exposure controller's ADU target and shadow-lift limit.
+        i_ref = self.getLatestImage()
+        data = i_ref.opencv_data
+        if data.ndim == 3:
+            data = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+        bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)
+        adu = cv2.mean(data, mask=self._adu_mask_dict[i_ref.binning])[0] / (1 << (bit_depth - 8))
+        return measurement._replace(adu=adu)
+
+
+    def measure_output_highlights(self):
+        """Meter enhanced pixels in the transformed ADU mask, before overlays.
+
+        Reuse the actual geometry methods on a shallow processor copy; rotating
+        a mask must never rotate the real image twice or modify saved data.
+        """
+        from .highlight import measure_rendered
+
+        i_ref = self.getLatestImage()
+        mask = self._adu_mask_dict[i_ref.binning]
+        if mask is None:
+            return None
+        geometry = ('IMAGE_ROTATE', 'IMAGE_ROTATE_ANGLE', 'IMAGE_ROTATE_KEEP_SIZE',
+                    'IMAGE_FLIP_V', 'IMAGE_FLIP_H', 'IMAGE_CROP_IMAGE_CIRCLE',
+                    'LENS_IMAGE_CIRCLE', 'LENS_OFFSET_X', 'LENS_OFFSET_Y', 'DETECT_DRAW')
+        key = (id(mask), i_ref.binning, tuple(self.config.get(k) for k in geometry),
+               tuple(self.config.get('IMAGE_CROP_ROI') or ()))
+        if getattr(self, '_highlight_output_mask_key', None) != key:
+            view = copy.copy(self)
+            view.image = numpy.where(mask != 0, 255, 0).astype(numpy.uint8)
+            if self.config.get('DETECT_DRAW'):
+                # The debug detection label is drawn earlier than enhancement.
+                # Exclude its footprint rather than metering artificial text.
+                marks = self._draw.main(numpy.zeros_like(i_ref.opencv_data, dtype=numpy.uint8), i_ref.binning)
+                view.image[numpy.any(marks != 0, axis=2) if marks.ndim == 3 else marks != 0] = 0
+            view.rotate_90()
+            view.rotate_angle()
+            view.flip_v()
+            view.flip_h()
+            view.crop_image()
+            # Exclude interpolated mask edges rather than expanding the ROI.
+            self._highlight_output_mask = (view.image == 255).astype(numpy.uint8)
+            self._highlight_output_mask_key = key
+        result = measure_rendered(self.image, self._highlight_output_mask)
+        if result is None:
+            logger.warning('Highlight output unavailable: empty or mismatched metering mask')
+        return result
+
+
+    def highlight_output_trusted(self):
+        """A stack mixing capture settings cannot describe one exposure's look."""
+        i_ref = self.getLatestImage()
+        return all(
+            (ref.asi676mc_repair_result or {}).get('status') != 'repaired'
+            and math.isclose(ref.exposure, i_ref.exposure, rel_tol=0, abs_tol=0.0000005)
+            and math.isclose(ref.gain, i_ref.gain, rel_tol=0, abs_tol=0.0005)
+            and ref.binning == i_ref.binning
+            for ref in self.image_list if ref is not None
+            and not asi676mc.excluded_from_downstream_measurements(ref.asi676mc_repair_result)
+        )
+
+
+    def compensate_highlights(self, adu):
+        """Lift the rendered frame/stack and return the applied lift in stops."""
+        from .highlight import compensate
+
+        i_ref = self.getLatestImage()
+        target = self.config['TARGET_ADU' if self.night_av[constants.NIGHT_NIGHT] else 'TARGET_ADU_DAY']
+        max_boost = self.config.get('HIGHLIGHT_PROTECTION', {}).get('MAX_BOOST', 2.0)
+        target = self.highlight_transition.render_target(adu, target, max_boost)
+        self.image = compensate(self.image, min(self.max_bit_depth, i_ref.image_bitpix), adu, target, max_boost)
+        return self.highlight_transition.lift
+
+
     def calculate_8bit_adu(self):
         i_ref = self.getLatestImage()
 
@@ -1661,6 +1764,10 @@ class ImageProcessor(object):
         else:
             raise Exception('Unsupported bit depth')
 
+
+        if self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False):
+            # Integer ADU steps become visible when compensating dark captures.
+            adu_8 = adu if i_ref.image_bitpix == 8 else adu / (1 << (self.max_bit_depth - 8))
 
         logger.info('ADU average: %0.1f (%d)', adu, adu_8)
 
@@ -2626,6 +2733,18 @@ class ImageProcessor(object):
             else:
                 # day
                 GAMMA_CORRECTION = float(self.config.get('GAMMA_CORRECTION_DAY', 1.0))
+
+
+        highlight_config = self.config.get('HIGHLIGHT_PROTECTION', {})
+        transition = getattr(self, 'highlight_transition', None)
+        if highlight_config.get('ENABLE', False) and transition is not None:
+            # Zero inherits the normal profile. Fade between the selected
+            # profile endpoints only while protection is needed or releasing.
+            key = 'GAMMA' if self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT] else 'GAMMA_DAY'
+            highlight_gamma = float(highlight_config.get(key, 0.0))
+            GAMMA_CORRECTION = transition.gamma(GAMMA_CORRECTION, highlight_gamma or GAMMA_CORRECTION)
+            logger.info('Highlight rendering: %s; lift %.3f stops; gamma %.4f; trusted capture: %s',
+                        transition.phase, transition.lift, GAMMA_CORRECTION, transition.trusted)
 
 
         if GAMMA_CORRECTION == 1.0:

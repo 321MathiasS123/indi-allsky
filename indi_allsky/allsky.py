@@ -29,6 +29,7 @@ from .config import IndiAllSkyConfig
 
 from . import constants
 from .capture_period import failure_key, read_inflight, set_inflight
+from .render_backlog import RenderBacklogState
 
 from .exceptions import TimeOutException
 from .exceptions import ConfigSaveException
@@ -256,6 +257,16 @@ class IndiAllSky(object):
         self.image_worker = None
         self.image_worker_idx = 0
 
+        # Meter new captures ahead of rendering.  Only filenames and small
+        # control snapshots cross these queues; image data stays on disk.
+        self.highlight_input_q = Queue()
+        self.highlight_feedback_q = Queue()
+        self.highlight_error_q = Queue()
+        self.highlight_worker = None
+        self.highlight_worker_idx = 0
+        self.highlight_inflight = Array(ctypes.c_char, 256, lock=False)
+        self.render_backlog = RenderBacklogState()
+
         self.video_q = Queue()
         self.video_error_q = Queue()
         self.video_worker = None
@@ -479,7 +490,7 @@ class IndiAllSky(object):
             self.config,
             self.capture_error_q,
             self.capture_q,
-            self.image_q,
+            self.highlight_input_q if self._highlightMeterEnabled() else self.image_q,
             self.video_q,
             self.upload_q,
             self.position_av,
@@ -491,6 +502,7 @@ class IndiAllSky(object):
             self.night_av,
             self.astro_av,
             capture_receipts=self.capture_receipts,
+            backlog_state=self.render_backlog if self._highlightMeterEnabled() else None,
         )
         self.capture_worker.start()
 
@@ -526,19 +538,88 @@ class IndiAllSky(object):
         if self._terminate:
             logger.info('Terminating Capture worker')
             self.capture_worker.terminate()
+        else:
+            # A producer's queue feeder may need its consumer even to exit.
+            self._startImageWorker()
 
         logger.info('Stopping Capture worker')
 
         if not self._capture_worker_stop_requested:
             self._capture_worker_stop_requested = True
             self.capture_q.put({'stop' : True})
-        self.capture_worker.join()
+        while self.capture_worker.is_alive():
+            self.capture_worker.join(timeout=1.0)
+            if not self._terminate and self.capture_worker.is_alive():
+                self._startImageWorker()
         self._settleCapturePeriods(interrupted=self._terminate or self.capture_worker.exitcode != 0)
         self._capture_worker_stop_requested = False
 
 
-    def _startImageWorker(self):
+    def _highlightMeterEnabled(self):
+        return (self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+                and not self.config.get('FOCUS_MODE', False))
+
+
+    def _startHighlightWorker(self):
+        if not self._highlightMeterEnabled():
+            return
+        if self.highlight_worker and self.highlight_worker.is_alive():
+            return
+
+        from .highlight_meter import HighlightMeterWorker
+
+        try:
+            error, traceback_text = self.highlight_error_q.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            logger.error('Highlight meter worker exception: %s\n%s', error, traceback_text)
+
+        self.highlight_worker_idx += 1
+        self.highlight_worker = HighlightMeterWorker(
+            self.highlight_worker_idx, self.config, self.highlight_error_q,
+            self.highlight_input_q, self.image_q, self.highlight_feedback_q,
+            self.position_av, self.exposure_av, self.gain_av, self.binning_av,
+            self.sensors_temp_av, self.sensors_user_av, self.night_av, self.astro_av,
+            backlog_state=self.render_backlog,
+            period_inflight=self.highlight_inflight,
+        )
+        self.highlight_worker.start()
+
+
+    def _stopHighlightWorker(self):
+        if not self.highlight_worker:
+            return
+        if self._terminate:
+            self.highlight_worker.terminate()
+        else:
+            # Capture has stopped.  Drain metering before appending the render
+            # stop marker so no captured image can be left behind it.
+            if not self.highlight_worker.is_alive():
+                self._startHighlightWorker()
+            self.highlight_input_q.put({'stop': True})
+        attempts = 0
+        while True:
+            while self.highlight_worker.is_alive():
+                self.highlight_worker.join(timeout=1.0)
+                if not self._terminate and self.highlight_worker.is_alive():
+                    self._startImageWorker(manage_meter=False)
+            if self._terminate or self.highlight_worker.exitcode == 0:
+                break
+            attempts += 1
+            if attempts > 3:
+                raise RuntimeError('Highlight meter could not drain captured images')
+            # Its FIFO stop marker remains behind the retained inputs.
+            self._startHighlightWorker()
+        self.highlight_worker = None
+
+
+    def _startImageWorker(self, manage_meter=True):
         from .image import ImageWorker
+
+        # Also supervise metering when the renderer is already alive.
+        if manage_meter:
+            self._startHighlightWorker()
 
         if self.image_worker:
             if self.image_worker.is_alive():
@@ -572,6 +653,8 @@ class IndiAllSky(object):
             video_q=self.video_q,
             period_inflight=self.period_inflight,
             period_sequence=self.period_sequence,
+            highlight_feedback_q=self.highlight_feedback_q if self._highlightMeterEnabled() else None,
+            backlog_state=self.render_backlog if self._highlightMeterEnabled() else None,
         )
         self.image_worker.start()
 
@@ -588,10 +671,14 @@ class IndiAllSky(object):
 
 
     def _stopImageWorker(self):
-        if not self.image_worker:
-            return
-
-        if not self.image_worker.is_alive():
+        if (self.image_worker and not self.image_worker.is_alive()
+                and not self._terminate):
+            # A failed renderer must still drain already captured files during
+            # a normal reload/stop, including the meter's remaining handoffs.
+            self._startImageWorker()
+        self._stopHighlightWorker()
+        if not self.image_worker or not self.image_worker.is_alive():
+            self._resetHighlightFeedbackQueue()
             return
 
         if self._terminate:
@@ -601,7 +688,24 @@ class IndiAllSky(object):
         logger.info('Stopping Image worker')
 
         self.image_q.put({'stop' : True})
-        self.image_worker.join()
+        attempts = 0
+        while True:
+            while self.image_worker.is_alive():
+                self.image_worker.join(timeout=1.0)
+            if self._terminate or self.image_worker.exitcode == 0:
+                break
+            attempts += 1
+            if attempts > 3:
+                raise RuntimeError('Image worker could not drain captured images')
+            self._startImageWorker(manage_meter=False)
+        self._resetHighlightFeedbackQueue()
+
+
+    def _resetHighlightFeedbackQueue(self):
+        # Both users have exited; discard old samples and any partial disposable
+        # write before restarting, including maintenance stops without a reload.
+        self.highlight_feedback_q.close()
+        self.highlight_feedback_q = Queue()
 
 
     def _startVideoWorker(self):

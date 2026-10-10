@@ -31,27 +31,27 @@ class IndiAllSky_Exposure_Basic(IndiAllSky_Exposure_Base):
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode
-                return self._expUtils.GAIN_MIN_MOONMODE
+                return self.effective_gain_limits(self._expUtils.GAIN_MIN_MOONMODE, self._expUtils.GAIN_MAX_MOONMODE)[0]
             else:
                 # night
-                return self._expUtils.GAIN_MIN_NIGHT
+                return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[0]
 
         else:
             # day
-            return self._expUtils.GAIN_MIN_DAY
+            return self.effective_gain_limits(self._expUtils.GAIN_MIN_DAY, self._expUtils.GAIN_MAX_DAY)[0]
 
     @property
     def gain_max(self):
         if self.night_av[constants.NIGHT_NIGHT]:
             if self.night_av[constants.NIGHT_MOONMODE]:
                 # moon mode
-                return self._expUtils.GAIN_MAX_MOONMODE
+                return self.effective_gain_limits(self._expUtils.GAIN_MIN_MOONMODE, self._expUtils.GAIN_MAX_MOONMODE)[1]
             else:
                 # night
-                return self._expUtils.GAIN_MAX_NIGHT
+                return self.effective_gain_limits(self._expUtils.GAIN_MIN_NIGHT, self._expUtils.GAIN_MAX_NIGHT)[1]
 
         else:
-            return self._expUtils.GAIN_MAX_DAY
+            return self.effective_gain_limits(self._expUtils.GAIN_MIN_DAY, self._expUtils.GAIN_MAX_DAY)[1]
 
 
     def compare_exposure(self, *args):

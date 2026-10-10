@@ -155,6 +155,25 @@ class IndiAllSkyConfigBase(object):
         "TARGET_ADU_DAY"     : 75,
         "TARGET_ADU_DEV"     : 10,
         "TARGET_ADU_DEV_DAY" : 20,
+        "HIGHLIGHT_PROTECTION" : {
+            # Patch targets/deviations are mask-area percentage points. THRESHOLD
+            # is percent of pixel full scale; MAX_BOOST is stops. Gamma 0 inherits.
+            "ENABLE" : False,
+            "FULL_TARGET" : 0.8,
+            "FULL_DEV" : 0.2,
+            "ANY_TARGET" : 2.0,
+            "ANY_DEV" : 0.4,
+            "THRESHOLD" : 99.0,
+            "MAX_BOOST" : 2.0,
+            "GAMMA" : 0.0,
+            "GAMMA_DAY" : 0.0,
+            # Optional rendered-output guard; old installations keep raw-only control.
+            "OUTPUT_ENABLE" : False,
+            "OUTPUT_FULL_TARGET" : 1.5,
+            "OUTPUT_FULL_DEV" : 0.5,
+            "OUTPUT_ANY_TARGET" : 2.5,
+            "OUTPUT_ANY_DEV" : 0.5,
+        },
         "ADU_ROI" : [],
         "ADU_FOV_DIV" : 4,
         "DETECT_STARS" : True,

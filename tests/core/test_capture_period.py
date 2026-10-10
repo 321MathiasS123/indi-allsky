@@ -194,6 +194,8 @@ def capture_parent(receipts):
     worker.capture_q = queue.Queue()
     worker._capture_worker_stop_requested = False
     worker._startImageWorker = lambda: None
+    worker._stopHighlightWorker = lambda: None
+    worker._resetHighlightFeedbackQueue = lambda: None
     worker._requestCaptureWorkerStop = lambda: worker.capture_q.put({'stop': True})
     return worker
 
@@ -263,6 +265,7 @@ def image_worker(receipt, state=None, task_rows=None, prefix=None):
     worker = Worker()
     worker.period_inflight = receipt
     worker.capture_sequence = CaptureSequenceTracker(prefix)
+    worker.backlog_state = None
     worker._miscDb = state or StateStore()
     worker._shutdown = False
     worker.image_q = queue.Queue()

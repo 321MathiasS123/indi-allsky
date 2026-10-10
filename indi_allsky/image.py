@@ -39,6 +39,8 @@ from .miscUpload import miscUpload
 from .adsb import AdsbAircraftHttpWorker
 
 from . import exposure as exposure_module
+from .highlight import HighlightMeasurement
+from .highlight_meter import apply_control_snapshot
 
 from .flask import create_app
 from .flask import db
@@ -89,6 +91,8 @@ class ImageWorker(Process):
         video_q=None,
         period_inflight=None,
         period_sequence=None,
+        highlight_feedback_q=None,
+        backlog_state=None,
     ):
         super(ImageWorker, self).__init__()
 
@@ -102,6 +106,8 @@ class ImageWorker(Process):
         self.period_inflight = period_inflight
         self.capture_sequence = CaptureSequenceTracker(period_sequence)
         self.upload_q = upload_q
+        self.highlight_feedback_q = highlight_feedback_q
+        self.backlog_state = backlog_state
 
         self.position_av = position_av
         self.exposure_av = exposure_av
@@ -240,6 +246,11 @@ class ImageWorker(Process):
         signal.signal(signal.SIGINT, self.sigint_handler_worker)
         signal.signal(signal.SIGALRM, self.sigalarm_handler_worker)
 
+        if self.highlight_feedback_q is not None:
+            # Metering stops before rendering drains.  Unconsumed feedback is
+            # disposable and must not keep this child's queue feeder alive.
+            self.highlight_feedback_q.cancel_join_thread()
+
 
         ### use this as a method to log uncaught exceptions
         try:
@@ -293,6 +304,8 @@ class ImageWorker(Process):
                 self.processImage(i_dict)
                 self.capture_sequence.complete(i_dict)
                 set_inflight(self.period_inflight, None)
+            if self.backlog_state is not None:
+                self.backlog_state.record(time.monotonic() - cycle_start)
             logger.info('Image worker cycle completed in %0.4f s (frame=%s, exposure=%s, sqm=%s)',
                 time.monotonic() - cycle_start, i_dict.get('exp_time'), i_dict.get('exposure'), bool(i_dict.get('sqm_exposure')))
 
@@ -345,9 +358,22 @@ class ImageWorker(Process):
         self._failCapturePeriod(frame, 'Expected timelapse image was not saved')
 
 
+    def send_highlight_feedback(self, job, output, trusted):
+        if self.highlight_feedback_q is None:
+            return
+        self.highlight_feedback_q.put({
+            'exp_time': job['exp_time'], 'exposure': job['exposure'],
+            'gain': job['gain'], 'binning': job['binning'],
+            'camera_id': job['camera_id'], 'capture_mode': tuple(self.night_av),
+            'measurement': tuple(output) if output is not None else None,
+            'trusted': bool(trusted),
+        })
+
+
     def processImage(self, i_dict):
         import piexif
 
+        self._highlight_control = i_dict.get('highlight_control')
         capture_day_date = self._setFrameContext(i_dict)
 
         ### Not using DB task queue for image processing to reduce database I/O
@@ -429,6 +455,10 @@ class ImageWorker(Process):
             .filter(IndiAllSkyDbCameraTable.id == camera_id)\
             .one()
 
+        camera_data = camera.data or {}
+        self.exposure_o.gain_values = camera_data.get('gain_values', [])
+        self.exposure_o.gain_quantum = camera_data.get('gain_quantum', 0.0)
+
 
         ### Special function: image is for SQM calculations only
         if sqm_exposure:
@@ -489,6 +519,15 @@ class ImageWorker(Process):
             return
 
 
+        # Apply the capability guard after per-frame settings have been loaded.
+        if (self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+                and camera_data.get('exposure_control') is False):
+            if not getattr(self, '_highlight_control_warned', False):
+                logger.warning('Highlight protection inactive: camera cannot command exposure')
+                self._highlight_control_warned = True
+            # Runtime only: controller, shadow lift and gamma fall back together.
+            self.config['HIGHLIGHT_PROTECTION'] = dict(self.config['HIGHLIGHT_PROTECTION'], ENABLE=False)
+
         # Purple-frame handling deliberately precedes both pre-dark and
         # post-dark standard FITS saving. In active repair mode those outputs
         # therefore contain the restored mosaic; diagnostic FITS below retain
@@ -527,6 +566,37 @@ class ImageWorker(Process):
             libcamera_black_level = i_ref.libcamera_black_level
 
 
+        # Meter clipping before dark/black-level subtraction hides saturation.
+        highlight_enabled = (
+            self.config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False)
+            and not self.image_processor.focus_mode
+        )
+        # Share only rendering state; correction-history resets must not release
+        # protection. Unusable/repaired captures hold the last trusted envelope.
+        self.image_processor.highlight_transition = self.exposure_o.highlight_transition
+        control = getattr(self, '_highlight_control', None)
+        if control is not None:
+            apply_control_snapshot(self.exposure_o, control)
+        else:
+            self.exposure_o.highlight_transition.trusted = False
+        if not highlight_enabled and control is None:
+            self.exposure_o.highlight_transition.reset()
+            self.exposure_o.highlight_output.reset()
+        highlight_repaired = (
+            highlight_enabled
+            and (i_ref.asi676mc_repair_result or {}).get('status') == 'repaired'
+        )
+        highlights = None
+        # Reconstructed highlights can be rendered, but cannot prove raw clipping.
+        if (
+            highlight_enabled
+            and control is None
+            and not highlight_repaired
+            and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result)
+        ):
+            highlights = self.image_processor.measure_highlights()
+
+
         self.image_processor.calibrate(libcamera_black_level=libcamera_black_level)
 
 
@@ -542,6 +612,21 @@ class ImageWorker(Process):
 
 
         self.image_processor.debayer()  # populates self.opencv_data
+
+        if control is not None and control['measurement'] is not None:
+            highlights = HighlightMeasurement(*control['measurement'])
+            highlight_adu, highlight_adu_average = highlights.adu, control['adu_average']
+        elif highlights is not None:
+            # Publish capture settings as soon as calibrated brightness is
+            # available; stacking and rendering must not delay this request.
+            highlights = self.image_processor.calibrate_highlights(highlights)
+            logger.info('Highlight control source: frame %s; exposure %.6fs @ gain %.3f',
+                        i_ref.exp_date.isoformat(), exposure, gain)
+            with self.live_night_av.get_lock():
+                if tuple(self.night_av) == tuple(self.live_night_av):
+                    highlight_adu, highlight_adu_average = self.exposure_o.compare_highlights(highlights, exposure, gain)
+                else:
+                    highlight_adu, highlight_adu_average = highlights.adu, highlights.adu
 
 
         self.image_processor.stack()  # populates self.image
@@ -663,8 +748,14 @@ class ImageWorker(Process):
         adu = self.image_processor.calculate_8bit_adu()
         # adu value may be updated below
 
-
         self.image_processor.denoise()
+
+        if highlight_enabled and not asi676mc.excluded_from_downstream_measurements(i_ref.asi676mc_repair_result):
+            # Rendering uses the stack's own ADU. Capture control above uses the
+            # current frame, so older frames in a stack cannot skew its feedback.
+            highlight_lift = self.image_processor.compensate_highlights(adu)
+            if highlights is not None:
+                logger.info('Highlight shadow lift applied: %.3f stops', highlight_lift)
 
         self.image_processor.stretch()
 
@@ -694,14 +785,14 @@ class ImageWorker(Process):
         # brightness sample. Do not let it alter exposure history or the next
         # capture settings.
         repair_result = i_ref.asi676mc_repair_result
-        # Do not publish a night exposure result after capture has switched to
-        # day (or conversely). Hold the same lock used by capture's mode update.
         with self.live_night_av.get_lock():
             exclude_from_exposure = (
                 asi676mc.excluded_from_downstream_measurements(repair_result)
                 or tuple(self.night_av) != tuple(self.live_night_av)
             )
-            if exclude_from_exposure:
+            if exclude_from_exposure or highlight_repaired:
+                if highlight_enabled:
+                    self.exposure_o.reset_highlights()
                 exposure_history = list(
                     getattr(self.exposure_o, 'hist_adu', ())
                 )
@@ -710,9 +801,19 @@ class ImageWorker(Process):
                     if exposure_history
                     else 0.0
                 )
-                logger.warning(
-                    'Ignoring excluded or outgoing-period frame for exposure control'
-                )
+                if highlight_repaired:
+                    logger.info('Highlight exposure/gain held: repaired ASI676MC frame has reconstructed highlights; shadow lift: %.3f stops', highlight_lift)
+                else:
+                    logger.warning(
+                        'Ignoring excluded ASI676MC frame for exposure control'
+                    )
+            elif highlights is not None:
+                # Reuse the early decision for telemetry; do not adjust exposure twice.
+                adu, adu_average = highlight_adu, highlight_adu_average
+            elif control is not None:
+                # Failed/held metering is deliberate. A delayed render must never
+                # retry capture control with an older frame or an obsolete mode.
+                adu_average = control['adu_average']
             else:
                 adu, adu_average = self.exposure_o.compare_exposure(
                     adu,
@@ -810,6 +911,25 @@ class ImageWorker(Process):
 
 
         self.image_processor.apply_image_circle_mask(i_ref.binning)
+
+
+        if highlights is not None and self.config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False):
+            # Record output feedback for the next early control pass. Never
+            # publish a second, late exposure command for this same capture.
+            output = self.image_processor.measure_output_highlights()
+            trusted_output = self.image_processor.highlight_output_trusted()
+            if getattr(self, '_highlight_control', None) is not None:
+                self.send_highlight_feedback(i_dict, output, trusted_output)
+            elif output is None:
+                # A missing ROI must not leave a stale output constraint latched.
+                self.exposure_o.highlight_output.reset()
+            else:
+                self.exposure_o.highlight_output.observe(
+                    output if trusted_output else None, exposure, gain, tuple(self.night_av),
+                    self.config['HIGHLIGHT_PROTECTION'])
+                logger.info('Highlight output: frame %s; exposure %.6fs @ gain %.3f; near-white (all >=240) %.3f%%; near-clip (any >=250) %.3f%%; feedback %s',
+                            i_ref.exp_date.isoformat(), exposure, gain, output.full, output.any,
+                            'usable' if trusted_output else 'held: mixed/repaired stack')
 
 
         self.image_processor.realtimeKeogramUpdate()

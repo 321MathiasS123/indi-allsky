@@ -134,6 +134,8 @@ class PycurlCameraWorker(Thread):
 
 class IndiClientPycurl(IndiClient):
 
+    exposure_control = False  # Downloading an image cannot change its exposure.
+
     def __init__(self, *args, **kwargs):
         super(IndiClientPycurl, self).__init__(*args, **kwargs)
 
