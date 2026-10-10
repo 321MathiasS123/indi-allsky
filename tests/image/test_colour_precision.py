@@ -270,6 +270,7 @@ def test_smooth_colour_matches_continuous_reference(processor, gamma, saturation
 
 
 def test_worker_cycle_timer_includes_context_teardown():
+    from indi_allsky.capture_period import CaptureSequenceTracker, read_inflight, set_inflight
     source = ast.parse((ROOT / 'indi_allsky/image.py').read_text(encoding='utf-8'))
     cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == 'ImageWorker')
     method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == 'saferun')
@@ -286,11 +287,14 @@ def test_worker_cycle_timer_includes_context_teardown():
     ticks = iter([10.0, 31.0])
     logger = SimpleNamespace(info=lambda *args: events.append(args), warning=lambda *args: None)
     namespace = dict(time=SimpleNamespace(monotonic=lambda: next(ticks)), logger=logger,
-                     app=SimpleNamespace(app_context=Context))
+                     app=SimpleNamespace(app_context=Context), read_inflight=read_inflight,
+                     set_inflight=set_inflight)
     exec(compile(ast.Module(body=[method], type_ignores=[]), 'worker-cycle-method', 'exec'), namespace)
     worker = SimpleNamespace(image_q=SimpleNamespace(get=lambda **kwargs: next(tasks)), _shutdown=False,
+                             period_inflight=None, capture_sequence=CaptureSequenceTracker(),
+                             _checkCaptureSequence=lambda *args: None,
                              processImage=lambda task: events.append('process'),
                              image_processor=SimpleNamespace(realtimeKeogramDataSave=lambda: None))
     namespace['saferun'](worker)
-    assert events[:3] == ['enter', 'process', 'exit']
-    assert events[3][1:] == (21.0, 123, .1, False)
+    assert events[:5] == ['enter', 'exit', 'enter', 'process', 'exit']
+    assert events[5][1:] == (21.0, 123, .1, False)

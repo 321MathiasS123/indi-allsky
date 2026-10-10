@@ -1747,4 +1747,3 @@ class IndiAllSky(object):
         db.session.commit()
 
         self.video_q.put({'task_id' : task.id})
-

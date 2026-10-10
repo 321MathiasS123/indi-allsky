@@ -2299,10 +2299,18 @@ class CaptureWorker(Process):
         # sqm used for an image taking at a specific exposure/gain for a controlled SQM measurement
         logger.info('Taking %0.6fs exposure (gain %0.3f / bin %d)', exposure, gain, binning)
 
+        if self.focus_mode:
+            period = self.config.get('FOCUS_DELAY', 4.0)
+        elif sqm_exposure:
+            period = 0.0
+        elif self.night:
+            period = self.config['EXPOSURE_PERIOD']
+        else:
+            period = self.config['EXPOSURE_PERIOD_DAY']
         mode = tuple(self.night_av)
         self._period_queue.begin(
             self.camera_id, mode, self._dateCalcs.getDayDate(),
-            self.config['EXPOSURE_PERIOD'] if mode[constants.NIGHT_NIGHT] else self.config['EXPOSURE_PERIOD_DAY'],
+            period,
         )
         self.indiclient.setCcdExposure(exposure, gain, binning, sync=sync, timeout=timeout, sqm_exposure=sqm_exposure)
 
@@ -2576,4 +2584,3 @@ class CaptureWorker(Process):
 
         for x, label in enumerate(temp_label_list[:50]):  # limit to 50
             self.SENSOR_SLOTS[x + 80][1] = '{0:s}'.format(label)
-

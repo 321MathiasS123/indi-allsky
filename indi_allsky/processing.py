@@ -479,6 +479,7 @@ class ImageProcessor(object):
             exp_elapsed,
             camera,
             detected_camera_name=detected_camera_name,
+            capture_day_date=capture_day_date,
         )
 
         self.image_list.insert(0, i_ref)  # new image is first in list
@@ -496,6 +497,7 @@ class ImageProcessor(object):
         exp_elapsed,
         camera,
         detected_camera_name=None,
+        capture_day_date=None,
     ):
         """Decode one capture into ImageData without updating the stack."""
         from astropy.io import fits

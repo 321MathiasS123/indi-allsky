@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import signal
+import time
 from threading import Event, Thread
 from types import SimpleNamespace
 
@@ -191,7 +192,6 @@ def capture_parent(receipts):
     worker.capture_receipts = receipts
     worker._miscDb = StateStore()
     worker.capture_q = queue.Queue()
-    worker.capture_watchdog = None
     worker._capture_worker_stop_requested = False
     worker._startImageWorker = lambda: None
     worker._requestCaptureWorkerStop = lambda: worker.capture_q.put({'stop': True})
@@ -250,7 +250,7 @@ def test_interrupted_capture_receipt_update_uses_exact_known_period_when_availab
 
 
 def image_worker(receipt, state=None, task_rows=None, prefix=None):
-    namespace = dict(app=SimpleNamespace(app_context=nullcontext), queue=queue,
+    namespace = dict(app=SimpleNamespace(app_context=nullcontext), queue=queue, time=time,
                      logger=logging.getLogger(__name__), frame_mode=frame_mode, datetime=datetime,
                      set_inflight=set_inflight, read_inflight=read_inflight, failure_key=failure_key,
                      NoResultFound=MissingState, TaskQueueState=SimpleNamespace(QUEUED='queued'),
@@ -574,6 +574,8 @@ def test_shoot_reserves_metadata_before_a_synchronous_camera_callback():
     worker.camera_id = 1
     worker.night_av = [1, 0]
     worker.config = {'EXPOSURE_PERIOD': 20, 'EXPOSURE_PERIOD_DAY': 5}
+    worker.focus_mode = False
+    worker.night = True
     worker._dateCalcs = SimpleNamespace(getDayDate=lambda: DAY)
     outgoing = queue.Queue()
     worker._period_queue = CapturePeriodQueue(outgoing)
