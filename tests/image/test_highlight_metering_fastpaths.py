@@ -25,12 +25,14 @@ def reference(data, mask, bits, threshold=99.0, rendered=False):
         return float(stats[1:, cv2.CC_STAT_AREA].max()) * 100 / count if len(stats) > 1 else 0.0
 
     if rendered:
-        return largest(lowest >= 240), largest(highest >= 250), 0.0, None, None
+        return largest(lowest >= 240), largest(highest >= 250), 0.0, None, None, 100.0, 100.0
     mono = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY) if data.ndim == 3 else data
     adu = cv2.mean(mono, mask=valid.astype(np.uint8))[0] / (1 << (bits - 8))
     cutoff = ((1 << bits) - 1) * threshold / 100.0
     return (largest(lowest >= cutoff), largest(highest >= cutoff), adu,
-            largest(lowest >= cutoff / 1.1), largest(highest >= cutoff / 1.1))
+            largest(lowest >= cutoff / 1.1), largest(highest >= cutoff / 1.1),
+            100 * np.count_nonzero((lowest >= cutoff / 2) & valid) / count,
+            100 * np.count_nonzero((highest >= cutoff / 2) & valid) / count)
 
 
 @pytest.mark.parametrize('dtype,bits', [(np.uint8, 8), (np.uint16, 12),

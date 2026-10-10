@@ -198,18 +198,14 @@ class IndiAllSky_Exposure_Base(object):
             self.reset_highlights()
         self._highlight_mode = mode
         scale, reason = exposure_decision(measurement, target, deviation, settings)
+        # ADU is linear signal, unlike clipped patch area. Retain its absolute
+        # target separately from the source-relative highlight safety limit.
+        response_target = (exposure_decision(measurement, target, deviation, settings, bounded=False)[0]
+                           if reason in ('ADU below band', 'ADU above band', 'recover shadow floor') else None)
         # This also covers recovery limited to the shadow floor by prediction.
         predicted_block = (measurement.adu < target - deviation
                            and (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
                                 or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4)))
-        if scale > 1.0:
-            if self._highlight_request_pending(exposure, gain):
-                # A capture already in flight can predate the latest request.
-                # Wait for its result before recovering, rather than undoing
-                # that request or compounding it. Compare at shared-storage
-                # precision; no assumptions about dB, ISO or fixed gain needed.
-                # Reductions remain immediate, and changed limits still apply.
-                scale, reason = 1.0, 'await pending exposure/gain'
         if reason in ('full clipping', 'any clipping', 'full+any clipping'):
             sample = (exposure, gain)
             if sample != self._highlight_sample:
@@ -234,6 +230,7 @@ class IndiAllSky_Exposure_Base(object):
             scale, measurement.adu, target, deviation, exposure, gain, mode, settings)
         if output_reason:
             reason += ' + ' + output_reason
+            response_target = None  # Output constraints retain their own bounds.
         self.hist_adu = []
         # Keep existing status/telemetry fields useful without the ADU history
         # delay. The reason string and requested multiplier are logged once here.
@@ -242,7 +239,8 @@ class IndiAllSky_Exposure_Base(object):
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
         if scale != 1.0:
-            self._set_exposure(exposure, gain, exposure * scale, highlight=True, previous_scale=previous_scale)
+            self._set_exposure(exposure, gain, exposure * scale, highlight=True,
+                               previous_scale=previous_scale, response_target=response_target)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
         # Dry-run the same mode policy, ISO selection and storage rounding used
@@ -340,12 +338,70 @@ class IndiAllSky_Exposure_Base(object):
         return next_exposure, next_gain, exposure_delta, gain_delta
 
 
-    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None):
+    def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None,
+                      response_target=None):
         reducing = next_exposure < current_exposure
-        scale = next_exposure / current_exposure if highlight and reducing else 1.0
+        scale = next_exposure / current_exposure if highlight else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
 
-        if highlight and reducing and self._highlight_request_pending(current_exposure, current_gain):
+        response_applied = False
+        pending = highlight and self._highlight_request_pending(current_exposure, current_gain)
+        if highlight and response_target is not None:
+            pending_exposure = self._expUtils.EXPOSURE_NEXT if pending else current_exposure
+            pending_gain = self.effective_gain(self._expUtils.GAIN_NEXT) if pending else current_gain
+            previous_change = self._highlight_signal_change(
+                pending_exposure, pending_gain, current_exposure, current_gain)
+            modelled = self._highlight_signal_change(next_exposure, next_gain, current_exposure, current_gain)
+            if previous_change is not None and modelled is not None:
+                target_change = math.log(response_target)
+                # An old dark frame must not undo a newer cut, nor may a stale
+                # target weaken an already stronger request in either direction.
+                if ((target_change > 0 and previous_change < -1e-9)
+                        or (target_change > 0 and previous_change >= target_change)
+                        or (target_change < 0 and previous_change <= target_change)):
+                    logger.info('Highlight ADU target already covered by pending exposure/gain')
+                    return
+                # Half the remaining logarithmic error gives proportional,
+                # diminishing steps even when the next capture is in flight.
+                # Anchor the target to the measured capture, never multiply an
+                # old correction onto pending settings. Bound each command and
+                # the total change justified by this source independently.
+                step = min(math.log(1.25), max(math.log(0.8), (target_change - previous_change) / 2))
+                change = previous_change + step
+                if target_change > 0:
+                    change = min(change, math.log(scale))
+                    if change <= previous_change + 1e-9:
+                        logger.info('Highlight growth held: await pending exposure/gain headroom')
+                        return
+                else:
+                    if previous_change > 0:
+                        # Cancel unmeasured growth immediately when the source
+                        # is already too bright; its old increase is not a safe
+                        # starting point for a leisurely reversal.
+                        change = min(change, math.log(scale))
+                    change = max(change, math.log(0.5))
+                    if change >= previous_change - 1e-9:
+                        return
+                response_exposure, response_gain, _, _ = self._calculate_exposure(
+                    pending_exposure, pending_gain,
+                    pending_exposure * math.exp(change - previous_change), highlight=True)
+                achieved = self._highlight_signal_change(
+                    response_exposure, response_gain, pending_exposure, pending_gain)
+                if achieved is not None:
+                    next_exposure, next_gain = response_exposure, response_gain
+                    exposure_delta = next_exposure - current_exposure
+                    gain_delta = next_gain - current_gain
+                    response_applied = True
+                    logger.info('Highlight ADU response: target %.3fx captured signal; command %.3fx pending signal',
+                                response_target, math.exp(achieved))
+
+        if pending and not reducing and not response_applied:
+            # Legacy gain ladders have no known signal conversion; output-only
+            # recovery also retains the conservative wait for applied settings.
+            logger.info('Highlight growth held: await pending exposure/gain')
+            return
+
+        if highlight and reducing and pending and not response_applied:
             pending_exposure = self._expUtils.EXPOSURE_NEXT
             pending_gain = self.effective_gain(self._expUtils.GAIN_NEXT)
             # An older frame's "reduction" can still raise a newer request.

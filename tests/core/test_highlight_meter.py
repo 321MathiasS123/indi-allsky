@@ -234,7 +234,7 @@ def test_forward_retains_original_and_suppresses_later_control_even_on_failure(t
     assert forwarded is capture
     assert original.read_bytes() == b'original camera data'
     assert forwarded['highlight_control']['status'] == ('metering failed' if failure else 'metered')
-    assert forwarded['highlight_control']['measurement'] == (None if failure else (0, 0, 30, 0, 0))
+    assert forwarded['highlight_control']['measurement'] == (None if failure else (0, 0, 30, 0, 0, 100, 100))
     assert meter.image_q.empty()
 
 
