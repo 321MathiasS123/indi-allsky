@@ -22,6 +22,7 @@ import queue
 
 from . import constants
 from .capture_period import CapturePeriodQueue
+from .twilight import capture_period, day_altitude, exposure_minimum, interpolate, night_weight, transition_gain
 from . import camera as camera_module
 
 from .utils import IndiAllSkyDateCalcs
@@ -794,6 +795,11 @@ class CaptureWorker(Process):
                         elif waiting_for_sqm_frame:
                             # take next exposure as quickly as possible
                             next_frame_time = frame_start_time
+                        elif self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+                            # Focus and dedicated SQM captures keep their timing above.
+                            next_frame_time = frame_start_time + capture_period(
+                                self.config, self.astro_av[constants.ASTRO_SUN_ALT],
+                            ) + self.add_period_delay
                         elif self.night:
                             next_frame_time = frame_start_time + self.config['EXPOSURE_PERIOD'] + self.add_period_delay
                         else:
@@ -1060,6 +1066,7 @@ class CaptureWorker(Process):
                 # from friendly labels and historical aliases. Camera-specific
                 # tools use this value as their authoritative persisted gate.
                 'detected_name': self.camera_name,
+                'twilight_gain_info': ccd_info.get('GAIN_INFO', {}),
             },
         }
 
@@ -1479,6 +1486,19 @@ class CaptureWorker(Process):
         if ccd_gain_default < gain_day:
             ccd_exposure_default = gain_day
 
+
+        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            # Startup uses the live Sun; subsequent image processing uses each
+            # exposure's midpoint. Do not seed it with an abrupt mode default.
+            weight = night_weight(
+                self.astro_av[constants.ASTRO_SUN_ALT], day_altitude(self.config),
+                self.config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),
+            )
+            minimum = exposure_minimum(self.config, self._expUtils, self.night, weight=weight)
+            ccd_exposure_default = min(maximum_exposure, max(minimum, ccd_exposure_default))
+            if exposure_class_str == 'exposure_basic':
+                night_gain = gain_moonmode if self.night_av[constants.NIGHT_MOONMODE] else gain_night
+                ccd_gain_default = transition_gain(interpolate(gain_day, night_gain, weight), ccd_info.get('GAIN_INFO', {}))
 
         if self._expUtils.EXPOSURE_CURRENT < 0:
             # only set this on first start
@@ -2303,6 +2323,9 @@ class CaptureWorker(Process):
             period = self.config.get('FOCUS_DELAY', 4.0)
         elif sqm_exposure:
             period = 0.0
+        elif self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            # Record the scheduler's current twilight interval for this frame.
+            period = capture_period(self.config, self.astro_av[constants.ASTRO_SUN_ALT])
         elif self.night:
             period = self.config['EXPOSURE_PERIOD']
         else:
@@ -2313,6 +2336,13 @@ class CaptureWorker(Process):
             period,
         )
         self.indiclient.setCcdExposure(exposure, gain, binning, sync=sync, timeout=timeout, sqm_exposure=sqm_exposure)
+
+
+    def _twilightCapturePeriod(self):
+        # Optional capture controllers use the same cadence as this scheduler.
+        if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False):
+            return capture_period(self.config, self.astro_av[constants.ASTRO_SUN_ALT])
+        return None
 
 
     def setTimeSystemd(self, new_datetime_utc):

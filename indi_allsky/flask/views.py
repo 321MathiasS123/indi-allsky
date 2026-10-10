@@ -27,6 +27,7 @@ from ..version import __version__
 from .. import constants
 from .. import asi676mc
 from .. import asi676mc_calibration
+from ..twilight import day_altitude, transition_forecast
 from ..processing import ImageProcessor
 from ..lens_solver import IndiAllSkyLensSolver
 from ..lens_solver import parseSolverRequestValues
@@ -2667,6 +2668,9 @@ class ConfigView(FormView):
             'CLAHE_CLIPLIMIT'                : self.indi_allsky_config.get('CLAHE_CLIPLIMIT', 3.0),
             'CLAHE_GRIDSIZE'                 : self.indi_allsky_config.get('CLAHE_GRIDSIZE', 8),
             'NIGHT_SUN_ALT_DEG'              : '{0:+0.1f}'.format(self.indi_allsky_config.get('NIGHT_SUN_ALT_DEG', -6.0)),
+            'TWILIGHT_TRANSITION__ENABLE'    : self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('ENABLE', False),
+            'TWILIGHT_TRANSITION__DAY_ALT'    : day_altitude(self.indi_allsky_config),
+            'TWILIGHT_TRANSITION__NIGHT_ALT'  : self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('NIGHT_ALT', -12.0),
             'NIGHT_MOONMODE_ALT_DEG'         : '{0:+0.1f}'.format(self.indi_allsky_config.get('NIGHT_MOONMODE_ALT_DEG', 5.0)),
             'NIGHT_MOONMODE_PHASE'           : self.indi_allsky_config.get('NIGHT_MOONMODE_PHASE', 50.0),
             'WEB_STATUS_TEMPLATE'            : self.indi_allsky_config.get('WEB_STATUS_TEMPLATE', ''),
@@ -3506,6 +3510,18 @@ class ConfigView(FormView):
         form_data['ADMIN_NETWORKS_FLASK'] = admin_network_text
 
         context['form_config'] = IndiAllskyConfigForm(data=form_data)
+        context['twilight_forecast'] = None
+        # Forecast the saved location/settings, not unsaved form edits.
+        if self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get('ENABLE'):
+            try:
+                context['twilight_forecast'] = transition_forecast(
+                    self.indi_allsky_config, datetime.now(tz=timezone.utc),
+                    self.indi_allsky_config.get('LOCATION_LATITUDE', 0.0),
+                    self.indi_allsky_config.get('LOCATION_LONGITUDE', 0.0),
+                    self.indi_allsky_config.get('LOCATION_ELEVATION', 0),
+                )
+            except (ValueError, TypeError):
+                pass  # invalid imported settings remain editable
 
         return context
 
@@ -3515,7 +3531,15 @@ class AjaxConfigView(BaseView):
     decorators = [login_required]
 
     def dispatch_request(self):
-        form_config = IndiAllskyConfigForm(data=request.json)
+        form_data = dict(request.json)
+        # Older clients omit these controls; validate the values they will retain.
+        for key, default in (('ENABLE', False),
+                             ('DAY_ALT', form_data.get('NIGHT_SUN_ALT_DEG', self.indi_allsky_config.get('NIGHT_SUN_ALT_DEG', -6.0))),
+                             ('NIGHT_ALT', -12.0)):
+            saved = self.indi_allsky_config.get('TWILIGHT_TRANSITION', {}).get(key, default)
+            form_data.setdefault('TWILIGHT_TRANSITION__' + key,
+                                 default if key == 'DAY_ALT' and saved is None else saved)
+        form_config = IndiAllskyConfigForm(data=form_data)
 
 
         if not app.config['LOGIN_DISABLED']:
@@ -3738,6 +3762,12 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['CLAHE_CLIPLIMIT']                      = float(request.json['CLAHE_CLIPLIMIT'])
         self.indi_allsky_config['CLAHE_GRIDSIZE']                       = int(request.json['CLAHE_GRIDSIZE'])
         self.indi_allsky_config['NIGHT_SUN_ALT_DEG']                    = float(request.json['NIGHT_SUN_ALT_DEG'])
+        # Omitted fields are retained rather than reset by older clients.
+        self.indi_allsky_config.setdefault('TWILIGHT_TRANSITION', {}).update({
+            key: convert(request.json['TWILIGHT_TRANSITION__' + key])
+            for key, convert in (('ENABLE', bool), ('DAY_ALT', float), ('NIGHT_ALT', float))
+            if 'TWILIGHT_TRANSITION__' + key in request.json
+        })
         self.indi_allsky_config['NIGHT_MOONMODE_ALT_DEG']               = float(request.json['NIGHT_MOONMODE_ALT_DEG'])
         self.indi_allsky_config['NIGHT_MOONMODE_PHASE']                 = float(request.json['NIGHT_MOONMODE_PHASE'])
         self.indi_allsky_config['WEB_STATUS_TEMPLATE']                  = str(request.json['WEB_STATUS_TEMPLATE'])
@@ -5093,6 +5123,8 @@ class Fits2JpegView(BaseView):
 
 
         p_config = self.indi_allsky_config.copy()
+        # FITS inspection uses a fixed profile, independent of capture twilight.
+        p_config['TWILIGHT_TRANSITION'] = dict(p_config.get('TWILIGHT_TRANSITION', {}), ENABLE=False)
 
 
         try:
@@ -9488,6 +9520,8 @@ class JsonImageProcessingView(JsonView):
 
         p_config = self.indi_allsky_config.copy()
 
+        # Keep the explicitly selected preview settings independent of the Sun.
+        p_config['TWILIGHT_TRANSITION'] = dict(p_config.get('TWILIGHT_TRANSITION', {}), ENABLE=False)
         p_config['LENS_IMAGE_CIRCLE']                    = int(request.json['LENS_IMAGE_CIRCLE'])
         p_config['LENS_OFFSET_X']                        = int(request.json['LENS_OFFSET_X'])
         p_config['LENS_OFFSET_Y']                        = int(request.json['LENS_OFFSET_Y'])

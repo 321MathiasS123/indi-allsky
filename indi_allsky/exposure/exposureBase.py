@@ -2,6 +2,7 @@ import copy
 import functools
 import logging
 
+from ..twilight import runtime_weight
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
 
@@ -78,6 +79,30 @@ class IndiAllSky_Exposure_Base(object):
             exp_scale_factor = 1.0  # scale exposure calculation
             history_max_vals = 6    # number of entries to use to calculate average
 
+
+        if runtime_weight(self.config) is not None:
+            previous_target = getattr(self, '_twilight_target', None)
+            tracking = getattr(self, '_twilight_tracking', None)
+            self._twilight_tracking = None
+            if previous_target != target_adu:
+                # Samples collected for a different target cannot establish a lock.
+                self.target_adu_found = False
+                self.hist_adu = []
+                if (previous_target and exposure > 0 and target_adu_min <= adu <= target_adu_max
+                        and abs(adu - previous_target) <= adu_dev):
+                    # Follow a moving target inside the brightness tolerance,
+                    # through the existing camera policy. Otherwise AE supplies
+                    # the correction below. This avoids tolerance-sized steps.
+                    # Carry fractions only once the previous request has taken
+                    # effect; queued frames and gain changes start a new track.
+                    base = tracking[2] if tracking and tracking[:2] == (exposure, gain) else exposure
+                    self.recalculate_exposure(exposure, gain, previous_target * exposure / base, target_adu,
+                                              target_adu, target_adu, 1.0)
+                    ideal = base * target_adu / previous_target
+                    if self.exposure_min <= ideal <= self.exposure_max and self._expUtils.GAIN_NEXT == gain:
+                        # Retain requested exposure, gain, and the unrounded ideal.
+                        self._twilight_tracking = (self._expUtils.EXPOSURE_NEXT, gain, ideal)
+            self._twilight_target = target_adu
 
 
         if not self.target_adu_found:
@@ -183,6 +208,24 @@ class IndiAllSky_Exposure_Base(object):
 
 
 
+    def apply_transition_limits(self):
+        """Apply moving limits even when a valid frame needs no AE correction."""
+        if runtime_weight(self.config) is None:
+            return
+        exposure = self._expUtils.EXPOSURE_NEXT
+        gain = self._expUtils.GAIN_NEXT
+        next_exposure = max(self.exposure_min, min(self.exposure_max, exposure))
+        next_gain = max(self.gain_min, min(self.gain_max, gain))
+        if hasattr(self, 'effective_gain'):
+            next_gain = self.effective_gain(next_gain)
+        if next_exposure != exposure:
+            # Add the clamp to any correction already made by the AE controller.
+            self._expUtils.EXPOSURE_NEXT = next_exposure
+            self._expUtils.EXPOSURE_DELTA += next_exposure - exposure
+        if next_gain != gain:
+            self._expUtils.GAIN_NEXT = next_gain
+            self._expUtils.GAIN_DELTA += next_gain - gain
+
+
     def adjust_exposure_gain(self, *args):
         raise Exception('Not implemented')
-

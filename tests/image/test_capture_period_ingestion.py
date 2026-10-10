@@ -31,6 +31,9 @@ def test_fits_ingestion_preserves_capture_period_and_legacy_date(tmp_path, entry
     processor_class = namespace['ImageProcessor']
     processor = processor_class.__new__(processor_class)
     processor.config = {'TARGET_ADU': 100, 'TARGET_ADU_DAY': 50}
+    if hasattr(processor, '_twilight_filter'):
+        from indi_allsky.twilight import TwilightTransition
+        processor.twilight = TwilightTransition(processor.config)
     processor.night_av = [1, 0]
     processor._detection_mask_dict = {}
     processor._check_astro_darkness = lambda: None
