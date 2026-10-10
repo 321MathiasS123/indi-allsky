@@ -2745,6 +2745,7 @@ class ImageProcessor(object):
             return
 
 
+        saturation_knee = 1.0
         if self.config.get('USE_NIGHT_COLOR', True):
             SATURATION_FACTOR = float(self.config.get('SATURATION_FACTOR', 1.0))
         else:
@@ -2755,17 +2756,24 @@ class ImageProcessor(object):
                 # day
                 SATURATION_FACTOR = float(self.config.get('SATURATION_FACTOR_DAY', 1.0))
 
+            # Use the capture-time twilight weight when that feature is enabled.
+            night_weight = self.config.get('_TWILIGHT_WEIGHT')
+            if self.config.get('TWILIGHT_TRANSITION', {}).get('ENABLE') and night_weight is not None:
+                saturation_knee = 0.95 + 0.05 * min(max(float(night_weight), 0.0), 1.0)
+            elif not self.night_av[constants.NIGHT_NIGHT]:
+                saturation_knee = 0.95
+
 
         if SATURATION_FACTOR == 1.0:
             # no action
             return
 
 
-        self._saturation_adjust(SATURATION_FACTOR)
+        self._saturation_adjust(SATURATION_FACTOR, saturation_knee=saturation_knee)
         return True
 
 
-    def _saturation_adjust(self, SATURATION_FACTOR):
+    def _saturation_adjust(self, SATURATION_FACTOR, saturation_knee=1.0):
         if self.image.dtype == numpy.uint16:
             # OpenCV HSV requires float or 8-bit input. Bound temporary memory
             # without quantizing the smooth sky to 256 levels before gamma.
@@ -2775,7 +2783,15 @@ class ImageProcessor(object):
                 block *= 1.0 / 65535.0
                 hsv = cv2.cvtColor(block, cv2.COLOR_BGR2HSV)
                 hsv[:, :, 1] *= SATURATION_FACTOR
-                numpy.minimum(hsv[:, :, 1], 1.0, out=hsv[:, :, 1])
+                if SATURATION_FACTOR > 1.0 and saturation_knee < 1.0:
+                    # Ease into full saturation to avoid a contour where a
+                    # smooth sky gradient clips before gamma correction.
+                    sat = hsv[:, :, 1]
+                    shoulder = sat > saturation_knee
+                    span = 1.0 - saturation_knee
+                    sat[shoulder] = 1.0 - span * numpy.exp(-(sat[shoulder] - saturation_knee) / span)
+                else:
+                    numpy.minimum(hsv[:, :, 1], 1.0, out=hsv[:, :, 1])
                 block = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
                 block *= 65535.0
                 numpy.clip(block, 0, 65535, out=block)
