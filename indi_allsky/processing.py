@@ -978,6 +978,19 @@ class ImageProcessor(object):
             return data
 
 
+        # Correct isolated cold Bayer samples before they spread into colour
+        # patches. Keep the HDU untouched: saved FITS remain calibration data.
+        night_colour = self.config.get('USE_NIGHT_COLOR', True) or self.night_av[constants.NIGHT_NIGHT]
+        if (getattr(self, 'twilight', None) and self.twilight.weight is not None
+                and not self.config.get('USE_NIGHT_COLOR', True)):
+            # Match the discrete endpoint used by the denoising stage.
+            night_colour = self.twilight.weight > 0.5
+        denoise_key = 'IMAGE_DENOISE' if night_colour else 'IMAGE_DENOISE_DAY'
+        if self.config.get(denoise_key) == 'star_aware' and not self.focus_mode:
+            from .sky_denoise import repair_bayer
+            data = repair_bayer(data, self.config, binning=i_ref.binning)
+
+
         if self.config.get('NIGHT_GRAYSCALE') and self.night_av[constants.NIGHT_NIGHT]:
             debayer_algorithm = self.__cfa_gray_map[image_bayerpat]
         elif self.config.get('DAYTIME_GRAYSCALE') and not self.night_av[constants.NIGHT_NIGHT]:
@@ -2163,7 +2176,62 @@ class ImageProcessor(object):
 
 
     def _denoise(self, denoise_function):
+        if getattr(denoise_function, '__name__', None) == 'star_aware':
+            i_ref = self.getLatestImage()
+            return denoise_function(self.image, binning=i_ref.binning,
+                                    sun_altitude=self._denoise_sun_altitude(i_ref),
+                                    **self._denoise_temporal_kwargs(i_ref))
         return denoise_function(self.image)
+
+
+    def _denoise_temporal_kwargs(self, i_ref):
+        """Share source history across denoiser instances, never across cameras.
+
+        Archive previews lack acquisition timing. Stacked frames repeat old
+        noise and must not be used as independent confirmation observations.
+        """
+        catalogue = getattr(self, '_sky_source_catalogue', None)
+        try:
+            elapsed = float(i_ref.exp_elapsed)
+            exposure = float(i_ref.exposure)
+            if (elapsed <= 0 or exposure <= 0 or not math.isfinite(elapsed) or not math.isfinite(exposure)
+                    or sum(ref is not None for ref in self.image_list) > 1
+                    or asi676mc.excluded_from_downstream_measurements(
+                        getattr(i_ref, 'asi676mc_repair_result', None))):
+                raise ValueError('No independent capture observation')
+            midpoint = i_ref.exp_date_utc - timedelta(seconds=max(elapsed, exposure) - exposure / 2)
+            night = getattr(i_ref, 'capture_night', self.night_av[constants.NIGHT_NIGHT])
+            period = float(self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 20))
+            context = dict(capture_time=midpoint.timestamp(),
+                           capture_interval=max(period, exposure, elapsed),
+                           geometry_key=(i_ref.camera_id, self.config.get('CFA_PATTERN') or i_ref.image_bayerpat))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            if catalogue is not None:
+                catalogue.reset()
+            return {}
+        if catalogue is None:
+            from .sky_catalogue import SkySourceCatalogue
+            catalogue = self._sky_source_catalogue = SkySourceCatalogue()
+        return dict(catalogue=catalogue, capture_context=context)
+
+
+    def _denoise_sun_altitude(self, i_ref):
+        """Use the exposure midpoint, even when processing is delayed by a queue."""
+        try:
+            # Convert to UTC before arithmetic across a local clock change.
+            # Archive replays lack readout timing; elapsed=0 uses half exposure.
+            midpoint = i_ref.exp_date_utc - timedelta(
+                seconds=max(i_ref.exp_elapsed, i_ref.exposure) - i_ref.exposure / 2)
+            observer = ephem.Observer()
+            observer.lat = math.radians(self.position_av[constants.POSITION_LATITUDE])
+            observer.lon = math.radians(self.position_av[constants.POSITION_LONGITUDE])
+            observer.elevation = self.position_av[constants.POSITION_ELEVATION]
+            observer.pressure = 0
+            observer.date = midpoint
+            return math.degrees(ephem.Sun(observer).alt)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            logger.warning('Cannot determine capture-time Sun altitude for denoising; retaining star protection')
+            return None
 
 
     def scnr(self):
@@ -4988,4 +5056,3 @@ class ImageData(object):
 
 
         self.detected_bit_depth = detected_bit_depth
-

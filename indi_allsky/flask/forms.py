@@ -3866,7 +3866,8 @@ class IndiAllskyConfigForm(FlaskForm):
         ('gaussian_blur', 'Gaussian Blur Filter — smooths uniformly'),
         ('median_blur', 'Median Filter — removes salt-and-pepper noise'),
         ('bilateral', 'Bilateral Filter— smooths sky background'),
-        ('wavelet', 'Wavelet Filter— frequency-domain, best quality (slow)'),
+        ('wavelet', 'Wavelet Filter — frequency-domain (slow)'),
+        ('star_aware', 'Star-aware sky denoise — stars, mottling and dark patches (very slow)'),
     )
 
     IMAGE_EXPORT_RAW_choices = (
