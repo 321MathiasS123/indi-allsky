@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from datetime import date, datetime, timedelta
 import heapq
 import logging
+import math
 from pathlib import Path
 import queue
 from types import SimpleNamespace
@@ -118,9 +119,9 @@ def test_renderer_crossing_the_capture_period_does_not_add_a_reaction_frame(init
         if initial > 18:
             # Metering completes after the next long exposure has started.
             assert commands[1][1:] == (initial, 0, None)
-            assert commands[2][1] == pytest.approx(initial * .9, abs=1e-6)
+            assert commands[2][1] == pytest.approx(initial * math.sqrt(90 / 110), abs=1e-6)
         else:
-            assert commands[1][1] == pytest.approx(initial * .9, abs=1e-6)
+            assert commands[1][1] == pytest.approx(initial * math.sqrt(90 / 110), abs=1e-6)
             assert commands[1][3] == 0
 
 

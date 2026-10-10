@@ -8,8 +8,9 @@ import cv2
 import numpy
 
 
-# The look-ahead mask must cover the largest increase the controller can ask for.
+# Each source-relative growth ceiling has its own raw-pixel headroom check.
 MAX_EXPOSURE_INCREASE = 1.1
+FAST_EXPOSURE_INCREASE = 2.0
 
 
 class HighlightMeasurement(NamedTuple):
@@ -17,13 +18,18 @@ class HighlightMeasurement(NamedTuple):
 
     ``full`` requires every channel; ``any`` requires at least one. Each area
     is its largest connected patch, not the sum of all clipped pixels.
-    ``*_next`` predicts those patches after the maximum exposure increase.
+    ``*_next`` predicts those patches after a 10% increase; ``*_fast`` bounds
+    them conservatively after doubling the captured signal.
     """
     full: float
     any: float
     adu: float
     full_next: float = 0.0
     any_next: float = 0.0
+    # Total areas at 2x signal conservatively bound connected patch areas.
+    # Older measurements have no such certificate and retain the 10% limit.
+    full_fast: float = 100.0
+    any_fast: float = 100.0
 
 
 class HighlightOutput:
@@ -368,16 +374,21 @@ def measure(data, mask, bit_depth, threshold=99.0):
     else:
         # The two definitions coincide for monochrome; avoid two full-image scans.
         any_channel, any_next = full, full_next
-    return HighlightMeasurement(full, any_channel, adu, full_next, any_next)
+    full_fast = float(numpy.count_nonzero((lowest >= cutoff / FAST_EXPOSURE_INCREASE) & valid)) * 100 / count
+    any_fast = (float(numpy.count_nonzero((highest >= cutoff / FAST_EXPOSURE_INCREASE) & valid)) * 100 / count
+                if data.ndim == 3 else full_fast)
+    return HighlightMeasurement(full, any_channel, adu, full_next, any_next, full_fast, any_fast)
 
 
-def exposure_decision(measurement, target, deviation, settings):
+def exposure_decision(measurement, target, deviation, settings, *, bounded=True):
     """Return an exposure multiplier and diagnostic reason for this capture.
 
     Either upper clipping limit can reduce exposure. Recovery toward target ADU
     needs both lower limits and low ADU; it never aims to create clipping.
     The shadow floor takes priority when the frame would need excessive lift.
     The selected exposure mode translates this request into exposure and gain.
+    ``bounded=False`` exposes the absolute ADU target for pending-aware easing;
+    clipped-area decisions always retain their independent bounds.
     """
     full_target = settings.get('FULL_TARGET', 0.8)
     full_dev = settings.get('FULL_DEV', 0.2)
@@ -388,6 +399,9 @@ def exposure_decision(measurement, target, deviation, settings):
     under = measurement.full < full_target - full_dev and measurement.any < any_target - any_dev
     adu = max(measurement.adu, 0.1)
     floor = target / (2 ** settings.get('MAX_BOOST', 2.0))
+    increase_limit = (FAST_EXPOSURE_INCREASE
+                      if measurement.full_fast <= full_limit and measurement.any_fast <= any_limit
+                      else MAX_EXPOSURE_INCREASE)
 
     # Keep shadows within the permitted lift, including after a scene change.
     if adu < floor * 0.98:
@@ -397,7 +411,11 @@ def exposure_decision(measurement, target, deviation, settings):
             # both sides of the floor. A darker frame must not ask for less
             # recovery merely because it crossed the maximum-lift boundary.
             recovery_target = max(floor, target - deviation)
-        return min(MAX_EXPOSURE_INCREASE, recovery_target / adu), 'recover shadow floor'
+        # Without headroom, the shadow-floor exception keeps its small step.
+        if recovery_target == floor:
+            increase_limit = MAX_EXPOSURE_INCREASE
+        ratio = recovery_target / adu
+        return (min(increase_limit, ratio) if bounded else ratio), 'recover shadow floor'
     if full_over or any_over:
         # A small brightness deadband prevents chasing noise at the lift limit.
         if adu <= floor * 1.02:
@@ -409,12 +427,14 @@ def exposure_decision(measurement, target, deviation, settings):
         reduction = min(0.2, 0.5 * excess)
         return max(1.0 - reduction, floor / adu), reason
     if adu > target + deviation:
-        return max(0.9, (target + deviation) / adu), 'ADU above band'
+        ratio = (target + deviation) / adu
+        return (max(0.9, ratio) if bounded else ratio), 'ADU above band'
     # Never lengthen exposure just to create clipping in an otherwise dark sky.
     if under and adu < target - deviation:
         if measurement.full_next > full_limit or measurement.any_next > any_limit:
             return 1.0, 'predicted clipping on increase'
-        return min(MAX_EXPOSURE_INCREASE, (target - deviation) / adu), 'ADU below band'
+        ratio = (target - deviation) / adu
+        return (min(increase_limit, ratio) if bounded else ratio), 'ADU below band'
     return 1.0, 'hold within control limits'
 
 
