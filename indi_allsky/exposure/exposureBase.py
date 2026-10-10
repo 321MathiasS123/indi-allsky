@@ -231,6 +231,8 @@ class IndiAllSky_Exposure_Base(object):
         if output_reason:
             reason += ' + ' + output_reason
             response_target = None  # Output constraints retain their own bounds.
+        if scale > 1 and response_target is None and self._highlight_request_pending(exposure, gain):
+            scale, reason = 1.0, 'await pending exposure/gain'
         self.hist_adu = []
         # Keep existing status/telemetry fields useful without the ADU history
         # delay. The reason string and requested multiplier are logged once here.
@@ -395,9 +397,9 @@ class IndiAllSky_Exposure_Base(object):
                     logger.info('Highlight ADU response: target %.3fx captured signal; command %.3fx pending signal',
                                 response_target, math.exp(achieved))
 
-        if pending and not reducing and not response_applied:
-            # Legacy gain ladders have no known signal conversion; output-only
-            # recovery also retains the conservative wait for applied settings.
+        if pending and not reducing and response_target is not None and not response_applied:
+            # Legacy gain ladders have no known signal conversion; retain the
+            # conservative wait when the ADU response cannot be modelled.
             logger.info('Highlight growth held: await pending exposure/gain')
             return
 
