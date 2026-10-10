@@ -41,16 +41,20 @@ def apply_control_snapshot(controller, snapshot):
     state = snapshot['transition']
     if state.get('reset'):
         transition.reset()
-    else:
+    elif state['trusted']:
         if state['active'] and not transition.active:
             transition.reference = None
         transition.active = state['active']
         transition.trusted = state['trusted']
         transition.reason = state['reason']
-        if state.get('seed'):
+        if state.get('seed') and transition._startup:
             transition.reference = state['target']
             transition.gamma_mix = 1.0
         transition._startup = False
+    else:
+        # A restarted meter has no decision yet. Untrusted captures must not
+        # erase the renderer's retained display or consume its cold-start seed.
+        transition.trusted = False
     controller._target_adu_found = snapshot['stable']
     controller._current_adu_target = snapshot['current_adu_target']
 

@@ -183,6 +183,7 @@ def test_startup_seed_is_applied_once_and_disabled_state_resets_rendering():
     control = controller()
     render = controller()
     control.highlight_transition.active = True
+    control.highlight_transition.trusted = True
     apply_control_snapshot(render, snapshot(control, seed=True, target=70.))
     assert render.highlight_transition.reference == 70
     assert render.highlight_transition.gamma_mix == 1.

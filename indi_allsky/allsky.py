@@ -276,6 +276,7 @@ class IndiAllSky(object):
         self.highlight_worker = None
         self.highlight_worker_idx = 0
         self.highlight_inflight = Array(ctypes.c_char, 256, lock=False)
+        self.highlight_render_state = Array(ctypes.c_char, 2048, lock=False)
         self.render_backlog = RenderBacklogState()
 
         self.video_q = Queue()
@@ -754,6 +755,7 @@ class IndiAllSky(object):
             video_q=self.video_q,
             period_inflight=self.period_inflight,
             period_sequence=self.period_sequence,
+            highlight_render_state=self.highlight_render_state,
         )
         self.image_worker.start()
         self._recordWorkerRestart(
