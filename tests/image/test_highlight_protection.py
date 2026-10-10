@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from indi_allsky import asi676mc, constants
-from indi_allsky.highlight import HighlightMeasurement, HighlightOutput, HighlightTransition, compensate, measure, measure_rendered
+from indi_allsky.highlight import HighlightMeasurement, HighlightOutput, HighlightRenderHistory, HighlightTransition, compensate, measure, measure_rendered
 from indi_allsky.highlight_meter import apply_control_snapshot
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch
 from indi_allsky.stretch.mode2_mtf import IndiAllSky_Mode2_MTF_Stretch_x2
@@ -130,6 +130,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     active = metered and meter_valid
     events = []
     reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0,
+                                hdulist=[SimpleNamespace(data=np.zeros((10, 10), dtype=np.uint16))],
                                 exp_date=datetime(2026, 10, 5, 7, 0, 14))
 
     def repair(ref):
@@ -165,6 +166,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
     controller.highlight_transition.gamma_mix = 1
     controller.highlight_transition.trusted = True
     worker = SimpleNamespace(config=config, image_processor=processor, exposure_o=controller,
+                             highlight_render_history=HighlightRenderHistory(config, None),
                              night_av=[True, False], live_night_av=Array('i', [1, 0]),
                              image_count=0, capture_asi676mc_diagnostic_fits=Mock(),
                              start_image_save_pre_hook=Mock(), write_fit=lambda *args: events.append('save'))
@@ -176,7 +178,7 @@ def test_worker_routes_measurement_and_processing_without_touching_off_path(enab
             'transition': {'active': enabled and not focus, 'trusted': active,
                            'reason': 'capture decision', 'reset': not enabled or focus},
         }
-    namespace = dict(self=worker, i_ref=reference, exposure=0.01, gain=0, binning=1,
+    namespace = dict(self=worker, i_ref=reference, i_dict={}, exposure=0.01, gain=0, binning=1,
                      camera=Mock(), filename_p=Mock(), libcamera_black_level=0, asi676mc=asi676mc,
                      logger=logging.getLogger(__name__), apply_control_snapshot=apply_control_snapshot,
                      HighlightMeasurement=HighlightMeasurement)

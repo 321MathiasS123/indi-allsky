@@ -1,4 +1,6 @@
 """Optional highlight metering and a bounded, colour-preserving shadow lift."""
+import hashlib
+import json
 import math
 from typing import NamedTuple
 
@@ -93,6 +95,84 @@ class HighlightOutput:
         if floor_limit > limit:
             limit, reason = floor_limit, 'output shadow reserve'
         return (limit, reason) if scale > limit else (scale, None)
+
+
+class HighlightRenderHistory:
+    """Small display-only handoff between render workers in one supervisor.
+
+    Only the renderer writes; a replacement reads after its predecessor exits.
+    No process lock or disk I/O is needed. A checksum rejects interrupted writes.
+    """
+
+    def __init__(self, config, shared):
+        self.shared = shared
+        self.pending = True
+        self.config = config
+        # Capture the original endpoints before optional twilight interpolation.
+        keys = (
+            'CAMERA_INTERFACE', 'CCD_BIT_DEPTH', 'CFA_PATTERN', 'FOCUS_MODE',
+            'TARGET_ADU', 'TARGET_ADU_DAY', 'TARGET_ADU_DEV', 'TARGET_ADU_DEV_DAY',
+            'GAMMA_CORRECTION', 'GAMMA_CORRECTION_DAY', 'USE_NIGHT_COLOR',
+            'ADU_ROI', 'ADU_FOV_DIV', 'DETECT_MASK', 'IMAGE_STRETCH',
+            'IMAGE_CALIBRATE_DARK', 'IMAGE_CALIBRATE_BPM', 'IMAGE_CALIBRATE_MANUAL_OFFSET',
+            'TWILIGHT_TRANSITION',
+        )
+        settings = {key: config.get(key) for key in keys}
+        # This display-only option must not erase brightness on its own reload.
+        settings['HIGHLIGHT_PROTECTION'] = {
+            key: value for key, value in config.get('HIGHLIGHT_PROTECTION', {}).items()
+            if key != 'FRINGE_REDUCTION'
+        }
+        self.signature = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
+        if shared is not None and (not settings['HIGHLIGHT_PROTECTION'].get('ENABLE')
+                                   or config.get('FOCUS_MODE')):
+            self.clear()
+
+    def clear(self):
+        self.pending = False
+        if self.shared is not None:
+            self.shared.value = b''
+
+    def _key(self, job, mode, shape):
+        return [self.signature, job['camera_id'], job['binning'], list(mode), list(shape)]
+
+    def restore(self, transition, job, mode, shape):
+        if not self.pending or self.shared is None:
+            return False
+        self.pending = False
+        try:
+            checksum, payload = self.shared.value.split(b'\n', 1)
+            if hashlib.sha256(payload).hexdigest().encode() != checksum:
+                return False
+            saved = json.loads(payload)
+            period = self.config.get('EXPOSURE_PERIOD' if mode[0] else 'EXPOSURE_PERIOD_DAY', 15)
+            cadence = max(float(job.get('capture_period', period)), float(job['exposure']))
+            # Compare capture times so a queued frame does not refresh old state.
+            age = float(job['exp_time']) - saved['time']
+            if saved['key'] != self._key(job, mode, shape) or not 0 <= age <= min(300, max(120, 3 * cadence)):
+                return False
+            active, reference, lift, gamma_mix = saved['display']
+            if (not isinstance(active, bool) or not math.isfinite(lift) or lift < 0
+                    or not 0 <= gamma_mix <= 1
+                    or (reference is not None and (not math.isfinite(reference) or reference <= 0))):
+                return False
+        except (ValueError, KeyError, TypeError):
+            return False
+        transition.active, transition.reference = active, reference
+        transition.lift, transition.gamma_mix = lift, gamma_mix
+        transition.trusted = False
+        transition._startup = False
+        transition.reason = 'retained display after worker restart'
+        return True
+
+    def remember(self, transition, job, mode, shape):
+        if self.shared is None or not transition.trusted:
+            return
+        payload = json.dumps({
+            'key': self._key(job, mode, shape), 'time': job['exp_time'],
+            'display': [transition.active, transition.reference, transition.lift, transition.gamma_mix],
+        }, separators=(',', ':'), allow_nan=False).encode()
+        self.shared.value = hashlib.sha256(payload).hexdigest().encode() + b'\n' + payload
 
 
 class HighlightTransition:

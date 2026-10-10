@@ -39,7 +39,7 @@ from .miscUpload import miscUpload
 from .adsb import AdsbAircraftHttpWorker
 
 from . import exposure as exposure_module
-from .highlight import HighlightMeasurement
+from .highlight import HighlightMeasurement, HighlightRenderHistory
 from .highlight_meter import apply_control_snapshot
 
 from .flask import create_app
@@ -93,12 +93,14 @@ class ImageWorker(Process):
         period_sequence=None,
         highlight_feedback_q=None,
         backlog_state=None,
+        highlight_render_state=None,
     ):
         super(ImageWorker, self).__init__()
 
         self.name = 'Image-{0:d}'.format(idx)
 
         self.config = config
+        self.highlight_render_history = HighlightRenderHistory(config, highlight_render_state)
 
         self.error_q = error_q
         self.image_q = image_q
@@ -575,6 +577,11 @@ class ImageWorker(Process):
         # protection. Unusable/repaired captures hold the last trusted envelope.
         self.image_processor.highlight_transition = self.exposure_o.highlight_transition
         control = getattr(self, '_highlight_control', None)
+        if not highlight_enabled or (control is not None and control['transition'].get('reset')):
+            self.highlight_render_history.clear()
+        if highlight_enabled:
+            self.highlight_render_history.restore(
+                self.exposure_o.highlight_transition, i_dict, self.night_av, i_ref.hdulist[0].data.shape)
         if control is not None:
             apply_control_snapshot(self.exposure_o, control)
         else:
@@ -881,6 +888,9 @@ class ImageWorker(Process):
 
         # gamma correction
         self.image_processor.apply_gamma_correction()
+        if highlight_enabled:
+            self.highlight_render_history.remember(
+                self.exposure_o.highlight_transition, i_dict, self.night_av, i_ref.hdulist[0].data.shape)
 
 
         # sharpening (unsharp mask)

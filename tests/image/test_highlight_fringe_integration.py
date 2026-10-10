@@ -89,5 +89,6 @@ def test_worker_and_fits_preview_apply_correction_before_sharpening(path, prefix
     calls = []
     methods = ('apply_gamma_correction', 'reduce_highlight_fringes', 'sharpen', 'finish_colour_precision')
     obj = SimpleNamespace(**{name: (lambda name=name: calls.append(name)) for name in methods})
-    exec(textwrap.dedent(source[start:end]), {'self': SimpleNamespace(image_processor=obj), 'image_processor': obj})
+    exec(textwrap.dedent(source[start:end]), {'self': SimpleNamespace(image_processor=obj),
+                                            'image_processor': obj, 'highlight_enabled': False})
     assert calls == list(methods)
