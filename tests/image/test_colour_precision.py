@@ -23,13 +23,14 @@ def processor():
         'convert_16bit_to_8bit', '_convert_16bit_to_8bit', 'restore_colour_precision',
         'normalize_colour_precision', 'finish_colour_precision', 'drawDetections', '_drawDetections',
         '_white_balance_mtf', '_generate_white_balance_lut', '_apply_gamma_correction',
-        '_saturation_adjust', '_sharpen', '_white_balance_auto_bgr',
+        'saturation_adjust', '_saturation_adjust', '_sharpen', '_white_balance_auto_bgr',
     }
     cls.body = [node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = dict(cv2=cv2, numpy=numpy, constants=constants, logger=logging.getLogger(__name__))
     exec(compile(ast.Module(body=[cls], type_ignores=[]), 'colour-precision-methods', 'exec'), namespace)
     obj = namespace['ImageProcessor']()
     obj.focus_mode = False
+    obj.config = {}
     obj.night_av = [False, False]
     obj._gamma_lut = obj._gamma_lut_gamma = None
     obj._wb_mtf_night = None
@@ -161,6 +162,78 @@ def test_16bit_saturation_endpoints(processor, factor):
         assert processor.image[0, 2, 2] < original[0, 2, 2]
 
 
+def test_day_saturation_knee_preserves_smooth_high_saturation_gradient_and_source(processor):
+    saturation = numpy.linspace(.9, 1.1, 201)
+    minimum = numpy.rint(60000 * (1 - saturation / 1.3)).astype(numpy.uint16)
+    row = numpy.stack((numpy.full_like(minimum, 60000), (minimum.astype(int) + 60000) // 2,
+                       minimum), axis=1).astype(numpy.uint16)
+    original = numpy.tile(row, (271, 1, 1))  # Cross both 128-row block boundaries.
+    unchanged = original.copy()
+    processor.image = original
+    processor._saturation_adjust(1.3)
+    legacy = processor.image.copy()
+    processor.image = original
+    processor._saturation_adjust(1.3, saturation_knee=.95)
+    result = processor.image
+    actual = (result[0].max(axis=1).astype(float) - result[0].min(axis=1)) / 60000
+    scaled_input = (60000 - minimum.astype(float)) / 60000 * 1.3
+    numpy.testing.assert_array_equal(result[:, scaled_input < .95], legacy[:, scaled_input < .95])
+    assert numpy.all(numpy.diff(actual) > 0)  # No flat clipped plateau above the knee.
+    assert numpy.diff(actual).max() < .0011  # No discontinuity at the knee.
+    assert actual[-1] < 1
+    # At requested saturation 1.05 the gentle shoulder is approximately .99323.
+    assert actual[150] == pytest.approx(.99323, abs=4e-5)
+    numpy.testing.assert_array_equal(result, numpy.broadcast_to(result[0], result.shape))
+    numpy.testing.assert_array_equal(original, unchanged)
+
+
+@pytest.mark.parametrize('factor,knee', [(1.3, 1.0), (0, .95), (.7, .95), (1, .95)])
+def test_saturation_knee_keeps_legacy_full_night_and_nonboosted_values(processor, factor, knee):
+    original = numpy.array([[[60000, 24000, 1200], [12345, 32768, 65535], [21000, 21000, 21000]]],
+                           dtype=numpy.uint16)
+    hsv = cv2.cvtColor(original.astype(numpy.float32) * (1 / 65535), cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] *= factor
+    numpy.minimum(hsv[:, :, 1], 1, out=hsv[:, :, 1])
+    expected = numpy.rint(numpy.clip(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR) * 65535, 0, 65535))
+    processor.image = original
+    processor._saturation_adjust(factor, saturation_knee=knee)
+    numpy.testing.assert_array_equal(processor.image, expected.astype(numpy.uint16))
+
+
+@pytest.mark.parametrize('night,shared,enabled,weight,expected', [
+    (False, False, False, None, .95), (True, False, False, None, 1),
+    (False, True, False, None, 1), (False, True, True, 0, 1),
+    (True, False, True, -.2, .95), (True, False, True, .4, .97),
+    (False, False, True, 1.2, 1), (False, False, False, .8, .95),
+    (True, False, True, None, 1),
+])
+def test_saturation_knee_follows_colour_mode_and_enabled_twilight_weight(
+        processor, night, shared, enabled, weight, expected):
+    processor.config = dict(USE_NIGHT_COLOR=shared, SATURATION_FACTOR=1.3,
+                            SATURATION_FACTOR_DAY=1.4, TWILIGHT_TRANSITION={'ENABLE': enabled})
+    if weight is not None:
+        processor.config['_TWILIGHT_WEIGHT'] = weight
+    processor.night_av[constants.NIGHT_NIGHT] = night
+    processor.image = numpy.full((2, 2, 3), 10000, numpy.uint16)
+    calls = []
+    processor._saturation_adjust = lambda factor, saturation_knee=1: calls.append((factor, saturation_knee))
+    assert processor.saturation_adjust() is True
+    assert len(calls) == 1
+    assert calls[0] == pytest.approx((1.3 if night or shared else 1.4, expected))
+
+
+@pytest.mark.parametrize('case', ['focus', 'mono', 'factor_one'])
+def test_saturation_wrapper_keeps_existing_noop_gates(processor, case):
+    processor.config = dict(USE_NIGHT_COLOR=False, SATURATION_FACTOR_DAY=1 if case == 'factor_one' else 1.3)
+    original = numpy.full((2, 2) if case == 'mono' else (2, 2, 3), 10000, numpy.uint16)
+    processor.image = original
+    processor.focus_mode = case == 'focus'
+    calls = []
+    processor._saturation_adjust = lambda *args, **kwargs: calls.append(args)
+    assert processor.saturation_adjust() is None
+    assert processor.image is original and not calls
+
+
 def test_8bit_colour_keeps_legacy_rounding(processor):
     image = numpy.arange(256, dtype=numpy.uint8).reshape(16, 16)
     processor.image = image.copy()
@@ -171,7 +244,7 @@ def test_8bit_colour_keeps_legacy_rounding(processor):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     hsv[:, :, 1] = cv2.multiply(hsv[:, :, 1], 1.3)
     processor.image = image.copy()
-    processor._saturation_adjust(1.3)
+    processor._saturation_adjust(1.3, saturation_knee=.95)
     numpy.testing.assert_array_equal(processor.image, cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR))
 
 
