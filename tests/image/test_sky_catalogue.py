@@ -24,8 +24,10 @@ def frame_points(frame, source=True, score=3.5, fixed=False):
 
 
 def update(catalogue, frame, *, source=True, score=3.5, fixed=False, compact=False,
-           support_only=False, time=None, **kwargs):
+           support_only=False, clouds=False, time=None, **kwargs):
     support = frame_points(frame, source, score, fixed)
+    if clouds:
+        support = support[-1:] if source else np.empty((0, 3))
     points = support[:-1] if support_only and source else support
     flags = np.zeros(len(points), bool)
     if compact and source and not support_only:
@@ -40,6 +42,9 @@ def test_weak_sources_start_partial_then_confirm_three_of_four():
     values = [float(update(catalogue, frame)[0][-1]) for frame in range(4)]
     assert values == [0.5, 0.5, 1, 1]
     assert catalogue._tracks.ndim == 2 and catalogue._tracks.shape[1] == 11
+    assert len(catalogue._observed_history) == 3
+    for frame, observed in enumerate(catalogue._observed_history, 1):
+        np.testing.assert_array_equal(observed, frame_points(frame)[:, :2])
 
 
 def test_insufficient_anchor_bootstrap_keeps_baseline_without_partial_pulsing():
@@ -129,6 +134,140 @@ def test_proven_sensor_residual_stays_rejected_after_intermittent_absence():
     assert weights[-1] == 0 and diagnostics['stationary_mask'][-1]
 
 
+@pytest.mark.parametrize('extra', [False, True])
+@pytest.mark.parametrize('clouds', [False, True])
+def test_proven_sensor_residual_returns_after_more_than_five_minutes_under_clouds(extra, clouds):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    candidate = (dict(source=False, sensor_points=[[70, 75, 50]]) if extra else
+                 dict(fixed=True, compact=True, score=12))
+    for frame in range(6):
+        update(catalogue, frame, **candidate)
+    for frame in range(6, 21):
+        weights, diagnostics = update(catalogue, frame, source=False, clouds=True)
+        assert not len(weights) and not diagnostics['stationary_mask'].any()
+        assert not len(diagnostics['sensor_weights'])
+    weights, diagnostics = update(catalogue, 21, clouds=clouds, **candidate)
+    if not clouds:
+        assert len(catalogue._observed_history) == 1  # Clear-sky re-bootstrap.
+    if extra:
+        assert diagnostics['sensor_weights'][0] == 0 and diagnostics['sensor_stationary'][0]
+    else:
+        assert weights[-1] == 0 and diagnostics['stationary_mask'][-1]
+
+
+def test_unproven_sensor_candidate_still_expires_after_five_minutes_under_clouds():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(3):
+        update(catalogue, frame, sensor_points=[[70, 75, 50]])
+    for frame in range(3, 15):
+        update(catalogue, frame, source=False, clouds=True)
+    values = []
+    for frame in range(15, 19):
+        _, diagnostics = update(catalogue, frame, sensor_points=[[70, 75, 50]])
+        values.append(diagnostics['sensor_weights'][0])
+    assert values == [1, 1, 1, 0.5]
+
+
+@pytest.mark.parametrize('expired', [False, True])
+def test_proven_sensor_memory_expires_after_six_hours_without_nomination(expired):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        update(catalogue, frame, sensor_points=[[70, 75, 50]])
+    # Keep delivering frames: a capture gap must not account for the expiry.
+    returned = 5 + 6 * 3600 // 30 + int(expired)
+    for frame in range(6, returned):
+        update(catalogue, frame, source=False, clouds=True)
+    _, diagnostics = update(catalogue, returned, source=False, clouds=True,
+                            sensor_points=[[70, 75, 50]])
+    assert diagnostics['sensor_weights'][0] == (1 if expired else 0)
+    assert diagnostics['sensor_stationary'][0] == (not expired)
+
+
+def test_proven_sensor_coordinate_without_current_compact_nomination_is_not_repaired():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        update(catalogue, frame, fixed=True, compact=True, score=12)
+    weights, diagnostics = update(catalogue, 6, fixed=True, score=12, clouds=True)
+    assert weights[0] == 1 and not diagnostics['stationary_mask'][0]
+    assert not len(diagnostics['sensor_weights'])
+    # A later eligible nomination still uses the retained proof.
+    weights, diagnostics = update(catalogue, 7, fixed=True, compact=True, score=12, clouds=True)
+    assert weights[0] == 0 and diagnostics['stationary_mask'][0]
+
+
+@pytest.mark.parametrize('cloud', [False, True])
+def test_confirmed_moving_star_can_cross_a_long_remembered_sensor_defect(cloud):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        update(catalogue, frame, fixed=True, compact=True, score=12)
+    for frame in range(6, 23):
+        update(catalogue, frame, source=False)
+    values = []
+    for frame in range(23, 30):
+        points = frame_points(frame)
+        # The measured star crosses the old defect at frame 27, after 660 seconds.
+        points[-1, :2] = [601.3, 527.7] + np.array([1.8, -0.7]) * (frame - 27)
+        if cloud and frame == 26:
+            points = points[-1:]
+        compact = np.zeros(len(points), bool)
+        compact[-1] = True
+        weights, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
+            geometry_key='camera-one', sensor_shape=SHAPE, compact=compact)
+        values.append(weights[-1])
+        assert not diagnostics['stationary_mask'][-1]
+    assert values == [0.5, 0.5, 1, 1, 1, 1, 1]
+
+
+@pytest.mark.parametrize('angle', [0.004, 0.002])
+def test_quantized_slow_star_crossing_does_not_turn_into_a_remembered_defect(angle):
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    initial = anchors(0)[:, :2]
+    fixed = np.array([600., 500.])
+
+    def rotate(points, rotation):
+        c, s = np.cos(rotation), np.sin(rotation)
+        return (points - 600) @ np.array([[c, s], [-s, c]]) + 600
+
+    proof_frames = max(20, int(np.ceil(6 / (100 * angle))))
+    start = proof_frames + 20
+    values = []
+    for frame in range(start + 10):
+        points = np.column_stack((rotate(initial, angle * frame), np.full(len(initial), 12)))
+        if frame < proof_frames:
+            points = np.vstack((points, [*fixed, 12]))
+        elif frame >= start:
+            # A slow real source can have the same integer centroid for five frames.
+            xy = np.rint(rotate(fixed, angle * (frame - start - 5)))
+            points = np.vstack((points, [*xy, 3.5]))
+        compact = np.zeros(len(points), bool)
+        if frame < proof_frames or frame >= start:
+            compact[-1] = True
+        weights, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
+            geometry_key='camera-one', sensor_shape=SHAPE, compact=compact)
+        if frame == proof_frames - 1:
+            assert weights[-1] == 0 and diagnostics['stationary_mask'][-1]
+        if frame >= start:
+            values.append(weights[-1])
+            assert not diagnostics['stationary_mask'][-1]
+    assert values == [0.5, 0.5] + [1] * 8
+
+
+def test_proven_fixed_pixel_remains_rejected_when_slow_sky_motion_also_passes_star_history():
+    catalogue = sky_catalogue.SkySourceCatalogue()
+    unproven = sky_catalogue.SkySourceCatalogue()
+    for frame in range(6):
+        update(catalogue, frame, fixed=True, compact=True, score=12)
+    control = []
+    for frame in range(1, 5):
+        # Faster captures reduce sky displacement, so a fixed pixel can now
+        # accidentally satisfy the moving-star match radius on three frames.
+        kwargs = dict(fixed=True, compact=True, time=1150+2*frame, capture_interval=2)
+        weights, diagnostics = update(catalogue, 5 + frame/15, **kwargs)
+        control.append(update(unproven, 5 + frame/15, **kwargs)[0][-1])
+        assert weights[-1] == 0 and diagnostics['stationary_mask'][-1]
+    assert control == [0.5, 0.5, 1, 1]
+
+
 @pytest.mark.parametrize('spacing', [2, 4])
 def test_intermittent_weak_sensor_noise_cannot_restart_grace(spacing):
     catalogue = sky_catalogue.SkySourceCatalogue()
@@ -205,11 +344,13 @@ def test_failed_motion_suspends_votes_and_preserves_known_fixed_rejection():
     for frame in range(3):
         update(catalogue, frame)
     before = catalogue._tracks[:, 2:6].copy()
+    observed = [points.copy() for points in catalogue._observed_history]
     for frame in (3, 4):
         points = frame_points(frame)[-1:]
         catalogue.weights(points, points, capture_time=1000+30*frame,
                           geometry_key='camera-one', sensor_shape=SHAPE)
     np.testing.assert_array_equal(catalogue._tracks[:, 2:6], before)
+    np.testing.assert_array_equal(catalogue._observed_history, observed)
     assert update(catalogue, 5)[0][-1] == 1
 
     fixed = sky_catalogue.SkySourceCatalogue()
@@ -262,9 +403,11 @@ def test_duplicate_capture_preserves_weights_and_does_not_advance_history():
     catalogue = sky_catalogue.SkySourceCatalogue()
     first, _ = update(catalogue, 0)
     old = catalogue._tracks.copy()
+    observed = [points.copy() for points in catalogue._observed_history]
     second, diagnostics = update(catalogue, 0)
     np.testing.assert_array_equal(first, second)
     np.testing.assert_array_equal(catalogue._tracks, old)
+    np.testing.assert_array_equal(catalogue._observed_history, observed)
     assert diagnostics['status'] == 'duplicate'
 
 
@@ -287,6 +430,7 @@ def test_invalid_context_or_capture_discontinuity_resets_history(change):
         kwargs['context_valid'] = False
     weights, _ = catalogue.weights(points, points, **kwargs)
     assert weights[-1] == (1 if change in ('invalid', 'stacked') else 0.5)
+    assert len(catalogue._observed_history) == (0 if change in ('invalid', 'stacked') else 1)
 
 
 def test_configured_long_cadence_is_not_mistaken_for_a_gap():
@@ -428,21 +572,28 @@ def test_extra_duplicate_capture_reuses_aligned_results_without_learning():
     assert duplicate['status'] == 'duplicate'
 
 
-def test_sensor_fallback_keeps_only_prior_proof_and_suspends_fade():
-    for initial_frames, expected in [(3, 1), (4, 0.5), (6, 0)]:
+def test_sensor_fallback_advances_only_proven_current_fade_once_per_capture():
+    for initial_frames, expected in [(3, [1, 1]), (4, [0.25, 0]), (6, [0, 0])]:
         catalogue = sky_catalogue.SkySourceCatalogue()
         for frame in range(initial_frames):
-            update(catalogue, frame, sensor_points=[[70, 75, 50]])
-        history_and_fade = catalogue._fixed[:, [4, 8, 9]].copy()
-        frame = initial_frames
-        points = frame_points(frame)[-1:]
-        _, diagnostics = catalogue.weights(points, points, capture_time=1000+30*frame,
-            geometry_key='camera-one', sensor_shape=SHAPE,
-            sensor_points=[[70, 75, 50], [80, 85, 100]])
-        assert diagnostics['status'] == 'motion_fallback'
-        np.testing.assert_array_equal(diagnostics['sensor_weights'], [expected, 1])
-        np.testing.assert_array_equal(diagnostics['sensor_stationary'], [initial_frames >= 4, False])
-        np.testing.assert_array_equal(catalogue._fixed[:, [4, 8, 9]], history_and_fade)
+            update(catalogue, frame, fixed=True, compact=True, score=12,
+                   sensor_points=[[70, 75, 50]])
+        history_and_proof = catalogue._fixed[:, [4, 8]].copy()
+        for frame, value in enumerate(expected, initial_frames):
+            kwargs = dict(clouds=True, fixed=True, compact=True, score=12,
+                          sensor_points=[[70, 75, 50], [80, 85, 100]])
+            weights, diagnostics = update(catalogue, frame, **kwargs)
+            assert diagnostics['status'] == 'motion_fallback'
+            assert weights[0] == value and diagnostics['stationary_mask'][0] == (initial_frames >= 4)
+            np.testing.assert_array_equal(diagnostics['sensor_weights'], [value, 1])
+            np.testing.assert_array_equal(diagnostics['sensor_stationary'], [initial_frames >= 4, False])
+            np.testing.assert_array_equal(catalogue._fixed[:, [4, 8]], history_and_proof)
+            before = catalogue._fixed.copy()
+            repeated_weights, repeated = update(catalogue, frame, **kwargs)
+            assert repeated['status'] == 'duplicate'
+            np.testing.assert_array_equal(repeated_weights, weights)
+            np.testing.assert_array_equal(repeated['sensor_weights'], diagnostics['sensor_weights'])
+            np.testing.assert_array_equal(catalogue._fixed, before)
 
 
 @pytest.mark.parametrize('change', ['gap', 'invalid', 'geometry'])
