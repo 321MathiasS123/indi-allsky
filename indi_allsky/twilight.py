@@ -45,12 +45,23 @@ def interpolate(day, night, weight, logarithmic=False):
     return day + weight * (night - day)
 
 
-def transition_gain(value, gain_info):
+def transition_gain(value, gain_info, minimum=None, maximum=None):
     """Round a blended gain to camera commands, without changing saved endpoints."""
     values = gain_info.get('values', [])
+    quantum = gain_info.get('quantum', 0.0)
+    if minimum is not None and maximum is not None:
+        if values:
+            allowed = [gain for gain in values if minimum <= gain <= maximum]
+            if allowed:
+                values = allowed
+            else:
+                value = (minimum + maximum) / 2
+        elif quantum:
+            lower = math.ceil(minimum / quantum) * quantum
+            upper = math.floor(maximum / quantum) * quantum
+            value = max(lower, min(upper, value)) if lower <= upper else (minimum + maximum) / 2
     if values:
         return min(values, key=lambda gain: (abs(gain - value), gain))
-    quantum = gain_info.get('quantum', 0.0)
     if quantum:
         return math.floor(value / quantum + 0.5) * quantum
     return value

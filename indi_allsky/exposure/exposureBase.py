@@ -2,7 +2,7 @@ import copy
 import functools
 import logging
 
-from ..twilight import runtime_weight
+from ..twilight import runtime_weight, transition_gain
 from .. import constants
 from ..utils import IndiAllSkyExposureUtils
 
@@ -218,6 +218,8 @@ class IndiAllSky_Exposure_Base(object):
         next_gain = max(self.gain_min, min(self.gain_max, gain))
         if hasattr(self, 'effective_gain'):
             next_gain = self.effective_gain(next_gain)
+        else:
+            next_gain = transition_gain(next_gain, getattr(self, 'twilight_gain_info', {}), self.gain_min, self.gain_max)
         if next_exposure != exposure:
             # Add the clamp to any correction already made by the AE controller.
             self._expUtils.EXPOSURE_NEXT = next_exposure

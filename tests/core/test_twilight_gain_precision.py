@@ -19,18 +19,55 @@ def test_transition_respects_camera_precision_not_gui_step(info, value, expected
     assert transition_gain(value, info) == expected
 
 
-def test_moving_limits_preserve_optional_camera_precision_inside_autogain_bounds():
+@pytest.mark.parametrize('info,minimum,maximum,pending,expected', [
+    ({'quantum': 1}, 0, 100, 40.4, 40),
+    ({'quantum': 1}, 0, 300, 254.9, 255),
+    ({'quantum': 1}, .2, 99.8, 99.8, 99),
+    ({'quantum': 1}, .2, 99.8, .2, 1),
+    ({'quantum': .5}, 0, 100, 40.25, 40.5),
+    ({'values': [100, 200, 400, 800]}, 150, 450, 350, 400),
+    ({'values': [100, 200, 400, 800]}, 250, 750, 740, 400),
+    ({'values': [100, 200, 400, 800]}, 250, 350, 300, 200),
+    ({'quantum': 1}, .2, .4, .3, 0),
+    ({'step': 60}, 0, 100, 32.817, 32.817),
+    ({}, 0, 100, 40.4, 40.4),
+])
+def test_moving_limits_publish_camera_supported_autogain_without_other_features(info, minimum, maximum, pending, expected):
     obj, _ = controller('exposure_autogain_exp_prio_db_1_10')
-    obj._expUtils.GAIN_NEXT = 40.4
+    obj.twilight_gain_info = info
+    obj._expUtils.GAIN_MIN_NIGHT, obj._expUtils.GAIN_MAX_NIGHT = minimum, maximum
+    obj._expUtils.GAIN_NEXT = pending
     obj._expUtils.GAIN_DELTA = .25
-    camera_precision = hasattr(obj, 'effective_gain')
-    if camera_precision:
-        obj.gain_quantum = 1
-    assert obj.gain_min == 0 and obj.gain_max == 100
+    if hasattr(obj, 'effective_gain'):
+        obj.gain_quantum = info.get('quantum', 0.0)
+        obj.gain_values = info.get('values', [])
     obj.apply_transition_limits()
-    expected = 40 if camera_precision else 40.4
     assert obj._expUtils.GAIN_NEXT == pytest.approx(expected, abs=.001)
-    assert obj._expUtils.GAIN_DELTA == pytest.approx(.25 + expected - 40.4, abs=.001)
+    assert obj._expUtils.GAIN_DELTA == pytest.approx(.25 + expected - pending, abs=.001)
+    first_gain, first_delta = obj._expUtils.GAIN_NEXT, obj._expUtils.GAIN_DELTA
+    obj.apply_transition_limits()
+    assert obj._expUtils.GAIN_NEXT == first_gain
+    assert obj._expUtils.GAIN_DELTA == first_delta
+
+
+def test_moving_limits_preserve_pending_autogain_without_camera_precision():
+    obj, _ = controller('exposure_autogain_exp_prio_db_1_10')
+    if hasattr(obj, 'twilight_gain_info'):
+        del obj.twilight_gain_info
+    obj._expUtils.GAIN_NEXT, obj._expUtils.GAIN_DELTA = 40.4, .25
+    obj.apply_transition_limits()
+    assert obj._expUtils.GAIN_NEXT == 40.4
+    assert obj._expUtils.GAIN_DELTA == .25
+
+
+def test_disabled_transition_does_not_quantize_pending_autogain():
+    obj, _ = controller('exposure_autogain_exp_prio_db_1_10')
+    obj.config['TWILIGHT_TRANSITION']['ENABLE'] = False
+    obj.twilight_gain_info = {'quantum': 1}
+    obj._expUtils.GAIN_NEXT, obj._expUtils.GAIN_DELTA = 40.4, .25
+    obj.apply_transition_limits()
+    assert obj._expUtils.GAIN_NEXT == 40.4
+    assert obj._expUtils.GAIN_DELTA == .25
 
 
 @pytest.mark.parametrize('info', [{}, {'quantum': 1}, {'values': [0, 20, 40, 60, 80, 100]}])
