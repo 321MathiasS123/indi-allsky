@@ -12,6 +12,9 @@ PROVISIONAL_WEIGHT = 0.5
 STRONG_SCORE = 6.0
 MATCH_RADIUS = 1.5
 MEMORY_SECONDS = 300.0
+# Already proven defects may be quiet through long cloud intervals. Only their
+# coordinates survive longer; current compact evidence is still required.
+SENSOR_MEMORY_SECONDS = 6 * 3600.0
 MAX_TRACKS = 65536
 MAX_POINTS = 20000
 
@@ -133,6 +136,9 @@ class SkySourceCatalogue:
         # frame (at most 3 * MAX_POINTS * 2 float64 coordinates). Current evidence
         # votes independently of mutable track identity, without image buffers.
         self._history = []
+        # Matching uses projected positions; retain their measured coordinates
+        # too so a real star crossing an old defect can demonstrate movement.
+        self._observed_history = []
         # Predicted x,y, 4-bit history, age, failed windows, weight, last seen,
         # rejected, last ACTUALLY OBSERVED sensor x,y, last observed score.
         self._tracks = np.empty((0, 11), np.float64)
@@ -237,7 +243,8 @@ class SkySourceCatalogue:
             self._cadence = step if self._cadence is None else 0.8 * self._cadence + 0.2 * step
         self._key, self._shape = geometry_key, shape
         self._cold = self._cold[self._cold[:, 2] >= timestamp - MEMORY_SECONDS]
-        self._fixed = self._fixed[self._fixed[:, 6] >= timestamp - MEMORY_SECONDS]
+        lifetime = np.where(self._fixed[:, 8] != 0, SENSOR_MEMORY_SECONDS, MEMORY_SECONDS)
+        self._fixed = self._fixed[self._fixed[:, 6] >= timestamp - lifetime]
         anchors = _anchors(support, shape)
         motion_info = {'reason': 'first_frame'}
         if (self._anchor_time is not None and _distributed(anchors, shape)
@@ -249,6 +256,7 @@ class SkySourceCatalogue:
             self._model = self._model_dt = None
             self._tracks = np.empty((0, 11), np.float64)
             self._history = []
+            self._observed_history = []
             motion_info = {'reason': 'motion_rebootstrap'}
         if self._anchor_time is None and not _distributed(anchors, shape):
             return self._fallback(points, compact, timestamp,
@@ -262,15 +270,19 @@ class SkySourceCatalogue:
             if model is None:
                 return self._fallback(points, compact, timestamp, motion_info, sensors, sensor_result)
             self._tracks[:, :2] += _features(self._tracks[:, :2], shape) @ model
-            self._fixed[:, 2:4] += _features(self._fixed[:, 2:4], shape) @ model
+            unproven = self._fixed[:, 8] == 0
+            self._fixed[unproven, 2:4] += _features(self._fixed[unproven, 2:4], shape) @ model
             for previous in self._history:
                 previous += _features(previous, shape) @ model
             self._model, self._model_dt = model, dt
         self._anchors, self._anchor_time = anchors, timestamp
         current_history = np.ones(len(points), np.uint8)
-        for age, previous in enumerate(reversed(self._history), 1):
-            current, _ = _pairs(points[:, :2], previous, MATCH_RADIUS)
+        moving = np.zeros(len(points), bool)
+        for age, (previous, observed) in enumerate(zip(reversed(self._history),
+                                                     reversed(self._observed_history)), 1):
+            current, old = _pairs(points[:, :2], previous, MATCH_RADIUS)
             current_history[current] |= 1 << age
+            moving[current] |= np.linalg.norm(points[current, :2] - observed[old], axis=1) > 0.75
         popcount = np.array([int(value).bit_count() for value in range(16)])
         current_passed = popcount[current_history] >= 3
         advance = 1
@@ -336,8 +348,14 @@ class SkySourceCatalogue:
         self._remember_rejected(tracks[newly_rejected][:, [8, 9, 6]])
         result[points[:, 2] >= STRONG_SCORE] = 1
         combined = np.concatenate((points, sensors)) if len(sensors) else points
-        flags = np.concatenate((compact, np.ones(len(sensors), bool))) if len(sensors) else compact
-        stationary_all, weight_all = self._stationary(combined, flags, timestamp, advance)
+        # A fixed hot pixel can pass sky matching near a slow rotation pole.
+        # Exempt crossing stars only with independently observed movement too.
+        fixed_candidates = compact & ~(current_passed & moving)
+        flags = (np.concatenate((fixed_candidates, np.ones(len(sensors), bool)))
+                 if len(sensors) else fixed_candidates)
+        sky_confirmed = (np.concatenate((current_passed, np.zeros(len(sensors), bool)))
+                         if len(sensors) else current_passed)
+        stationary_all, weight_all = self._stationary(combined, flags, timestamp, advance, sky_confirmed)
         stationary, stationary_weight = stationary_all[:len(points)], weight_all[:len(points)]
         if len(sensors):
             sensor_result['sensor_stationary'] = stationary_all[len(points):]
@@ -351,6 +369,8 @@ class SkySourceCatalogue:
         self._last_sensor_stationary = sensor_result['sensor_stationary'][:len(sensors)].copy()
         self._history.append(support[:, :2].copy())
         self._history = self._history[-3:]
+        self._observed_history.append(support[:, :2].copy())
+        self._observed_history = self._observed_history[-3:]
         return result, dict(status='tracking', motion=motion_info, tracks=len(tracks),
                             sensor_tracks=len(self._fixed), confirmed=int(np.count_nonzero(result == 1)),
                             rejected_sensor_positions=len(self._cold),
@@ -368,8 +388,13 @@ class SkySourceCatalogue:
         proven = np.flatnonzero(self._fixed[:, 8] != 0)
         selected = np.flatnonzero(flags)
         fixed, current = _pairs(self._fixed[proven, :2], combined[selected, :2], 0.75)
+        # Established sensor proof needs no new sky fit. Advance only when the
+        # defect is detected again, never for an absent or duplicate capture.
+        matched = proven[fixed]
+        fade = self._fixed[matched, 9]
+        self._fixed[matched, 9] = np.where(fade > 0.25, fade / 2, 0)
         stationary_all[selected[current]] = True
-        stationary_weights[selected[current]] = self._fixed[proven[fixed], 9]
+        stationary_weights[selected[current]] = self._fixed[matched, 9]
         stationary = stationary_all[:len(points)]
         if len(sensors):
             sensor_result['sensor_stationary'] = stationary_all[len(points):]
@@ -379,7 +404,7 @@ class SkySourceCatalogue:
         weights[weak[recurrent]] = 0
         self._cold[cold, 2] = timestamp
         weights[stationary] = np.minimum(weights[stationary], stationary_weights[:len(points)][stationary])
-        self._fixed[proven[fixed], 6] = timestamp
+        self._fixed[matched, 6] = timestamp
         self._time = timestamp
         self._last_points, self._last_weights = points.copy(), weights.copy()
         self._last_stationary = stationary.copy()
@@ -402,13 +427,21 @@ class SkySourceCatalogue:
         added = positions[unmatched][:MAX_TRACKS - len(self._cold)]
         self._cold = np.concatenate((self._cold, added))
 
-    def _stationary(self, points, compact, timestamp, advance):
+    def _stationary(self, points, compact, timestamp, advance, sky_confirmed=None):
         """Require repeated compact detections despite clearly moving sky."""
-        fixed = self._fixed[self._fixed[:, 6] >= timestamp - MEMORY_SECONDS]
+        lifetime = np.where(self._fixed[:, 8] != 0, SENSOR_MEMORY_SECONDS, MEMORY_SECONDS)
+        fixed = self._fixed[self._fixed[:, 6] >= timestamp - lifetime]
         fixed[:, 4] = (fixed[:, 4].astype(np.uint8) << min(advance, 6)) & 63
         selected = np.flatnonzero(compact)
         old, new = _pairs(fixed[:, :2], points[selected, :2], 0.75)
         current = selected[new]
+        if sky_confirmed is not None:
+            # A slow star can round to one pixel for several captures. Once
+            # sky-confirmed, an old inactive defect must not erase that crossing
+            # or renew its own proof from the star's coincident observations.
+            crossing = ((fixed[old, 8] != 0) & (fixed[old, 6] < timestamp - MEMORY_SECONDS)
+                        & sky_confirmed[current])
+            old, current = old[~crossing], current[~crossing]
         fixed[old, 4] += 1
         fixed[old, 6] = timestamp
         deviation = np.linalg.norm(fixed[old, :2] - points[current, :2], axis=1)
