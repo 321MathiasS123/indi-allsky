@@ -89,6 +89,11 @@ is the desired number of groups used in the result; the tool can check more
 groups from the retained archive to find suitable evidence. Seven usable
 groups is the minimum.
 
+The search prefers complete normal/purple/normal groups, then newer captures.
+Groups with only one compatible normal reference remain eligible when needed
+to reach the target or provide required exposure or highlight evidence. Every
+selected group still has to pass validation.
+
 Missing or unsuitable groups are set aside and replaced when possible. If
 recent frames lack useful bright areas, the search can use older groups or
 combine evidence from different batches. It can continue beyond the three
@@ -127,8 +132,16 @@ requested if no further suitable groups are available, but never fewer than seve
 | **Detection settings need adjustment** | This is a preliminary result, not a repair calibration. Check that the likely-purple files show the actual camera failure, using the previews when available and the filenames and capture times. Confirm this, choose **Save detection settings**, then **Start over** and run calibration again. Keep **Detect and exclude only** on. |
 | **Analysis failed** | Read the retained explanation, correct the problem or collect more suitable frames, then choose **Try again**. No calibration settings were applied. |
 
-If the tool recommends more complete normal/purple/normal groups or more varied
-evidence, collect those before relying on the result. Do not change thresholds
+A successful calibration can include groups with a normal reference on only
+one side. The other reference may be unavailable (not saved or no longer
+retained) or unusable (for example, different exposure or gain); the coverage
+count alone does not distinguish these causes. If diagnostic and preceding
+FITS saving are already enabled, no capture-setting change is needed. Those
+options cannot guarantee complete groups or fill gaps around older events.
+For manual uploads, include compatible normal FITS from both sides when available.
+
+If a separate detection-threshold warning recommends more varied evidence,
+collect that before changing detection thresholds. Do not change thresholds
 just to make an unsuccessful analysis pass.
 
 ## Enable repair and check the results

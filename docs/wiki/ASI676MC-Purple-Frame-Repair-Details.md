@@ -183,6 +183,13 @@ the database FITS rather than retaining a duplicate byte string. The cache
 advances after each normal frame and is discarded after a purple, skipped, or
 incompatible frame.
 
+Both saving options are conditional: an exposure or gain change, consecutive
+purple frames, or a worker restart can leave a group without a usable normal
+on one side. Calibration also requires references within the configured time
+gap (90 seconds by default). Periodic FITS saving every ten minutes does not
+guarantee a replacement within that gap. Enabling the options does not fill
+gaps around older events.
+
 Each diagnostic FITS is a normal database-managed FITS asset with role
 metadata:
 
@@ -266,6 +273,13 @@ groups exist, it reports that the retained archive was exhausted. Progress
 covers catalog enumeration, current-detector checks, missed-purple population
 discovery, fitting, and validation. The cancel button remains available during
 inspection, staging, and analysis.
+
+Selection prefers complete normal/purple/normal groups over newer one-sided
+groups, while preserving the required exposure and normal-reference diversity.
+One-sided groups remain eligible when needed. During highlight recovery,
+finding and retaining useful highlight evidence takes priority over this
+preference. A complete group must still pass every sampling and repair check;
+having two references alone does not make it usable.
 
 The progress percentage is an estimate based on the current stage. Replacing
 groups or finding additional highlight evidence repeats fitting and validation,
@@ -450,10 +464,18 @@ purple and normal counts, pair/triplet and exposure coverage, signature ranges,
 unused or rejected evidence, warnings, and whether the result effectively
 matches the configuration within a small tolerance.
 
-Two-sided evidence is considered complete enough when at least 90 percent of
-matched purple frames belong to normal/purple/normal triplets. Below that
-guideline, the result recommends gathering more complete groups. Reused normal
-references remain a separate confidence warning.
+The result shows a coverage note when fewer than 90 percent of matched purple
+frames belong to normal/purple/normal triplets. This is a reporting guideline,
+not an acceptance threshold. The note explains that a second reference may be
+unavailable (not saved or no longer retained) or unusable (for example,
+different exposure or gain). The coverage count does not identify the cause
+for individual groups.
+This is an evidence-coverage note, not a requirement to collect more data for
+an already valid calibration. If diagnostic and preceding FITS saving are
+already enabled, no capture-setting change is needed; complete groups cannot
+be guaranteed. For manual uploads, include compatible normal FITS from both
+sides when available. Reused normal references remain a separate confidence
+warning. All calibration acceptance checks still apply.
 
 A calibration remains successful when a configured detection threshold sits
 within fifteen percent of either edge of its observed safe gap. A dedicated

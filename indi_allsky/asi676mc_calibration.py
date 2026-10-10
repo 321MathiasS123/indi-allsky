@@ -482,8 +482,11 @@ def capture_configuration_guidance(config):
 
     if preceding_fits:
         guidance_sentences.append(
-            'The normal frame before each purple frame will also be saved. '
-            'This improves calibration and uses about one extra FITS frame of memory.'
+            'The normal frame before each purple frame is also saved when it '
+            'is available and its capture settings match. This improves '
+            'calibration and uses about one extra FITS frame of memory. '
+            'Having both saving options enabled does not guarantee complete '
+            'normal/purple/normal groups.'
         )
 
     if not retention_valid:
@@ -972,19 +975,29 @@ def _database_compatibility_key(record):
 def _select_database_groups(
     pairs, raw_by_path, target_groups, cancel_callback=None, highlight_scores=None,
 ):
-    """Select active groups plus reserves within the existing evidence limits."""
+    """Select active groups plus reserves within the existing evidence limits.
+
+    Order matters: staging preserves it so the engine fits the exposure seeds
+    and preferred groups before promoting reserves.
+    """
     from . import asi676mc_calibration_engine as engine
 
     if highlight_scores:
         # Explore untested groups first, then keep the strongest measured
-        # highlight evidence. Dim groups remain available for other evidence.
+        # highlight evidence. Prefer triplets among otherwise equal candidates,
+        # but do not hide a one-sided group that supplies missing highlights.
         pairs.sort(key=lambda pair: (
             raw_by_path[str(pair.bad.path)]['id'] not in highlight_scores,
             highlight_scores.get(raw_by_path[str(pair.bad.path)]['id'], 0),
+            pair.two_sided,
             pair.bad.timestamp,
         ), reverse=True)
     else:
-        pairs.sort(key=lambda pair: pair.bad.timestamp, reverse=True)
+        # Prefer both compatible neighbours before recency. Exposure seeding
+        # below may still need a one-sided group; every group is validated later.
+        pairs.sort(
+            key=lambda pair: (pair.two_sided, pair.bad.timestamp), reverse=True,
+        )
     exposure_seeds = []
     seeded_exposures = []
     for pair in pairs:
@@ -1057,6 +1070,8 @@ def _select_database_groups(
         references = tuple(pair.references)
         added = add_group(pair, references)
         if not added and len(references) > 1:
+            # A triplet is a preference, not a larger minimum: one reference
+            # can still fit the staging budget without weakening validation.
             references = (min(
                 references,
                 key=lambda item: abs(item.timestamp - pair.bad.timestamp),
@@ -2358,14 +2373,9 @@ def _result_warnings(
         if source_details.get('selection_limit_reached'):
             if str(selection_mode or '').startswith('full_retention_'):
                 warnings.append(
-                    'The saved-FITS limit was reached, so the newest suitable '
-                    'frame groups were used. No action is needed.'
-                    .format(
-                        source_details.get(
-                            'selection_limit_file_count',
-                            DATABASE_MAX_FILES,
-                        )
-                    )
+                    'The saved-FITS limit was reached, so a selection of '
+                    'suitable frame groups was used, preferring complete '
+                    'normal/purple/normal groups. No action is needed.'
                 )
             else:
                 warnings.append(
@@ -2471,32 +2481,34 @@ def _result_warnings(
                 and triplet_coverage_complete
                 and not references_reused
             ):
-                if (
-                    one_sided_count
-                    and references_reused
-                    and not triplet_coverage_complete
-                ):
-                    improvement = (
-                        'more complete normal/purple/normal groups with '
-                        'different normal frames would improve confidence'
+                coverage_notes = [coverage_text + '.', result_status + '.']
+                if one_sided_count:
+                    # Coverage describes selected references, not why another
+                    # neighbour was absent. Do not infer a saving failure or
+                    # require more captures for an already accepted result.
+                    coverage_notes.append(
+                        'A second normal reference may be unavailable (not '
+                        'saved or no longer retained) or unusable (for example, '
+                        'different exposure or gain). The coverage count does '
+                        'not distinguish these causes.'
                     )
-                elif one_sided_count and not triplet_coverage_complete:
-                    improvement = (
-                        'more complete normal/purple/normal groups would '
-                        'improve confidence'
+                    if source_details.get('kind') == 'database':
+                        coverage_notes.append(
+                            'If diagnostic and preceding FITS saving are '
+                            'already enabled, no capture-setting change is '
+                            'needed. Complete groups cannot be guaranteed.'
+                        )
+                    else:
+                        coverage_notes.append(
+                            'For manual uploads, include normal FITS from '
+                            'both sides when available and compatible.'
+                        )
+                if references_reused:
+                    coverage_notes.append(
+                        'Using more different normal reference frames would '
+                        'improve confidence.'
                     )
-                else:
-                    improvement = (
-                        'more different normal reference frames would improve '
-                        'confidence'
-                    )
-                warnings.append(
-                    '{0}. {1}, but {2}.'.format(
-                        coverage_text,
-                        result_status,
-                        improvement,
-                    )
-                )
+                warnings.append(' '.join(coverage_notes))
 
     skipped_parts = []
     unmatched_count = int(quality.get('unmatched_bad_count', 0))
@@ -3445,8 +3457,8 @@ def format_threshold_suggestion_report(payload, manifest):
         lines.extend((
             'Method: Saved FITS search in Tools > Fix ASI676MC purple frames',
             'Camera: {0}'.format(source_details.get('camera_name', 'Unknown')),
-            'Selection preference: Newest compatible FITS with required '
-            'exposure diversity',
+            'Selection preference: Complete normal/purple/normal groups before '
+            'recency, with required exposure and normal-reference diversity',
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
@@ -3820,9 +3832,9 @@ def format_integrated_report(payload, manifest):
         lines.extend((
             'Method: Saved FITS search in Tools > Fix ASI676MC purple frames',
             'Camera: {0}'.format(source_details.get('camera_name', 'Unknown')),
-            'Selection preference: Newest compatible FITS with required '
-            'exposure and normal-reference diversity; additional groups are '
-            'checked when needed, including older highlight evidence',
+            'Selection preference: Complete normal/purple/normal groups before '
+            'recency, with required exposure and normal-reference diversity; '
+            'missing highlight evidence takes priority during recovery',
             'Target purple-frame groups: {0}'.format(
                 source_details.get('requested_group_count', 0)
             ),
@@ -4293,6 +4305,8 @@ def run_calibration_session(
             with _file_lock(_session_lock_path(session_dir)):
                 active_manifest()
 
+        # Retain catalog metadata, not decoded FITS arrays. Recovery can reach
+        # older groups while private staging stays within its file/byte limits.
         candidate_pool = {}
         replacement_callback = None
         if (

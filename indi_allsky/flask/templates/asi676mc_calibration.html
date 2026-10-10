@@ -385,6 +385,8 @@
                         Search the FITS retained for this camera. The tool
                         selects suitable purple and normal frame groups and
                         tries additional groups when needed.
+                        Complete normal/purple/normal groups are preferred;
+                        groups with one normal reference remain eligible when needed.
                         Your saved FITS are not changed.
                     </p>
                     <div class="tw:mb-4">
@@ -1792,6 +1794,8 @@ async function pollCalibration(sessionId) {
                     'Preparing the selected frame groups.'
                 );
             } else if (progress.phase === 'replacing_groups') {
+                // A refill returns to staging before another fit/validation;
+                // its lower estimate is explained by the saved-FITS callout.
                 setCalibrationProgress(
                     89,
                     'Checking more saved frames',

@@ -154,6 +154,38 @@ The original `darks.py` command-line tool remains available alongside the web bu
 
 ### Acquire dark frames
 
+#### Debian package installations
+
+On systems installed via the `.deb` package or APT repository, use
+[`indi-allsky-ctl`](indi-allsky-ctl) without activating a virtual environment:
+
+1. Fully cover the camera lens to block all light.
+2. Stop the indi-allsky service:
+
+    ```bash
+    sudo systemctl stop indi-allsky
+    ```
+
+3. Capture and stack the dark frames:
+
+    ```bash
+    # Use "sigmaclip" if your camera returns 16-bit RAW data
+    sudo indi-allsky-ctl darks sigmaclip
+
+    # Use "average" if your camera returns RGB/JPEG data
+    sudo indi-allsky-ctl darks average
+    ```
+
+    Direct alternative: `/var/lib/indi-allsky/venv/bin/python /usr/share/indi-allsky/darks.py sigmaclip`.
+
+4. Restart the indi-allsky service when generation completes:
+
+    ```bash
+    sudo systemctl start indi-allsky
+    ```
+
+#### Git / source installations
+
 1. Fully cover the camera lens to block all light.
 2. Stop the indi-allsky service:
 
@@ -181,6 +213,12 @@ The original `darks.py` command-line tool remains available alongside the web bu
 
     # Use "average" if your camera returns RGB data
     ./darks.py average
+    ```
+
+6. Restart the capture service:
+
+    ```bash
+    systemctl --user start indi-allsky
     ```
 
 The tool generates darks in 5-second increments at the configured gains for night, moonmode and day. It uses 10 source images for each master; change this with `--Count`.
@@ -218,7 +256,19 @@ The tool generates darks in 5-second increments at the configured gains for nigh
 
 Use `tempaverage` or `tempsigmaclip` to capture a full set at each 5°C decrease, with exposure lengths in 5-second increments. Daytime dark capture is automatically disabled in these modes.
 
-1. As soon as you place the covered camera in the freezer, run `./darks.py tempsigmaclip` (or `./darks.py tempaverage`).
+**Debian package installations:**
+
+```bash
+sudo indi-allsky-ctl darks tempsigmaclip
+```
+
+**Git / source installations:**
+
+```bash
+./darks.py tempsigmaclip
+```
+
+1. As soon as you place the covered camera in the freezer, run the appropriate command above (or use `tempaverage`).
 2. The tool captures the first set at the initial temperature.
 3. It waits for a 5°C drop, then captures another set. This repeats until the camera reaches equilibrium with the freezer.
 4. At the minimum temperature, stop the program manually with **Ctrl+C**.
@@ -228,6 +278,16 @@ If cooling was too fast, use the [cooling guidance](#temperature-and-cooling) ab
 ### Removing dark frames
 
 The `flush` command deletes all existing dark frames:
+
+**Debian package installations:**
+
+```bash
+sudo indi-allsky-ctl darks flush
+# Or alias:
+sudo indi-allsky-ctl flush-darks
+```
+
+**Git / source installations:**
 
 ```bash
 # navigate to indi-allsky git checkout folder

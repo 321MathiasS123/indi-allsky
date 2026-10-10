@@ -1168,6 +1168,9 @@ def estimate_highlight_ratios(
         )
         count = int(arrays[0].size)
         if count < CALIBRATION_OPTIONS['MIN_HIGHLIGHT_SAMPLES_PER_PAIR']:
+            # Keep counts aligned with samples, including dim groups: the
+            # archive uses these scores to find highlights without rejecting
+            # groups that may still supply gains or exposure diversity.
             group_counts.append(0)
             continue
         group_counts.append(count)
@@ -2279,6 +2282,8 @@ def calibrate_folder(
         if exclude:
             excluded_checks.extend(dict(item['check']) for item in failures)
         refreshed_pairs = replacement_callback(failures)
+        # All fitted values must be recomputed for this refreshed collection;
+        # callers continue the outer loop before reusing any fit or validation.
         active_pairs = list(refreshed_pairs[:requested_group_count])
         reserve_pairs = list(refreshed_pairs[requested_group_count:])
         new_paths = {pair.bad.path for pair in active_pairs} - examined_paths

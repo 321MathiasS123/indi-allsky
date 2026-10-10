@@ -195,6 +195,59 @@ def test_can_finish_with_seven_when_archive_cannot_fill_requested_target(
     assert result['source']['validation_search']['remaining_candidate_group_count'] == 0
 
 
+@pytest.mark.parametrize('complete_groups,second_exposure_only_in_pair,expected_triplets', [
+    (8, False, 7),  # Older triplets outrank the eight newest one-sided groups.
+    (4, False, 4),  # Pairs fill the target when too few triplets exist.
+    (8, True, 6),   # Required exposure diversity takes priority over completeness.
+    (0, False, 0),  # Triplets are preferred, never required for success.
+])
+def test_prefers_triplets_without_losing_usable_pairs(
+    tmp_path, archive, small_frames, complete_groups,
+    second_exposure_only_in_pair, expected_triplets,
+):
+    archive[:] = [
+        record for record in archive
+        if not (
+            record['path'].name.endswith('_after.fit')
+            and int(record['path'].name[:2]) >= complete_groups
+        )
+    ]
+    if second_exposure_only_in_pair:
+        for record in archive:
+            record['exposure'] = .002 if record['path'].name.startswith('15_') else .001
+            with fits.open(record['path'], mode='update') as hdus:
+                hdus[0].header['EXPTIME'] = record['exposure']
+    root, session_id, loader = start_session(tmp_path, archive)
+    result = web.run_calibration_session(session_id, storage_root=root, database_loader=loader)
+    assert result['quality']['validated_bad_count'] == 7
+    assert result['quality']['two_sided_count'] == expected_triplets
+    assert result['quality']['exposure_level_count'] == 2
+    assert result['source']['validation_search']['rejected_group_count'] == 0
+
+
+def test_unusable_triplets_are_replaced_by_valid_one_sided_groups(
+    tmp_path, archive, small_frames,
+):
+    archive[:] = [
+        record for record in archive
+        if not (
+            record['path'].name.endswith('_after.fit')
+            and int(record['path'].name[:2]) >= 8
+        )
+    ]
+    for record in archive:
+        if record['path'].name.endswith('_before.fit') and int(record['path'].name[:2]) < 8:
+            with fits.open(record['path'], mode='update') as hdus:
+                hdus[0].data = numpy.rint(
+                    hdus[0].data.astype(float) * .45,
+                ).astype(numpy.uint16)
+    root, session_id, loader = start_session(tmp_path, archive)
+    result = web.run_calibration_session(session_id, storage_root=root, database_loader=loader)
+    assert result['quality']['validated_bad_count'] == 7
+    assert result['quality']['two_sided_count'] == 0
+    assert result['source']['validation_search']['rejected_group_count'] == 8
+
+
 def test_missing_staged_source_is_replaced_from_catalog(
     tmp_path, archive, small_frames, monkeypatch,
 ):
@@ -279,6 +332,10 @@ def test_replacement_with_unmodified_production_sample_and_quality_limits(
 def test_missing_recent_highlights_searches_older_groups_without_relaxing_fit(
     tmp_path, archive, small_frames, has_bright_group, progress_updates,
 ):
+    # The only bright group has one reference. Triplet preference must not
+    # prevent recovery from finding the highlight evidence it needs.
+    if has_bright_group:
+        archive[:] = [r for r in archive if r['path'].name != '00_before.fit']
     normal = numpy.rint(
         frame_fixtures.TestAsi676mcCalibrationEngine._normal_frame().astype(float) * .25,
     ).astype(numpy.uint16)
