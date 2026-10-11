@@ -157,7 +157,7 @@ def test_urgent_clipping_can_cancel_an_inflight_brightness_increase():
     instance = fixed_gain_controller()
     set_inflight(instance, 1.2, 0)
     instance.compare_highlights(measurement(70, full=5, any=10), 1, 0)
-    assert .8 <= settings(instance)[0] < 1
+    assert settings(instance)[0] == pytest.approx(.6)
 
 
 @pytest.mark.parametrize('actuator', ['exposure', 'gain'])
