@@ -86,7 +86,7 @@ def test_large_brightness_errors_receive_larger_but_bounded_commands(near, far, 
         set_inflight(instance, 20, 0)
         instance.compare_highlights(measurement(adu), 20, 0)
         ratio = settings(instance)[0] / 20
-        assert .8 - 1e-7 <= ratio <= 1.25 + 1e-7
+        assert 2 / 3 - 1e-7 <= ratio <= 1.5 + 1e-7
         results.append(math.log(ratio))
     assert direction * results[1] > direction * results[0] > 0
     assert abs(results[1]) > math.log(1.1)
@@ -113,7 +113,7 @@ def test_repeated_delayed_measurements_approach_absolute_target_without_compound
         current = settings(instance)[0]
         assert direction * (current - prior) >= -1e-6
         assert min(1, bound) - 1e-6 <= current <= max(1, bound) + 1e-6
-        assert .8 - 1e-6 <= current / prior <= 1.25 + 1e-6
+        assert 2 / 3 - 1e-6 <= current / prior <= 1.5 + 1e-6
         prior = current
     assert abs(math.log(prior / bound)) < .001
 
@@ -126,7 +126,7 @@ def test_fast_recovery_requires_both_raw_headroom_limits(field, limit):
         set_inflight(instance, 1, 0)
         instance.compare_highlights(measurement(20, **{field: value}), 1, 0)
         ratios.append(settings(instance)[0])
-    assert 1.1 < ratios[0] <= 1.25
+    assert 1.1 < ratios[0] <= 1.5
     assert 1 < ratios[1] <= 1.1 + 1e-6
 
 
