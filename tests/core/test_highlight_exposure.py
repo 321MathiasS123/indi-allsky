@@ -26,7 +26,7 @@ def test_dual_deadband_and_shadow_floor(full, any_channel, adu, direction):
 def test_no_reduction_past_lift_limit_and_custom_settings():
     assert exposure_decision(HighlightMeasurement(10, 20, 21), 80, 10, {})[0] == pytest.approx(20 / 21)
     assert exposure_decision(HighlightMeasurement(0.8, 2, 80), 80, 10,
-                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1})[0] == pytest.approx(0.8)
+                          {'FULL_TARGET': 0.4, 'FULL_DEV': 0.1})[0] == pytest.approx(0.7)
     assert exposure_decision(HighlightMeasurement(10, 20, 80), 80, 10, {'MAX_BOOST': 0})[0] == 1
 
 
@@ -67,7 +67,7 @@ def test_highlight_requests_retain_every_mode_policy_and_binning(name, night, mo
     reference = controller(name, night, moon)
     config_before = deepcopy(actual.config)
     gain = actual.gain_min if name != 'exposure_basic' else actual.gain_max
-    expected = reference.adjust_exposure_gain(0.1, gain, 0.09)
+    expected = reference.adjust_exposure_gain(0.1, gain, 0.06)
     actual.compare_highlights(HighlightMeasurement(5, 10, 80), 0.1, gain)
     assert actual._expUtils.EXPOSURE_NEXT == pytest.approx(expected[0], abs=0.000001)
     assert actual._expUtils.GAIN_NEXT == pytest.approx(expected[1], abs=0.001)
@@ -109,7 +109,7 @@ def test_fixed_gain_including_camera_without_gain_control(gain):
     instance._expUtils.GAIN_MAX_NIGHT = gain
     instance.compare_highlights(HighlightMeasurement(5, 10, 70), 1, gain)
     assert instance._expUtils.GAIN_NEXT == gain
-    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.9)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.6)
 
 
 @pytest.mark.parametrize('microseconds', [1, 2, 5, 9, 10, 32])
@@ -126,10 +126,10 @@ def test_sub_microsecond_recovery_does_not_stall(microseconds):
 
 
 @pytest.mark.parametrize('current,gain,measurement,ratio', [
-    (30, 400, HighlightMeasurement(5, 10, 70), 0.9),
+    (30, 400, HighlightMeasurement(1.4, 0, 70), 0.9),
     (30, 400, HighlightMeasurement(0, 0, 30), 1.1),
     (27, 400, HighlightMeasurement(0, 0, 30), 1.1),
-    (0.001, 400, HighlightMeasurement(5, 10, 70), 0.9),
+    (0.001, 400, HighlightMeasurement(1.4, 0, 70), 0.9),
 ])
 def test_discrete_iso_preserves_proportional_signal_with_exposure(current, gain, measurement, ratio):
     instance = controller('exposure_autogain_exp_prio_iso')
@@ -210,7 +210,7 @@ def test_closed_loop_settles_then_recovers_when_bright_source_disappears():
 def test_pending_frames_do_not_compound_unapplied_requests():
     instance = controller('exposure_basic', night=False)
     for pending in range(6):
-        instance.compare_highlights(HighlightMeasurement(3, 0, 80), 1.0, 0)
+        instance.compare_highlights(HighlightMeasurement(1.4, 0, 80), 1.0, 0)
         assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.9)
     instance.compare_highlights(HighlightMeasurement(1.1, 0, 80), 0.9, 0)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.855, abs=1e-6)
@@ -221,7 +221,7 @@ def test_proportional_strength_resets_between_control_periods(reset):
     instance = controller('exposure_basic', night=False)
     exposure = 1.0
     for factor in (.9, .85, .825):
-        instance.compare_highlights(HighlightMeasurement(3, 0, 80), exposure, 0)
+        instance.compare_highlights(HighlightMeasurement(1.4, 0, 80), exposure, 0)
         assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * factor, abs=1e-6)
         exposure = instance._expUtils.EXPOSURE_NEXT
     if reset == 'ordinary':
@@ -231,10 +231,10 @@ def test_proportional_strength_resets_between_control_periods(reset):
     elif reset == 'mode':
         instance.night_av[constants.NIGHT_NIGHT] = True
     elif reset == 'shadow_floor':
-        instance.compare_highlights(HighlightMeasurement(3, 0, 20), exposure, 0)
+        instance.compare_highlights(HighlightMeasurement(1.4, 0, 20), exposure, 0)
     else:
         instance.compare_highlights(HighlightMeasurement(.8, 2, 80), exposure, 0)
-    instance.compare_highlights(HighlightMeasurement(3, 0, 80), exposure, 0)
+    instance.compare_highlights(HighlightMeasurement(1.4, 0, 80), exposure, 0)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(exposure * .9, abs=1e-6)
 
 
@@ -275,7 +275,7 @@ def test_disabled_nonzero_gain_floor_matches_main(name, minimum, expected, missi
     assert instance.reduce_gain(1, minimum, .9)[0] == pytest.approx(expected)
 
 
-@pytest.mark.parametrize('ratio,expected', [(1, 1), (1.01, .995), (1.1, .95), (1.2, .9), (1.3, .85), (1.4, .8), (100, .8)])
+@pytest.mark.parametrize('ratio,expected', [(1, 1), (1.01, .995), (1.1, .95), (1.2, .9), (1.3, .85), (1.4, .8), (100, .6)])
 @pytest.mark.parametrize('channel', ['full', 'any'])
 def test_proportional_reduction_tapers_at_either_upper_limit(channel, ratio, expected):
     metrics = HighlightMeasurement(ratio if channel == 'full' else 0,
@@ -298,7 +298,7 @@ def test_proportional_request_uses_every_modes_existing_actuator_policy(name, fu
 
 @pytest.mark.parametrize('adu,expected,reason', [
     (10, 1.1, 'recover shadow floor'), (20, 1, 'shadow floor'),
-    (21, 20 / 21, 'full+any clipping'), (80, .8, 'full+any clipping'),
+    (21, 20 / 21, 'full+any clipping'), (80, .6, 'full+any clipping'),
 ])
 def test_faster_clipping_reduction_retains_the_shadow_floor(adu, expected, reason):
     scale, actual_reason = exposure_decision(HighlightMeasurement(3, 8, adu), 80, 10, {})
@@ -462,11 +462,11 @@ def test_stale_weaker_reduction_keeps_pending_settings_and_deltas(name, caplog):
     instance._expUtils.EXPOSURE_DELTA = -.15
     before = list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)
     with caplog.at_level('INFO', logger='indi_allsky'):
-        instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+        instance.compare_highlights(HighlightMeasurement(1.4, 0, 70), 1, gain)
     assert (list(instance.exposure_av), list(instance.gain_av), list(instance.binning_av)) == before
     assert 'keeping stronger pending' in caplog.text
     # Once the requested settings appear in a capture, adjustment resumes.
-    instance.compare_highlights(HighlightMeasurement(3, 8, 70), .85, gain)
+    instance.compare_highlights(HighlightMeasurement(1.4, 0, 70), .85, gain)
     assert instance._expUtils.EXPOSURE_NEXT < .85
 
 
@@ -475,7 +475,7 @@ def test_stale_stronger_reduction_can_replace_pending_settings(name):
     instance = controller(name)
     gain = instance.gain_max if name == 'exposure_basic' else instance.gain_min
     instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .99, gain
-    instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, gain)
+    instance.compare_highlights(HighlightMeasurement(1.4, 0, 70), 1, gain)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(.9)
 
 
@@ -508,7 +508,7 @@ def test_pending_iso_reductions_compare_signal_across_gain_exposure_tradeoffs(pe
 def test_pending_reduction_outside_new_mode_limits_is_not_retained():
     instance = controller('exposure_basic', night=False)
     instance._expUtils.EXPOSURE_NEXT, instance._expUtils.GAIN_NEXT = .85, 100
-    instance.compare_highlights(HighlightMeasurement(3, 8, 70), 1, 0)
+    instance.compare_highlights(HighlightMeasurement(1.4, 0, 70), 1, 0)
     assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(.9)
     assert instance._expUtils.GAIN_NEXT == 0
 

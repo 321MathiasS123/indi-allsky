@@ -422,9 +422,10 @@ def exposure_decision(measurement, target, deviation, settings, *, bounded=True)
             return 1.0, 'shadow floor'
         reason = 'full+any clipping' if full_over and any_over else ('full clipping' if full_over else 'any clipping')
         # Taper corrections to zero at the upper limits. Clipped area is not
-        # linear in exposure, so use a conservative gain and cap the reduction.
+        # linear in exposure, so use a conservative gain. Large excursions
+        # permit a 40% cut; mild corrections still taper to zero at the limit.
         excess = max(measurement.full / full_limit - 1, measurement.any / any_limit - 1)
-        reduction = min(0.2, 0.5 * excess)
+        reduction = min(0.4, 0.5 * excess)
         return max(1.0 - reduction, floor / adu), reason
     if adu > target + deviation:
         ratio = (target + deviation) / adu

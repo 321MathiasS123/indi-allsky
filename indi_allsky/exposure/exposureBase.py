@@ -206,15 +206,19 @@ class IndiAllSky_Exposure_Base(object):
         predicted_block = (measurement.adu < target - deviation
                            and (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
                                 or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4)))
+        clipping_urgency = 0.0
         if reason in ('full clipping', 'any clipping', 'full+any clipping'):
             sample = (exposure, gain)
             if sample != self._highlight_sample:
                 self._highlight_previous_reduction = self._highlight_reduction
                 self._highlight_sample = sample
-            # Grow correction strength smoothly as settings take effect.
-            # Frames already in flight must not compound a pending request.
+            # Keep gentle corrections smooth, but progressively release their
+            # damping beyond a 20% cut. Severe clipping must not wait for a
+            # long-exposure ramp to catch up. The shadow floor still bounds it.
             reduction = 1.0 - scale
-            reduction = min(reduction, (self._highlight_previous_reduction + reduction) / 2)
+            clipping_urgency = max(0.0, min(1.0, (reduction - 0.2) / 0.2))
+            smoothed = min(reduction, (self._highlight_previous_reduction + reduction) / 2)
+            reduction = smoothed + (reduction - smoothed) * clipping_urgency
             self._highlight_reduction = reduction
             scale = 1.0 - reduction
         else:
@@ -242,7 +246,8 @@ class IndiAllSky_Exposure_Base(object):
                     measurement.full, measurement.any, measurement.adu, scale, reason)
         if scale != 1.0:
             self._set_exposure(exposure, gain, exposure * scale, highlight=True,
-                               previous_scale=previous_scale, response_target=response_target)
+                               previous_scale=previous_scale, response_target=response_target,
+                               clipping_urgency=clipping_urgency)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
         # Dry-run the same mode policy, ISO selection and storage rounding used
@@ -341,7 +346,7 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None,
-                      response_target=None):
+                      response_target=None, clipping_urgency=0.0):
         reducing = next_exposure < current_exposure
         scale = next_exposure / current_exposure if highlight else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
@@ -423,17 +428,19 @@ class IndiAllSky_Exposure_Base(object):
             # command to half the measured logarithmic correction. Approach
             # the original absolute target; never compound a cut on pending
             # settings or predict how clipped patch areas would scale. A new
-            # stronger demand bypasses this limit immediately.
+            # stronger demand bypasses this limit immediately. Release the
+            # extra slew limit continuously as clipping becomes severe.
+            slew_power = 0.5 + 0.5 * clipping_urgency
             previous_change = self._highlight_signal_change(pending_exposure, pending_gain, current_exposure, current_gain)
             if (change is not None and previous_change is not None and previous_change < -1e-9
                     and previous_scale is not None and scale >= previous_scale - 1e-9
-                    and 0 < scale < 1 and change < math.log(scale) / 2
+                    and 0 < scale < 1 and change < math.log(scale) * slew_power
                     and math.isclose(self._expUtils.EXPOSURE_CURRENT, pending_exposure,
                                      rel_tol=0, abs_tol=0.0000005)
                     and math.isclose(self.effective_gain(self._expUtils.GAIN_CURRENT), pending_gain,
                                      rel_tol=0, abs_tol=0.0005)):
                 limited_exposure, limited_gain, _, _ = self._calculate_exposure(
-                    pending_exposure, pending_gain, pending_exposure * math.sqrt(scale), highlight=True)
+                    pending_exposure, pending_gain, pending_exposure * scale ** slew_power, highlight=True)
                 limited_change = self._highlight_signal_change(
                     limited_exposure, limited_gain, pending_exposure, pending_gain)
                 # Rounding, gain floors and discrete ISO can make a smaller

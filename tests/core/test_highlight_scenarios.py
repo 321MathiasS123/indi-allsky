@@ -129,7 +129,7 @@ def test_pre_dark_clipping_reduces_signal_when_calibration_hides_the_plateau(nam
     gain = instance.gain_min if name != 'exposure_basic' else instance.gain_max
     with caplog.at_level('INFO', logger='indi_allsky'):
         instance.compare_highlights(corrected, 0.1, gain)
-    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.09)
+    assert instance._expUtils.EXPOSURE_NEXT == pytest.approx(0.06)
     assert instance._expUtils.GAIN_NEXT == gain
     assert 'Highlight patches (pre-dark): full 2.000%, any 2.000%; calibrated ADU' in caplog.text
 
@@ -156,7 +156,7 @@ def test_reducing_across_nonzero_gain_floor_reduces_signal(name, minimum):
     before = 29 * 10 ** (instance.gain2dB(gain) / 20)
     instance.compare_highlights(HighlightMeasurement(2, 0, 70), 29, gain)
     after = instance._expUtils.EXPOSURE_NEXT * 10 ** (instance.gain2dB(instance._expUtils.GAIN_NEXT) / 20)
-    assert after == pytest.approx(before * 0.9, rel=0.001)
+    assert after == pytest.approx(before * 0.6, rel=0.001)
     assert instance.exposure_min <= instance._expUtils.EXPOSURE_NEXT <= instance.exposure_max
 
 
@@ -293,7 +293,7 @@ def test_sustained_dawn_catch_up_with_frames_already_in_flight(delay, radius):
             metrics = measure(data, mask, 16)
             instance.compare_highlights(metrics, exposure, 0)
             next_exposure = instance._expUtils.EXPOSURE_NEXT
-            assert .8 * exposure - 1e-6 <= next_exposure <= 1.1 * exposure + 1e-6
+            assert .6 * exposure - 1e-6 <= next_exposure <= 1.1 * exposure + 1e-6
             pending.append(next_exposure)
             history.append(exposure)
             clipping.append(max(0, metrics.full - 1))

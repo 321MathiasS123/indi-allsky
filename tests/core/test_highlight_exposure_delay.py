@@ -50,7 +50,7 @@ def test_brightening_after_an_inflight_increase_keeps_the_urgent_absolute_cut():
     instance.compare_highlights(HighlightMeasurement(5, 10, 80), 1, 0)
     # A clipped-patch demand remains urgent; linear ADU response must not
     # postpone it merely because a brighter capture is already in flight.
-    assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
+    assert requested(instance) == pytest.approx((.6, 0), abs=1e-6)
 
 
 def test_first_adu_observation_moves_from_pending_toward_absolute_target():
@@ -67,7 +67,7 @@ def test_sharper_fresh_demand_on_an_existing_downward_track_is_immediate(initial
     instance.compare_highlights(HighlightMeasurement(0, 0, 90 / initial_scale), 1, 0)
     set_command(instance, *requested(instance))
     instance.compare_highlights(HighlightMeasurement(5, 10, 80), 1, 0)
-    assert requested(instance) == pytest.approx((.9, 0), abs=1e-6)
+    assert requested(instance) == pytest.approx((.6, 0), abs=1e-6)
 
 
 @pytest.mark.parametrize('boundary', ['reset', 'mode', 'recovery', 'hold'])
