@@ -371,9 +371,11 @@ class IndiAllSky_Exposure_Base(object):
                 # Half the remaining logarithmic error gives proportional,
                 # diminishing steps even when the next capture is in flight.
                 # Anchor the target to the measured capture, never multiply an
-                # old correction onto pending settings. Bound each command and
-                # the total change justified by this source independently.
-                step = min(math.log(1.25), max(math.log(0.8), (target_change - previous_change) / 2))
+                # old correction onto pending settings. Permit larger steps
+                # for large errors; the half-error response tapers them as the
+                # target approaches. Raw headroom still bounds total growth
+                # justified by this source independently of the command cap.
+                step = min(math.log(1.5), max(math.log(2.0 / 3.0), (target_change - previous_change) / 2))
                 change = previous_change + step
                 if target_change > 0:
                     change = min(change, math.log(scale))
