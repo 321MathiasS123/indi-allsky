@@ -1,4 +1,7 @@
 """Single-colour sensor defects must not become astronomical source votes."""
+import copy
+
+import cv2
 import numpy as np
 import pytest
 
@@ -227,3 +230,82 @@ def test_capture_sequence_keeps_proof_when_colour_noise_switches_source_tables(m
         assert repaired[:3] == [0]*3
         assert repaired[3:6] == [.5, .75, 1]
         assert repaired[6:] == [1, 1, 1]
+
+
+@pytest.mark.parametrize('clouds', [False, True])
+@pytest.mark.parametrize('colour', [None, (1, 1, 1), (.35, .7, 1), (1, .7, .35)])
+def test_resolved_star_at_known_sensor_coordinate_keeps_its_core(clouds, colour):
+    catalogue = SkySourceCatalogue()
+    valid = np.ones((400, 400), bool)
+    context = dict(capture_interval=30, geometry_key='resolved-source', sensor_shape=valid.shape)
+    for frame in range(6):
+        image, (cx, cy) = scene(frame)
+        if colour is None:
+            image = np.repeat(image[:, :, 2:3], 3, axis=2)
+        context['capture_time'] = 1000 + 30 * frame
+        evidence = sky_denoise._source_evidence(image, valid, catalogue=catalogue,
+                                               capture_context=context)
+    defects = evidence['sensor_defects']
+    assert np.any((np.linalg.norm(defects[:, :2] - [cx, cy], axis=1) < 1)
+                  & (defects[:, 2] == 1))
+
+    if clouds:
+        image = np.random.default_rng(46).normal(.08, .001, (400, 400, 3)).astype(np.float32)
+    else:
+        image, _ = scene(6)
+        image[cy, cx, 2] -= .3
+    if colour is None:
+        image = np.repeat(image[:, :, 2:3], 3, axis=2)
+    y, x = np.mgrid[:400, :400]
+    image += (.15 * np.exp(-((x-cx)**2 + (y-cy)**2) / 4))[:, :, None] * np.asarray(colour or (1, 1, 1))
+    context['capture_time'] = 1180
+    control = copy.deepcopy(catalogue)
+    control._fixed = control._fixed[np.linalg.norm(control._fixed[:, :2] - [cx, cy], axis=1) >= 1]
+    evidence = sky_denoise._source_evidence(image, valid, catalogue=catalogue,
+                                           capture_context=context)
+    assert evidence['catalogue']['status'] == ('motion_fallback' if clouds else 'tracking')
+    nearby = np.linalg.norm(evidence['points'][:, :2] - [cx, cy], axis=1) < 1
+    assert nearby.sum() == 1
+    assert not evidence['catalogue']['stationary_mask'][nearby].any()
+    defects = evidence.get('sensor_defects', np.empty((0, 3)))
+    assert not np.any(np.linalg.norm(defects[:, :2] - [cx, cy], axis=1) < 4)
+    baseline = sky_denoise._denoise_linear(image, valid, catalogue=control,
+                                          capture_context=context)
+    result = sky_denoise._denoise_linear(image, valid, catalogue=catalogue,
+                                        capture_context=context)
+    np.testing.assert_array_equal(result[cy-2:cy+3, cx-2:cx+3],
+                                  baseline[cy-2:cy+3, cx-2:cx+3])
+
+    # Protecting a real current source must not erase the remembered defect.
+    image, _ = scene(7)
+    if colour is None:
+        image = np.repeat(image[:, :, 2:3], 3, axis=2)
+    context['capture_time'] = 1210
+    evidence = sky_denoise._source_evidence(image, valid, catalogue=catalogue,
+                                           capture_context=context)
+    defects = evidence['sensor_defects']
+    assert np.any((np.linalg.norm(defects[:, :2] - [cx, cy], axis=1) < 1)
+                  & (defects[:, 2] == 1))
+
+
+@pytest.mark.parametrize('phase', [(0, 0), (0, 1), (1, 0), (1, 1)])
+@pytest.mark.parametrize('paired', [False, True])
+def test_demosaiced_sensor_impulses_with_secondary_colour_noise_still_repair(phase, paired):
+    catalogue = SkySourceCatalogue()
+    raw = np.zeros((400, 400), np.uint16)
+    cy, cx = 110 + phase[0], 100 + phase[1]
+    raw[cy, cx] = 30000
+    if paired:
+        raw[cy, cx + 2] = 24000
+    impulse = cv2.cvtColor(raw, cv2.COLOR_BAYER_BG2BGR).astype(np.float32) / 65535
+    for frame in range(7):
+        image, (old_x, old_y) = scene(frame)
+        image[old_y, old_x, 2] -= .3
+        image += impulse
+        image[cy, cx] += .02  # A second-channel noise high is not a stellar PSF.
+        evidence = sky_denoise._source_evidence(image, np.ones((400, 400), bool),
+            catalogue=catalogue, capture_context=dict(capture_time=1000 + frame * 30,
+                capture_interval=30, geometry_key='bayer-defect', sensor_shape=(400, 400)))
+    defects = evidence.get('sensor_defects', np.empty((0, 3)))
+    assert np.any((np.linalg.norm(defects[:, :2] - [cx, cy], axis=1) < 3)
+                  & (defects[:, 2] == 1))
