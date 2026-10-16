@@ -1,4 +1,5 @@
 import io
+import json
 import re
 from pathlib import Path
 from datetime import datetime
@@ -2212,7 +2213,42 @@ class ImageProcessor(object):
         if catalogue is None:
             from .sky_catalogue import SkySourceCatalogue
             catalogue = self._sky_source_catalogue = SkySourceCatalogue()
-        return dict(catalogue=catalogue, capture_context=context)
+        kwargs = dict(catalogue=catalogue, capture_context=context)
+        if self.config.get('IMAGE_DENOISE_CATALOGUE', False):
+            reference = self._denoise_star_reference(i_ref)
+            if reference is not None:
+                kwargs['star_reference'] = reference
+                # VirtualSky fits the displayed frame clock; independent source
+                # motion still uses the exposure midpoint above.
+                context['reference_time'] = int(i_ref.exp_date_utc.timestamp())
+        return kwargs
+
+
+    def _denoise_star_reference(self, i_ref):
+        """Cache the optional sky geometry without retaining images or querying the DB."""
+        try:
+            latitude = float(self.position_av[constants.POSITION_LATITUDE])
+            longitude = float(self.position_av[constants.POSITION_LONGITUDE])
+            if self.config.get('PRIVACY_MODE'):
+                # Match the coordinates used when aligning the VirtualSky overlay.
+                latitude, longitude = float(round(latitude)), float(round(longitude))
+            keys = ('VIRTUALSKY', 'PRIVACY_MODE', 'LENS_AZIMUTH', 'LENS_ALTITUDE',
+                    'IMAGE_ROTATE', 'IMAGE_ROTATE_ANGLE', 'IMAGE_ROTATE_KEEP_SIZE',
+                    'IMAGE_FLIP_H', 'IMAGE_FLIP_V', 'IMAGE_CROP_ROI',
+                    'IMAGE_CROP_IMAGE_CIRCLE', 'IMAGE_SCALE', 'IMAGE_BORDER',
+                    'LENS_IMAGE_CIRCLE', 'LENS_OFFSET_X', 'LENS_OFFSET_Y')
+            key = (self.image.shape, i_ref.binning, i_ref.camera_uuid, latitude, longitude,
+                   json.dumps([self.config.get(k) for k in keys], sort_keys=True))
+            if key != getattr(self, '_sky_reference_key', None):
+                from .sky_reference import VirtualSkyReference
+                self._sky_reference = None
+                self._sky_reference_key = key
+                self._sky_reference = VirtualSkyReference(
+                    self.config, self.image.shape, i_ref.binning,
+                    i_ref.camera_uuid, latitude, longitude)
+            return self._sky_reference
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return None
 
 
     def _denoise_sun_altitude(self, i_ref):

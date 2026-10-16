@@ -1,8 +1,10 @@
 """Temporal confidence changes restoration, not the measured noise mask."""
 import ast
 from datetime import datetime, timedelta, timezone
+import json
 import math
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -117,9 +119,9 @@ def processor():
     tree = ast.parse(path.read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ImageProcessor')
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-                and n.name == '_denoise_temporal_kwargs']
+                and n.name in {'_denoise_temporal_kwargs', '_denoise_star_reference'}]
     ns = dict(__name__='indi_allsky.processing', __package__='indi_allsky',
-              constants=constants, math=math, timedelta=timedelta, asi676mc=asi676mc)
+              constants=constants, json=json, math=math, timedelta=timedelta, asi676mc=asi676mc)
     exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), ns)
     obj = ns['ImageProcessor']()
     obj.config = dict(EXPOSURE_PERIOD=20, EXPOSURE_PERIOD_DAY=25)
@@ -136,6 +138,7 @@ def test_context_uses_capture_midpoint_and_reuses_one_catalogue(processor):
     first = obj._denoise_temporal_kwargs(ref)
     second = obj._denoise_temporal_kwargs(ref)
     assert first['catalogue'] is second['catalogue']
+    assert set(first) == {'catalogue', 'capture_context'}
     context = first['capture_context']
     assert context['capture_time'] == (ref.exp_date_utc - timedelta(seconds=15.9)).timestamp()
     assert context['capture_interval'] == 30.9
@@ -159,3 +162,94 @@ def test_nonindependent_frames_clear_history_without_using_it(processor, invalid
         ref.exposure = float('nan')
     assert obj._denoise_temporal_kwargs(ref) == {}
     assert obj._sky_source_catalogue.resets == 1
+
+
+@pytest.fixture
+def star_reference(processor, monkeypatch):
+    instances = []
+
+    class Reference:
+        def __init__(self, *args):
+            self.args = args
+            instances.append(self)
+
+    monkeypatch.setitem(sys.modules, 'indi_allsky.sky_reference',
+                        SimpleNamespace(VirtualSkyReference=Reference))
+    obj, ref = processor
+    obj.config.update(IMAGE_DENOISE_CATALOGUE=True, VIRTUALSKY={'OFFSET_X': 0})
+    obj.image = np.zeros((80, 100, 3), np.uint8)
+    obj.position_av = [0.] * 8
+    obj.position_av[constants.POSITION_LATITUDE] = 53.24
+    obj.position_av[constants.POSITION_LONGITUDE] = 11.38
+    ref.camera_uuid = 'test-camera'
+    return obj, ref, instances
+
+
+def test_reference_reuses_mapping_and_capture_time_without_extra_ephemeris(star_reference):
+    obj, ref, instances = star_reference
+    first = obj._denoise_temporal_kwargs(ref)
+    assert first['capture_context']['reference_time'] == int(ref.exp_date_utc.timestamp())
+    assert first['capture_context']['capture_time'] == (ref.exp_date_utc - timedelta(seconds=15.9)).timestamp()
+    ref.exp_date_utc += timedelta(seconds=31)
+    second = obj._denoise_temporal_kwargs(ref)
+    assert first['star_reference'] is second['star_reference'] is instances[0]
+    assert len(instances) == 1
+    assert second['capture_context']['capture_time'] - first['capture_context']['capture_time'] == 31
+    assert second['capture_context']['reference_time'] - first['capture_context']['reference_time'] == 31
+    assert instances[0].args[1:] == ((80, 100, 3), 1, 'test-camera', 53.24, 11.38)
+    obj.config['IMAGE_DENOISE_STRENGTH'] = 5
+    assert obj._denoise_temporal_kwargs(ref)['star_reference'] is instances[0]
+    obj.config['IMAGE_DENOISE_CATALOGUE'] = False
+    disabled = obj._denoise_temporal_kwargs(ref)
+    assert set(disabled) == {'catalogue', 'capture_context'}
+    assert 'reference_time' not in disabled['capture_context']
+
+
+@pytest.mark.parametrize('change', ['nested_geometry', 'rotation', 'border', 'shape',
+                                  'binning', 'camera', 'position', 'privacy'])
+def test_reference_mapping_invalidates_only_when_its_context_changes(star_reference, change):
+    obj, ref, instances = star_reference
+    first = obj._denoise_temporal_kwargs(ref)['star_reference']
+    if change == 'nested_geometry':
+        obj.config['VIRTUALSKY']['OFFSET_X'] = 2
+    elif change == 'rotation':
+        obj.config['IMAGE_ROTATE_ANGLE'] = 15
+    elif change == 'border':
+        obj.config['IMAGE_BORDER'] = {'TOP': 10}
+    elif change == 'shape':
+        obj.image = np.zeros((60, 90), np.uint16)
+    elif change == 'binning':
+        ref.binning = 2
+    elif change == 'camera':
+        ref.camera_uuid = 'other-camera'
+    elif change == 'position':
+        obj.position_av[constants.POSITION_LONGITUDE] += .1
+    else:
+        obj.config['PRIVACY_MODE'] = True
+    second = obj._denoise_temporal_kwargs(ref)['star_reference']
+    assert second is not first and len(instances) == 2
+    assert obj._denoise_temporal_kwargs(ref)['star_reference'] is second
+    if change == 'privacy':
+        assert second.args[-2:] == (53., 11.)
+
+
+@pytest.mark.parametrize('invalid', ['preview', 'stack', 'bad_frame', 'missing_camera', 'bad_geometry'])
+def test_reference_falls_back_without_preventing_normal_processing(star_reference, invalid):
+    obj, ref, instances = star_reference
+    if invalid == 'preview':
+        ref.exp_elapsed = 0
+    elif invalid == 'stack':
+        obj.image_list.append(ref)
+    elif invalid == 'bad_frame':
+        ref.asi676mc_repair_result = {'status': 'excluded'}
+    elif invalid == 'missing_camera':
+        del ref.camera_uuid
+    else:
+        obj.config['VIRTUALSKY'] = object()  # Malformed config cannot be cached/projected.
+    result = obj._denoise_temporal_kwargs(ref)
+    assert 'star_reference' not in result
+    assert len(instances) == 0
+    if invalid in {'missing_camera', 'bad_geometry'}:
+        assert set(result) == {'catalogue', 'capture_context'}
+    else:
+        assert result == {}

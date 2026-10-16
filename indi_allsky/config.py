@@ -106,6 +106,7 @@ class IndiAllSkyConfigBase(object):
         "IMAGE_DENOISE_DAY"          : "",
         "IMAGE_DENOISE_STRENGTH"     : 3,
         "IMAGE_DENOISE_STRENGTH_DAY" : 3,
+        "IMAGE_DENOISE_CATALOGUE"    : False,
         "MEDIAN_SCALE_FACTOR" : 2.4,
         "MEDIAN_SCALE_EXP"    : 2.0,
         "GAUSSIAN_SCALE_FACTOR" : 0.2,

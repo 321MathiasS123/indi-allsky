@@ -3,6 +3,7 @@ import ast
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -10,14 +11,14 @@ import flask
 from flask_wtf import FlaskForm
 import pytest
 from werkzeug.datastructures import MultiDict
-from wtforms import SelectField, IntegerField
+from wtforms import BooleanField, SelectField, IntegerField
 from wtforms.validators import ValidationError
 from wtforms.widgets import NumberInput
 
 
 ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky/flask'
 FIELDS = {'IMAGE_DENOISE', 'IMAGE_DENOISE_DAY',
-          'IMAGE_DENOISE_STRENGTH', 'IMAGE_DENOISE_STRENGTH_DAY'}
+          'IMAGE_DENOISE_STRENGTH', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE'}
 
 
 @pytest.mark.parametrize('recorded_date', [datetime(2026, 9, 8, 22, 15), None])
@@ -56,13 +57,13 @@ def load_forms():
                          and isinstance(n.targets[0], ast.Name)
                          and n.targets[0].id in FIELDS | {'IMAGE_DENOISE_choices'}]
             nodes.append(node)
-    ns = dict(FlaskForm=FlaskForm, SelectField=SelectField, IntegerField=IntegerField,
+    ns = dict(FlaskForm=FlaskForm, BooleanField=BooleanField, SelectField=SelectField, IntegerField=IntegerField,
               ValidationError=ValidationError, NumberInput=NumberInput)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), 'actual-denoise-fields', 'exec'), ns)
     return ns['IndiAllskyConfigForm'], ns['IndiAllskyImageProcessingForm']
 
 
-def save_fields(data, preview=False):
+def save_fields(data, preview=False, existing=None):
     """Execute the application's existing assignments, not a mock serializer."""
     tree = ast.parse((ROOT / 'views.py').read_text(encoding='utf-8'))
     destination = 'p_config' if preview else 'self.indi_allsky_config'
@@ -74,8 +75,8 @@ def save_fields(data, preview=False):
         if (isinstance(target, ast.Subscript) and ast.unparse(target.value) == destination
                 and isinstance(target.slice, ast.Constant) and target.slice.value in FIELDS):
             assignments.append(node)
-    assert len(assignments) == (2 if preview else 4)
-    saved = {}
+    assert len(assignments) == (2 if preview else 5)
+    saved = dict(existing or {})
     ns = dict(self=SimpleNamespace(indi_allsky_config=saved), p_config=saved,
               request=SimpleNamespace(json=data))
     exec(compile(ast.Module(body=assignments, type_ignores=[]), 'actual-denoise-save', 'exec'), ns)
@@ -87,7 +88,7 @@ def save_fields(data, preview=False):
 def test_selection_validates_saves_and_reloads(preview, strength):
     config_form, preview_form = load_forms()
     form_class = preview_form if preview else config_form
-    fields = FIELDS if not preview else FIELDS - {'IMAGE_DENOISE_DAY', 'IMAGE_DENOISE_STRENGTH_DAY'}
+    fields = FIELDS if not preview else FIELDS - {'IMAGE_DENOISE_DAY', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE'}
     data = {key: str(strength) if 'STRENGTH' in key else 'star_aware' for key in fields}
     app = flask.Flask(__name__)
     app.config['WTF_CSRF_ENABLED'] = False
@@ -112,3 +113,41 @@ def test_invalid_method_and_strength_are_rejected(method, strength):
     with app.test_request_context():
         form = preview_form(MultiDict({'IMAGE_DENOISE': method, 'IMAGE_DENOISE_STRENGTH': strength}))
         assert not form.validate()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_optional_reference_toggle_roundtrips_and_old_clients_preserve_it(enabled):
+    config_form, _ = load_forms()
+    data = dict(IMAGE_DENOISE='star_aware', IMAGE_DENOISE_DAY='',
+                IMAGE_DENOISE_STRENGTH=3, IMAGE_DENOISE_STRENGTH_DAY=3)
+    app = flask.Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        assert config_form(data=data).IMAGE_DENOISE_CATALOGUE.data is False
+        form = config_form(data=dict(data, IMAGE_DENOISE_CATALOGUE=enabled))
+        assert form.validate(), form.errors
+        saved = save_fields(form.data)
+        assert config_form(data=saved).IMAGE_DENOISE_CATALOGUE.data is enabled
+        assert save_fields(data, existing=saved)['IMAGE_DENOISE_CATALOGUE'] is enabled
+        assert save_fields(data)['IMAGE_DENOISE_CATALOGUE'] is False
+
+
+def test_reference_toggle_is_default_off_and_serialized_as_boolean():
+    config = ast.parse((ROOT.parent / 'config.py').read_text(encoding='utf-8'))
+    defaults = [value for node in ast.walk(config) if isinstance(node, ast.Dict)
+                for key, value in zip(node.keys, node.values)
+                if isinstance(key, ast.Constant) and key.value == 'IMAGE_DENOISE_CATALOGUE']
+    assert len(defaults) == 1 and ast.literal_eval(defaults[0]) is False
+    template = (ROOT / 'templates/config.html').read_text(encoding='utf-8')
+    checkboxes = re.search(r'const checkbox_field_names = \[(.*?)\];', template, re.S).group(1)
+    assert checkboxes.count("'IMAGE_DENOISE_CATALOGUE'") == 1
+    image_controls = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
+    assert 'form_config.IMAGE_DENOISE_CATALOGUE(' in image_controls
+    views = ast.parse((ROOT / 'views.py').read_text(encoding='utf-8'))
+    loads = [value for node in ast.walk(views) if isinstance(node, ast.Dict)
+             for key, value in zip(node.keys, node.values)
+             if isinstance(key, ast.Constant) and key.value == 'IMAGE_DENOISE_CATALOGUE']
+    assert len(loads) == 1
+    for stored in ({}, {'IMAGE_DENOISE_CATALOGUE': True}):
+        expression = compile(ast.Expression(loads[0]), 'actual-denoise-load', 'eval')
+        assert eval(expression, {'self': SimpleNamespace(indi_allsky_config=stored)}) is stored.get('IMAGE_DENOISE_CATALOGUE', False)

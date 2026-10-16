@@ -17,6 +17,7 @@ import time
 import cv2
 import numpy as np
 from scipy.ndimage import maximum_filter
+from scipy.spatial import cKDTree
 from skimage.restoration import denoise_nl_means
 
 WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)
@@ -154,7 +155,7 @@ def repair_bayer(raw, config, binning=1):
 
 
 def denoise(image, config, binning=1, strength=3, sun_altitude=None,
-            catalogue=None, capture_context=None):
+            catalogue=None, capture_context=None, star_reference=None):
     """Filter BGR or monochrome data, retaining its layout and numeric range."""
     if strength <= 0 or min(image.shape[:2]) < 32:
         return image
@@ -186,7 +187,8 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None,
                                     int(binning), geometry, margin)
         temporal['sensor_shape'] = image.shape[:2]
     filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude),
-                               catalogue, temporal, margin)
+                               catalogue, temporal, margin, star_reference=star_reference,
+                               binning=binning)
     if mono:
         filtered = filtered[:, :, 0]
     filtered *= maximum
@@ -199,11 +201,13 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None,
 
 
 def _denoise_linear(image, valid, strength=3, star_protection=1.0,
-                    catalogue=None, capture_context=None, margin=0):
+                    catalogue=None, capture_context=None, margin=0, *,
+                    star_reference=None, binning=1):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
     evidence = _source_evidence(image, valid, star_protection,
-                                catalogue, capture_context, margin, processing_only=True)
+                                catalogue, capture_context, margin, processing_only=True,
+                                star_reference=star_reference, binning=binning)
     evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
@@ -262,8 +266,70 @@ def _noise_grid(data, tile=128):
             row(y)
     return cv2.resize(grid, (w, h), interpolation=cv2.INTER_LINEAR)
 
+def _reference_matches(points, shape, capture_time, reference, binning=1):
+    """Positive confirmation only after this frame validates the projection.
+
+    Coordinates are full, binned sensor pixels. No position is fitted or moved;
+    unmatched sources and empty catalogue positions keep their existing treatment.
+    """
+    confirmed = np.zeros(len(points), bool)
+    if reference is None or len(points) < 8 or len(points) > 20000:
+        return confirmed
+    try:
+        timestamp = float(capture_time)
+        height, width = shape
+        scale = max(1, int(binning))
+        if (not np.isfinite(timestamp) or min(height, width) <= 0
+                or points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all()):
+            return confirmed
+        predicted = np.asarray(reference.predictions(timestamp), dtype=np.float64)
+        if (predicted.ndim != 2 or predicted.shape[1] != 3 or len(predicted) > 20000
+                or not np.isfinite(predicted).all()):
+            return confirmed
+    except Exception:
+        # Optional catalogue/calibration failures must not stop image processing.
+        return confirmed
+    predicted = predicted[(predicted[:, 0] >= 0) & (predicted[:, 0] < width)
+                          & (predicted[:, 1] >= 0) & (predicted[:, 1] < height)
+                          & (predicted[:, 2] <= 5.5)]
+    bright = predicted[predicted[:, 2] <= 4.5, :2]
+    anchors = points[points[:, 2] >= 5, :2]
+    if min(len(bright), len(anchors)) < 8:
+        return confirmed
+    radius = 3.0 / scale
+
+    def pairs(expected, observed, observed_tree):
+        distance, index = cKDTree(expected).query(observed, k=2, distance_upper_bound=radius)
+        left = np.flatnonzero(np.isfinite(distance[:, 0]) & ~np.isfinite(distance[:, 1]))
+        right = index[left, 0]
+        back_distance, back_index = observed_tree.query(expected[right], k=2,
+                                                        distance_upper_bound=radius)
+        unique = (back_index[:, 0] == left) & ~np.isfinite(back_distance[:, 1])
+        return left[unique], distance[left[unique], 0]
+
+    anchor_tree = cKDTree(anchors)
+    matched, residual = pairs(bright, anchors, anchor_tree)
+    if len(matched) < 8:
+        return confirmed
+    measured = anchors[matched]
+    span = np.ptp(measured, axis=0) / [width, height]
+    quadrants = (measured[:, 0] > width / 2) + 2 * (measured[:, 1] > height / 2)
+    if (not np.all(span > .25) or len(np.unique(quadrants)) < 3
+            or np.median(residual) > radius * .5 or np.percentile(residual, 90) > radius * .8):
+        return confirmed
+    # Shifted catalogues estimate accidental matches in this very same frame.
+    chance = max(len(pairs(bright + np.asarray(offset) / scale, anchors, anchor_tree)[0])
+                 for offset in ((16, 0), (-16, 0), (0, 16), (0, -16)))
+    if len(matched) <= 2 * chance + 2:
+        return confirmed
+    matches, _ = pairs(predicted[:, :2], points[:, :2], cKDTree(points[:, :2]))
+    confirmed[matches] = True
+    return confirmed
+
+
 def _source_evidence(image, valid=None, star_protection=1.0,
-                     catalogue=None, capture_context=None, margin=0, *, processing_only=False):
+                     catalogue=None, capture_context=None, margin=0, *, processing_only=False,
+                     star_reference=None, binning=1):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
     fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
@@ -332,6 +398,10 @@ def _source_evidence(image, valid=None, star_protection=1.0,
         evidence['blur5'] = blur5
     if temporal:
         start = time.monotonic()
+        context = dict(capture_context)
+        # The saved VirtualSky alignment uses the displayed frame timestamp;
+        # temporal source tracking continues to use the exposure midpoint.
+        reference_time = context.pop('reference_time', context.get('capture_time'))
         sensor_points = points.copy()
         sensor_points[:, :2] += margin
         # A sparse outer ring rejects broad sources and trails from the fixed
@@ -353,12 +423,26 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             significance = np.column_stack([s[cy + dy, cx + dx] for s in colour_scores])
             wings += np.count_nonzero((significance > 3) & (wing > 0.03 * core), axis=1) >= 2
         compact[compact_indices] &= wings < 4
+        reference_confirmed = None
+        if star_reference is not None:
+            shape = context.get('sensor_shape', (image.shape[0] + 2 * margin,
+                                                 image.shape[1] + 2 * margin))
+            reference_confirmed = _reference_matches(sensor_points, shape, reference_time,
+                                                      star_reference, binning)
+            compact &= ~reference_confirmed
         defects = _single_colour_points(colour_dog, colour_scores, support, distance, valid)
         sensor_defects = defects.copy()
         sensor_defects[:, :2] += margin
         weights, diagnostics = catalogue.weights(sensor_points, support_points,
                                                   compact=compact, sensor_points=sensor_defects,
-                                                  **capture_context)
+                                                  **context)
+        if reference_confirmed is not None and reference_confirmed.any():
+            weights[reference_confirmed] = 1
+            # Duplicate captures may return a cached stationary classification.
+            stationary = np.asarray(diagnostics.get('stationary_mask', np.zeros(len(points), bool))).copy()
+            stationary[reference_confirmed] = False
+            diagnostics['stationary_mask'] = stationary
+            diagnostics['reference_confirmed'] = int(reference_confirmed.sum())
         evidence['catalogue'] = diagnostics
         defect_weights = diagnostics.get('sensor_weights', ())
         if len(defect_weights) == len(defects):
@@ -401,10 +485,11 @@ def _source_evidence(image, valid=None, star_protection=1.0,
                     for nx, ny in zip(xx[nearby], yy[nearby]):
                         clear &= (gx + x - nx)**2 + (gy + y - ny)**2 > 6.5**2
                     clearance.append(clear)
-        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d sensor_pixels=%d time=%.3fs',
+        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d reference_confirmed=%d sensor_pixels=%d time=%.3fs',
                     diagnostics.get('status', 'unknown'), len(points),
                     diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
-                    diagnostics.get('stationary', 0), len(evidence.get('sensor_defects', ())),
+                    diagnostics.get('stationary', 0), diagnostics.get('reference_confirmed', 0),
+                    len(evidence.get('sensor_defects', ())),
                     time.monotonic() - start)
     elif catalogue is not None and star_protection == 0:
         catalogue.reset()

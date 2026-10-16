@@ -78,7 +78,7 @@ class IndiAllskyDenoise(object):
         return 1.0
 
     def star_aware(self, scidata, binning=1, sun_altitude=None,
-                   catalogue=None, capture_context=None):
+                   catalogue=None, capture_context=None, star_reference=None):
         """Current-frame sky filter with optional coordinate-only confirmation."""
         from .sky_denoise import denoise
 
@@ -87,6 +87,8 @@ class IndiAllskyDenoise(object):
         temporal = {}
         if catalogue is not None and capture_context is not None:
             temporal = dict(catalogue=catalogue, capture_context=capture_context)
+            if star_reference is not None:
+                temporal['star_reference'] = star_reference
         result = denoise(scidata, self.config, binning=binning, strength=strength,
                          sun_altitude=sun_altitude, **temporal)
         logger.info('Applied star-aware sky denoise strength=%d time=%.3fs',
