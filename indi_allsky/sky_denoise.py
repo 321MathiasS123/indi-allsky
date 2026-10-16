@@ -313,6 +313,18 @@ def _source_evidence(image, valid=None, star_protection=1.0,
         outer = np.maximum.reduce([dog[yy + dy, xx + dx] for dy, dx in
             ((-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (-3, 3), (3, -3), (3, 3))])
         compact = outer < 0.3 * dog[yy, xx]
+        # A resolved stellar profile is not a sensor impulse, even when its
+        # motion near a rotation pole is too small to measure. Require wings
+        # above local noise in two colours around the core; isolated Bayer
+        # defects and noise in a second channel do not have that support.
+        core = colour_dog[yy, xx]
+        wings = np.zeros(len(points), np.uint8)
+        for dy, dx in ((-3, 0), (3, 0), (0, -3), (0, 3),
+                       (-2, -2), (-2, 2), (2, -2), (2, 2)):
+            wing = colour_dog[yy + dy, xx + dx]
+            significance = np.column_stack([s[yy + dy, xx + dx] for s in colour_scores])
+            wings += np.count_nonzero((significance > 3) & (wing > 0.03 * core), axis=1) >= 2
+        compact &= wings < 4
         defects = _single_colour_points(colour_dog, colour_scores, support, distance, valid)
         sensor_defects = defects.copy()
         sensor_defects[:, :2] += margin
