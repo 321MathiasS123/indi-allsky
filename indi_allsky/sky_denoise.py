@@ -17,6 +17,7 @@ import time
 import cv2
 import numpy as np
 from scipy.ndimage import maximum_filter
+from scipy.spatial import cKDTree
 from skimage.restoration import denoise_nl_means
 
 WEIGHTS = np.array([0.114, 0.587, 0.299], dtype=np.float32)
@@ -154,7 +155,7 @@ def repair_bayer(raw, config, binning=1):
 
 
 def denoise(image, config, binning=1, strength=3, sun_altitude=None,
-            catalogue=None, capture_context=None):
+            catalogue=None, capture_context=None, star_reference=None):
     """Filter BGR or monochrome data, retaining its layout and numeric range."""
     if strength <= 0 or min(image.shape[:2]) < 32:
         return image
@@ -186,38 +187,48 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None,
                                     int(binning), geometry, margin)
         temporal['sensor_shape'] = image.shape[:2]
     filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude),
-                               catalogue, temporal, margin)
+                               catalogue, temporal, margin, star_reference=star_reference,
+                               binning=binning)
     if mono:
         filtered = filtered[:, :, 0]
-    filtered = np.clip(filtered * maximum, 0, maximum)
+    filtered *= maximum
+    np.clip(filtered, 0, maximum, out=filtered)
     if integer:
-        filtered = np.rint(filtered)
+        np.rint(filtered, out=filtered)
     result = image.copy()
-    result[roi] = filtered.astype(image.dtype)
+    result[roi] = filtered
     return result
 
 
 def _denoise_linear(image, valid, strength=3, star_protection=1.0,
-                    catalogue=None, capture_context=None, margin=0):
+                    catalogue=None, capture_context=None, margin=0, *,
+                    star_reference=None, binning=1):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
     evidence = _source_evidence(image, valid, star_protection,
-                                catalogue, capture_context, margin)
+                                catalogue, capture_context, margin, processing_only=True,
+                                star_reference=star_reference, binning=binning)
     evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
     if sigma <= 1e-8:
         return image.copy()
-    result = _blend(image, filtered, evidence, 1)
-    result, _, _ = _repair_compact_lows(result, valid)
-    prepared = _prepare_split(result, evidence, valid)
-    result = _apply(result, prepared, colour=1, brightness=0.5 + 0.125 * stronger)
-    candidate, _, _ = _refine_pits(result, evidence, valid, amount=0.85 + 0.05 * stronger)
-    result, _ = _protect_horizon(result, candidate, valid)
+    result = _blend(image, filtered, evidence, 1, inplace=True)
+    del filtered
+    result, _, _ = _repair_compact_lows(result, valid, diagnostics=False)
+    prepared = _prepare_split(result, evidence, valid, return_distance=True)
+    result = _apply(result, prepared, colour=1, brightness=0.5 + 0.125 * stronger,
+                    inplace=True)
+    distance = prepared['distance']
+    del prepared
+    candidate, _, _ = _refine_pits(result, evidence, valid, amount=0.85 + 0.05 * stronger,
+                                  diagnostics=False, parallel=True)
+    result, _ = _protect_horizon(result, candidate, valid, distance=distance,
+                                 inplace=True)
     _repair_sensor_pixels(result, evidence.get('sensor_defects'), evidence.get('sensor_clearance'))
     if strength < 3:
         result = image + (result - image) * (0.5 if strength == 1 else 0.75)
-    return np.clip(result, 0, 1)
+    return np.clip(result, 0, 1, out=result)
 
 
 def _noise_grid(data, tile=128):
@@ -255,13 +266,87 @@ def _noise_grid(data, tile=128):
             row(y)
     return cv2.resize(grid, (w, h), interpolation=cv2.INTER_LINEAR)
 
+def _reference_matches(points, shape, capture_time, reference, binning=1):
+    """Positive confirmation only after this frame validates the projection.
+
+    Coordinates are full, binned sensor pixels. No position is fitted or moved;
+    unmatched sources and empty catalogue positions keep their existing treatment.
+    """
+    confirmed = np.zeros(len(points), bool)
+    if reference is None or len(points) < 8 or len(points) > 20000:
+        return confirmed
+    try:
+        timestamp = float(capture_time)
+        height, width = shape
+        scale = max(1, int(binning))
+        if (not np.isfinite(timestamp) or min(height, width) <= 0
+                or points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all()):
+            return confirmed
+        predicted = np.asarray(reference.predictions(timestamp), dtype=np.float64)
+        if (predicted.ndim != 2 or predicted.shape[1] != 3 or len(predicted) > 20000
+                or not np.isfinite(predicted).all()):
+            return confirmed
+    except Exception:
+        # Optional catalogue/calibration failures must not stop image processing.
+        return confirmed
+    predicted = predicted[(predicted[:, 0] >= 0) & (predicted[:, 0] < width)
+                          & (predicted[:, 1] >= 0) & (predicted[:, 1] < height)
+                          & (predicted[:, 2] <= 5.5)]
+    bright = predicted[predicted[:, 2] <= 4.5, :2]
+    anchors = points[points[:, 2] >= 5, :2]
+    if min(len(bright), len(anchors)) < 8:
+        return confirmed
+    radius = 3.0 / scale
+
+    def pairs(expected, observed, observed_tree):
+        distance, index = cKDTree(expected).query(observed, k=2, distance_upper_bound=radius)
+        left = np.flatnonzero(np.isfinite(distance[:, 0]) & ~np.isfinite(distance[:, 1]))
+        right = index[left, 0]
+        back_distance, back_index = observed_tree.query(expected[right], k=2,
+                                                        distance_upper_bound=radius)
+        unique = (back_index[:, 0] == left) & ~np.isfinite(back_distance[:, 1])
+        return left[unique], distance[left[unique], 0]
+
+    anchor_tree = cKDTree(anchors)
+    matched, residual = pairs(bright, anchors, anchor_tree)
+    if len(matched) < 8:
+        return confirmed
+    measured = anchors[matched]
+    span = np.ptp(measured, axis=0) / [width, height]
+    quadrants = (measured[:, 0] > width / 2) + 2 * (measured[:, 1] > height / 2)
+    if (not np.all(span > .25) or len(np.unique(quadrants)) < 3
+            or np.median(residual) > radius * .5 or np.percentile(residual, 90) > radius * .8):
+        return confirmed
+    # Shifted catalogues estimate accidental matches in this very same frame.
+    chance = max(len(pairs(bright + np.asarray(offset) / scale, anchors, anchor_tree)[0])
+                 for offset in ((16, 0), (-16, 0), (0, 16), (0, -16)))
+    if len(matched) <= 2 * chance + 2:
+        return confirmed
+    matches, _ = pairs(predicted[:, :2], points[:, :2], cKDTree(points[:, :2]))
+    confirmed[matches] = True
+    return confirmed
+
+
 def _source_evidence(image, valid=None, star_protection=1.0,
-                     catalogue=None, capture_context=None, margin=0):
+                     catalogue=None, capture_context=None, margin=0, *, processing_only=False,
+                     star_reference=None, binning=1):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
     fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
+    if processing_only and star_protection == 0:
+        # Daytime point protection is exactly zero. Keep the same resolved-edge
+        # guard without measuring points that the processing path discards.
+        coherent = fine - cv2.GaussianBlur(lum, (0, 0), 4)
+        edge = np.clip((np.abs(coherent) / _noise_grid(coherent) - 7) / 5, 0, 1)
+        edge = cv2.dilate(edge, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        edge = cv2.GaussianBlur(edge, (0, 0), 0.8)
+        if catalogue is not None:
+            catalogue.reset()
+        return dict(lum=lum, mask=edge)
     dog = fine - cv2.GaussianBlur(lum, (0, 0), 3.5)
-    broad = cv2.GaussianBlur(lum, (0, 0), 1.8) - cv2.GaussianBlur(lum, (0, 0), 5.0)
+    broad = cv2.GaussianBlur(lum, (0, 0), 1.8)
+    blur5 = cv2.GaussianBlur(lum, (0, 0), 5.0)
+    broad -= blur5
     noise = _noise_grid(dog)
     broad_noise = _noise_grid(broad)
     score = np.minimum(dog / noise, broad / broad_noise)
@@ -274,8 +359,13 @@ def _source_evidence(image, valid=None, star_protection=1.0,
     a, b, c = colour_scores
     support = np.fmin(np.maximum(a, b), np.maximum(np.fmin(a, b), c))
     temporal = catalogue is not None and capture_context is not None and star_protection > 0
-    peaks = ((dog == maximum_filter(dog, size=5))
+    # Dilation gives the same finite neighbourhood maximum; retain SciPy's
+    # ordering for NaNs. The source border below excludes boundary differences.
+    maximum = (maximum_filter(dog, size=5) if np.isnan(dog).any()
+               else cv2.dilate(dog, np.ones((5, 5), np.uint8)))
+    peaks = ((dog == maximum)
              & (score > (2.0 if temporal else 2.7)) & (support > 1.2))
+    del maximum
     if valid is not None:
         peaks &= valid
     # Incomplete neighbourhoods at crop boundaries are not reliable sources.
@@ -304,8 +394,14 @@ def _source_evidence(image, valid=None, star_protection=1.0,
     mask = np.maximum(mask, edge)
     points = np.column_stack((xx, yy, strengths))
     evidence = dict(lum=lum, mask=mask, points=points, noise=noise)
+    if processing_only:
+        evidence['blur5'] = blur5
     if temporal:
         start = time.monotonic()
+        context = dict(capture_context)
+        # The saved VirtualSky alignment uses the displayed frame timestamp;
+        # temporal source tracking continues to use the exposure midpoint.
+        reference_time = context.pop('reference_time', context.get('capture_time'))
         sensor_points = points.copy()
         sensor_points[:, :2] += margin
         # A sparse outer ring rejects broad sources and trails from the fixed
@@ -317,20 +413,36 @@ def _source_evidence(image, valid=None, star_protection=1.0,
         # motion near a rotation pole is too small to measure. Require wings
         # above local noise in two colours around the core; isolated Bayer
         # defects and noise in a second channel do not have that support.
-        core = colour_dog[yy, xx]
-        wings = np.zeros(len(points), np.uint8)
+        compact_indices = np.flatnonzero(compact)
+        cy, cx = yy[compact_indices], xx[compact_indices]
+        core = colour_dog[cy, cx]
+        wings = np.zeros(len(compact_indices), np.uint8)
         for dy, dx in ((-3, 0), (3, 0), (0, -3), (0, 3),
                        (-2, -2), (-2, 2), (2, -2), (2, 2)):
-            wing = colour_dog[yy + dy, xx + dx]
-            significance = np.column_stack([s[yy + dy, xx + dx] for s in colour_scores])
+            wing = colour_dog[cy + dy, cx + dx]
+            significance = np.column_stack([s[cy + dy, cx + dx] for s in colour_scores])
             wings += np.count_nonzero((significance > 3) & (wing > 0.03 * core), axis=1) >= 2
-        compact &= wings < 4
+        compact[compact_indices] &= wings < 4
+        reference_confirmed = None
+        if star_reference is not None:
+            shape = context.get('sensor_shape', (image.shape[0] + 2 * margin,
+                                                 image.shape[1] + 2 * margin))
+            reference_confirmed = _reference_matches(sensor_points, shape, reference_time,
+                                                      star_reference, binning)
+            compact &= ~reference_confirmed
         defects = _single_colour_points(colour_dog, colour_scores, support, distance, valid)
         sensor_defects = defects.copy()
         sensor_defects[:, :2] += margin
         weights, diagnostics = catalogue.weights(sensor_points, support_points,
                                                   compact=compact, sensor_points=sensor_defects,
-                                                  **capture_context)
+                                                  **context)
+        if reference_confirmed is not None and reference_confirmed.any():
+            weights[reference_confirmed] = 1
+            # Duplicate captures may return a cached stationary classification.
+            stationary = np.asarray(diagnostics.get('stationary_mask', np.zeros(len(points), bool))).copy()
+            stationary[reference_confirmed] = False
+            diagnostics['stationary_mask'] = stationary
+            diagnostics['reference_confirmed'] = int(reference_confirmed.sum())
         evidence['catalogue'] = diagnostics
         defect_weights = diagnostics.get('sensor_weights', ())
         if len(defect_weights) == len(defects):
@@ -346,8 +458,9 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             # A coherent current-frame trail must not wait for persistence.
             # Reuse measured fields at sparse points instead of introducing
             # another image-wide line detector or protecting every broad peak.
-            line = _line_sources(dog, noise, xx, yy)
-            weights[line] = 1
+            pending = np.flatnonzero(weights < 1)
+            line = _line_sources(dog, noise, xx[pending], yy[pending])
+            weights[pending[line]] = 1
             # Keep the original exclusion mask for every noise/background
             # statistic. Only current-source restoration changes with history.
             evidence['restore_mask'] = _weighted_points(
@@ -372,10 +485,11 @@ def _source_evidence(image, valid=None, star_protection=1.0,
                     for nx, ny in zip(xx[nearby], yy[nearby]):
                         clear &= (gx + x - nx)**2 + (gy + y - ny)**2 > 6.5**2
                     clearance.append(clear)
-        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d sensor_pixels=%d time=%.3fs',
+        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d reference_confirmed=%d sensor_pixels=%d time=%.3fs',
                     diagnostics.get('status', 'unknown'), len(points),
                     diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
-                    diagnostics.get('stationary', 0), len(evidence.get('sensor_defects', ())),
+                    diagnostics.get('stationary', 0), diagnostics.get('reference_confirmed', 0),
+                    len(evidence.get('sensor_defects', ())),
                     time.monotonic() - start)
     elif catalogue is not None and star_protection == 0:
         catalogue.reset()
@@ -463,6 +577,10 @@ def _weighted_points(edge, points, weights, stationary=None):
         core = np.clip((4 - np.hypot(gx, gy)) / 2, 0, 1).astype(np.float32)
         for index in np.flatnonzero(stationary):
             result[y[index]-4:y[index]+5, x[index]-4:x[index]+5] *= 1 - (1 - weights[index]) * core
+    # A zero-weight source cannot raise the nonnegative edge mask. Apply its
+    # stationary-core fade above, then omit its empty restoration footprint.
+    active = weights != 0
+    x, y, weights = x[active], y[active], weights[active]
     for dy in range(-6, 7):
         for dx in range(-6, 7):
             taper = min(1.0, max(0.0, (6.5 - (dx * dx + dy * dy) ** 0.5) / 2.5))
@@ -530,20 +648,30 @@ def _nlm_luminance(lum, h):
         cleaned = denoise_nl_means(lum[first:last, left:edge], **options)
         result[y:bottom, x:right] = cleaned[y - first:bottom - first, x - left:right - left]
 
+    def run_row(bounds):
+        y, bottom = bounds
+        for x, right in zip(columns, columns[1:]):
+            run((y, bottom, x, right))
+
     # NLM releases the GIL. Each worker writes only its non-overlapping interior.
+    # Batch existing tiles by row to reduce scheduling; tile arithmetic is unchanged.
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        positions = ((y, bottom, x, right)
-                     for y, bottom in zip(rows, rows[1:])
-                     for x, right in zip(columns, columns[1:]))
-        list(pool.map(run, positions))
+        list(pool.map(run_row, zip(rows, rows[1:])))
     return result
 
 
-def _blend(original, filtered, evidence, amount):
+def _blend(original, filtered, evidence, amount, *, inplace=False):
     weight = (amount * (1 - evidence.get('restore_mask', evidence['mask'])))[:, :, None]
+    if inplace:
+        # Only the processing path owns filtered; retain the helper's default
+        # nonmutating behavior and the original arithmetic order.
+        filtered -= original
+        filtered *= weight
+        np.add(original, filtered, out=filtered)
+        return filtered
     return original + (filtered - original) * weight
 
-def _repair_compact_lows(image, valid, threshold=3.0, max_area=16):
+def _repair_compact_lows(image, valid, threshold=3.0, max_area=16, *, diagnostics=True):
     """Lift small, significant negative excursions, leaving brighter channels."""
     lum = image @ WEIGHTS
     median = cv2.medianBlur(lum, 5)
@@ -556,13 +684,15 @@ def _repair_compact_lows(image, valid, threshold=3.0, max_area=16):
     keep = seeds & (stats[:, cv2.CC_STAT_AREA] <= max_area)
     keep[0] = False
     selected = keep[labels]
-    target = np.maximum(image, cv2.medianBlur(image, 5))
     result = image.copy()
-    result[selected] = target[selected]
-    return result, selected, dict(
+    if np.any(selected):
+        median_rgb = cv2.medianBlur(image, 5)
+        result[selected] = np.maximum(image[selected], median_rgb[selected])
+    statistics = dict(
         components=int(keep.sum()), pixels=int(selected.sum()),
         sky_percentage=float(selected[valid].mean() * 100),
-    )
+    ) if diagnostics else None
+    return result, selected, statistics
 
 def _blur(a, s):
     return cv2.GaussianBlur(a, (0, 0), s)
@@ -580,7 +710,8 @@ def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
         weight = (1 - evidence['mask'][roi]) * valid[roi]
         norm = _blur(weight, 2.5)
         weighted_image = image[roi] * weight[:, :, None]
-        background = _blur(weighted_image, 2.5) / np.maximum(norm[:, :, None], 0.0001)
+        background = _blur(weighted_image, 2.5)
+        background /= np.maximum(norm[:, :, None], 0.0001)
         shared.update(weight=weight, norm=norm, weighted_image=weighted_image, background=background)
         shared['norm_full'] = np.zeros(valid.shape, np.float32)
         shared['norm_full'][roi] = norm
@@ -592,19 +723,27 @@ def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
     roi = shared['roi']
     if fine < 2.5:
         small_norm = _blur(weight, fine)
-        small = _blur(weighted_image, fine) / np.maximum(small_norm[:, :, None], 0.0001)
+        small = _blur(weighted_image, fine)
+        small /= np.maximum(small_norm[:, :, None], 0.0001)
         mix = np.clip((small_norm - 0.1) / 0.5, 0, 1)
-        background = background + mix[:, :, None] * (small - background)
+        # Reuse only the owned fine-scale buffer; the shared broad background
+        # remains unchanged for callers preparing another scale.
+        small -= background
+        np.multiply(mix[:, :, None], small, out=small)
+        background = np.add(background, small, out=small)
     norm = shared['norm_full']
     # Do not infer a background where large objects leave no usable samples.
     if 'trust' not in shared:
+        shared['distance'] = cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5)
         trust = (np.clip((norm - 0.05) / 0.2, 0, 1)
-                 * np.clip(cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5) / 20, 0, 1))
+                 * np.clip(shared['distance'] / 20, 0, 1))
         shared['trust'] = _blur(trust, 3) * valid
     trust = shared['trust']
     # Restore the original frame and tile coordinates for noise measurements.
     band = np.zeros_like(image)
-    band[roi] = background - _blur(background, 7)
+    blurred = _blur(background, 7)
+    band[roi] = np.subtract(background, blurred, out=blurred)
+    del blurred
     lum = band @ WEIGHTS
     chroma = band - lum[:, :, None] if channel != 0 else None
     # Quieter tiles keep clouds from inflating the estimated noise floor.
@@ -634,22 +773,28 @@ def _prepare(image, evidence, valid, fine=2.5, shared=None, channel=None):
     noise[0] = min(noise[0], 0.35 * original_sigma)
     return dict(lum=lum, chroma=chroma, trust=trust, noise=noise)
 
-def _apply(image, prepared, colour=0.85, brightness=0.6):
+def _apply(image, prepared, colour=0.85, brightness=0.6, *, inplace=False):
     """Suppress low-power mottling while retaining coherent cloud/edge texture."""
     l, c, t = (prepared['lum'], prepared['chroma'], prepared['trust'])
     nl, nc = prepared['noise']
     wl = np.minimum(1, (1.5 * nl) ** 2 / (_blur(l * l, 3) + 1e-12))
     wc = np.minimum(1, (1.5 * nc) ** 2 / (_blur(np.mean(c * c, axis=2), 3) + 1e-12))
-    dl = _blur(l * wl * t, 1) * brightness * t
-    dc = _blur(c * (wc * t)[:, :, None], 1) * colour * t[:, :, None]
-    correction = dl[:, :, None] + dc
+    dl = _blur(l * wl * t, 1)
+    dl *= brightness
+    dl *= t
+    dc = _blur(c * (wc * t)[:, :, None], 1)
+    dc *= colour
+    dc *= t[:, :, None]
+    correction = np.add(dl[:, :, None], dc, out=dc)
     # Keep this two-sided scale correction neutral in mean sky brightness.
     sky = t > 0.99
     if np.any(sky):
         correction -= correction[sky].mean(axis=0)[None, None, :] * t[:, :, None]
+    if inplace:
+        return np.subtract(image, correction, out=correction)
     return image - correction
 
-def _prepare_split(image, evidence, valid):
+def _prepare_split(image, evidence, valid, *, return_distance=False):
     """Treat finer colour blotches separately from stellar luminance detail."""
     # Reuse only within this frame; skip statistics discarded by the split.
     shared = {}
@@ -657,6 +802,8 @@ def _prepare_split(image, evidence, valid):
     fine = _prepare(image, evidence, valid, fine=1.2, shared=shared, channel=1)
     broad['chroma'] = fine['chroma']
     broad['noise'][1] = fine['noise'][1]
+    if return_distance:
+        broad['distance'] = shared['distance']
     return broad
 
 def _sky_slice(valid, padding):
@@ -670,7 +817,7 @@ def _sky_slice(valid, padding):
 
 
 def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
-                 sector_rank=1, colour_amount=1.0):
+                 sector_rank=1, colour_amount=1.0, *, diagnostics=True, parallel=False):
     """Bounded luminance and chroma repair of the accepted mottling baseline.
 
     Positive compact cores, not entire circular source neighborhoods, are kept.
@@ -679,7 +826,10 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     """
     raw = evidence['lum']
     lum = image @ WEIGHTS
-    dog = cv2.GaussianBlur(raw, (0, 0), 1.25) - cv2.GaussianBlur(raw, (0, 0), 5)
+    blur5 = evidence.get('blur5')
+    if blur5 is None:
+        blur5 = cv2.GaussianBlur(raw, (0, 0), 5)
+    dog = cv2.GaussianBlur(raw, (0, 0), 1.25) - blur5
     dog_sigma = _noise_grid(dog)
     peaks = (dog == cv2.dilate(dog, np.ones((7, 7), np.uint8))) & (dog > 2.7 * dog_sigma) & valid
     distance = cv2.distanceTransform((~peaks).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
@@ -709,15 +859,29 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
     supports = []
     average_rgb = np.zeros_like(image)
     weighted_image = image * weight[:, :, None]
-    for q in quadrants:
+
+    def convolve(q):
         kernel = q.astype(np.float32)
         kernel /= kernel.sum()
         norm = cv2.filter2D(weight, -1, kernel)
-        background_rgb = (cv2.filter2D(weighted_image, -1, kernel)
-                          / np.maximum(norm[:, :, None], 1e-05))
-        backgrounds.append(background_rgb @ WEIGHTS)
-        average_rgb += background_rgb * 0.25
-        supports.append(norm)
+        background_rgb = cv2.filter2D(weighted_image, -1, kernel)
+        background_rgb /= np.maximum(norm[:, :, None], 1e-05)
+        return norm, background_rgb
+
+    def accumulate(results):
+        # Preserve the reference quadrant order and float accumulation exactly.
+        # The workers only read shared input; each convolution owns its output.
+        for norm, background_rgb in results:
+            backgrounds.append(background_rgb @ WEIGHTS)
+            average_rgb[:] += background_rgb * 0.25
+            supports.append(norm)
+
+    workers = min(4, os.cpu_count() or 1) if parallel and weight.size >= 512 * 512 else 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            accumulate(pool.map(convolve, quadrants))
+    else:
+        accumulate(map(convolve, quadrants))
     rim = np.stack(backgrounds)
     support = np.min(supports, axis=0)
     average = rim.mean(axis=0)
@@ -777,20 +941,23 @@ def _refine_pits(image, evidence, valid, amount=0.85, radius=12, inner=4,
         sky_percentage=float(np.mean(delta[valid] > 0) * 100),
         mean_linear_luma_added=float(delta[valid].mean()),
         max_linear_luma_added=float(delta.max()),
-    )
+    ) if diagnostics else None
     if result.shape != full_image.shape:
         full_result = full_image.copy()
         full_result[roi] = result
-        full_delta = np.zeros(full_image.shape[:2], dtype=delta.dtype)
-        full_delta[roi] = delta
-        result, delta = full_result, full_delta
-    return result, delta, statistics
+        result = full_result
+        if diagnostics:
+            full_delta = np.zeros(full_image.shape[:2], dtype=delta.dtype)
+            full_delta[roi] = delta
+            delta = full_delta
+    return result, delta if diagnostics else None, statistics
 
-def _protect_horizon(baseline, candidate, valid):
+def _protect_horizon(baseline, candidate, valid, *, distance=None, inplace=False):
     """Exclude the outer 50 pixels from extra pit repair; taper the next 30."""
-    distance = cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5)
+    if distance is None:
+        distance = cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 5)
     weight = np.clip((distance - 50) / 30, 0, 1)
-    result = candidate.copy()
+    result = candidate if inplace else candidate.copy()
     transition = (weight > 0) & (weight < 1)
     np.copyto(result, baseline, where=(weight == 0)[:, :, None])
     result[transition] = baseline[transition] + (candidate[transition] - baseline[transition]) * weight[transition, None]
