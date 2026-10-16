@@ -31,6 +31,34 @@ def _serial(image):
     )
 
 
+@pytest.mark.parametrize('shape', [(513, 137), (769, 131)])
+@pytest.mark.parametrize('noncontiguous', [False, True])
+@pytest.mark.parametrize('machine', ['aarch64', 'armv7l', 'AMD64'])
+def test_row_batching_preserves_original_individual_tile_arithmetic_exactly(
+        monkeypatch, shape, noncontiguous, machine):
+    monkeypatch.setattr(sky_denoise.os, 'cpu_count', lambda: 4)
+    monkeypatch.setattr(sky_denoise.platform, 'machine', lambda: machine)
+    image = _scene(*shape, noncontiguous=noncontiguous)
+    original = image.copy()
+    height, width = shape
+    workers = min(4, height // 256)
+    rows = [*range(0, height, 64), height] if machine != 'AMD64' else np.linspace(
+        0, height, workers + 1, dtype=int)
+    columns = [*range(0, width, 64), width] if machine != 'AMD64' else [0, width]
+    expected = np.empty_like(image)
+    # Preserve the old independent call for every tile, with its exact seven-pixel
+    # halo. Whole-frame NLM is a different floating-point accumulation reference.
+    for top, bottom in zip(rows, rows[1:]):
+        for left, right in zip(columns, columns[1:]):
+            y0, y1 = max(0, top - 7), min(height, bottom + 7)
+            x0, x1 = max(0, left - 7), min(width, right + 7)
+            tile = _serial(image[y0:y1, x0:x1])
+            expected[top:bottom, left:right] = tile[top-y0:bottom-y0, left-x0:right-x0]
+    actual = sky_denoise._nlm_luminance(image, .025)
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(image, original)
+
+
 @pytest.mark.parametrize('shape', [(513, 137), (1053, 531)])
 @pytest.mark.parametrize('noncontiguous', [False, True])
 @pytest.mark.parametrize('machine', ['aarch64', 'armv7l', 'AMD64'])
