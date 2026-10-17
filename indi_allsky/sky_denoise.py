@@ -155,7 +155,7 @@ def repair_bayer(raw, config, binning=1):
 
 
 def denoise(image, config, binning=1, strength=3, sun_altitude=None,
-            catalogue=None, capture_context=None, star_reference=None):
+            catalogue=None, capture_context=None, star_reference=None, bad_pixel_map=None):
     """Filter BGR or monochrome data, retaining its layout and numeric range."""
     if strength <= 0 or min(image.shape[:2]) < 32:
         return image
@@ -188,7 +188,7 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None,
         temporal['sensor_shape'] = image.shape[:2]
     filtered = _denoise_linear(linear, valid, strength, _star_protection(sun_altitude),
                                catalogue, temporal, margin, star_reference=star_reference,
-                               binning=binning)
+                               binning=binning, bad_pixel_map=bad_pixel_map)
     if mono:
         filtered = filtered[:, :, 0]
     filtered *= maximum
@@ -202,12 +202,13 @@ def denoise(image, config, binning=1, strength=3, sun_altitude=None,
 
 def _denoise_linear(image, valid, strength=3, star_protection=1.0,
                     catalogue=None, capture_context=None, margin=0, *,
-                    star_reference=None, binning=1):
+                    star_reference=None, binning=1, bad_pixel_map=None):
     """Reference tuning at 3; gentler blends at 1/2, stronger smoothing at 4/5."""
     strength = max(1, min(int(strength), 5))
     evidence = _source_evidence(image, valid, star_protection,
                                 catalogue, capture_context, margin, processing_only=True,
-                                star_reference=star_reference, binning=binning)
+                                star_reference=star_reference, binning=binning,
+                                bad_pixel_map=bad_pixel_map)
     evidence['highpass'] = _original_highpass(evidence)
     stronger = max(0, strength - 3)
     filtered, sigma = _nlm_clean(image, evidence, h_multiplier=1 + 0.15 * stronger)
@@ -329,7 +330,7 @@ def _reference_matches(points, shape, capture_time, reference, binning=1):
 
 def _source_evidence(image, valid=None, star_protection=1.0,
                      catalogue=None, capture_context=None, margin=0, *, processing_only=False,
-                     star_reference=None, binning=1):
+                     star_reference=None, binning=1, bad_pixel_map=None):
     """Find multi-scale, multi-colour point sources and strong resolved edges."""
     lum = image @ WEIGHTS
     fine = cv2.GaussianBlur(lum, (0, 0), 1.0)
@@ -430,12 +431,19 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             reference_confirmed = _reference_matches(sensor_points, shape, reference_time,
                                                       star_reference, binning)
             compact &= ~reference_confirmed
+            if np.count_nonzero(reference_confirmed) >= 8:
+                validate = getattr(star_reference, 'mark_validated', None)
+                if validate is not None:
+                    validate(reference_time)
         defects = _single_colour_points(colour_dog, colour_scores, support, distance, valid)
         sensor_defects = defects.copy()
         sensor_defects[:, :2] += margin
+        motion = {}
+        if callable(getattr(star_reference, 'motion_available', None)):
+            motion = dict(motion_reference=star_reference, reference_time=reference_time)
         weights, diagnostics = catalogue.weights(sensor_points, support_points,
                                                   compact=compact, sensor_points=sensor_defects,
-                                                  **context)
+                                                  **context, **motion)
         if reference_confirmed is not None and reference_confirmed.any():
             weights[reference_confirmed] = 1
             # Duplicate captures may return a cached stationary classification.
@@ -443,6 +451,24 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             stationary[reference_confirmed] = False
             diagnostics['stationary_mask'] = stationary
             diagnostics['reference_confirmed'] = int(reference_confirmed.sum())
+        # A calibration map supplies positions, never a subtraction level or
+        # unconditional repair mask. Require a present, compact colour impulse.
+        # Quiet map sites and resolved/reference-confirmed stars remain intact.
+        mapped_normal = np.zeros(len(points), bool)
+        if bad_pixel_map is not None:
+            mapped = _mapped_impulses(np.concatenate((points, defects)), image,
+                                      colour_dog, colour_scores, bad_pixel_map, margin)
+            mapped_normal = mapped[:len(points)] & compact
+            mapped_sensor = mapped[len(points):]
+            selected = np.flatnonzero(mapped_normal)
+            mapped_normal[selected] &= ~_line_sources(dog, noise, xx[selected], yy[selected])
+            if mapped_sensor.any():
+                proven = np.asarray(diagnostics.get('sensor_stationary', np.zeros(len(defects), bool))).copy()
+                sensor_weights = np.asarray(diagnostics.get('sensor_weights', np.ones(len(defects), np.float32))).copy()
+                proven[mapped_sensor] = True
+                sensor_weights[mapped_sensor] = 0
+                diagnostics.update(sensor_stationary=proven, sensor_weights=sensor_weights)
+            diagnostics['mapped_pixels'] = int(mapped_normal.sum() + mapped_sensor.sum())
         evidence['catalogue'] = diagnostics
         defect_weights = diagnostics.get('sensor_weights', ())
         if len(defect_weights) == len(defects):
@@ -465,35 +491,85 @@ def _source_evidence(image, valid=None, star_protection=1.0,
             # statistic. Only current-source restoration changes with history.
             evidence['restore_mask'] = _weighted_points(
                 edge, points, weights * star_protection, diagnostics.get('stationary_mask'))
-            stationary = np.asarray(diagnostics.get('stationary_mask', np.zeros(len(points), bool)))
-            selected = np.flatnonzero(stationary & (weights < 1))
-            if len(selected):
-                # Noise in a second channel can move the same proven defect
-                # between source tables. Both paths need the final RGB repair.
-                normal_defects = np.column_stack((points[selected, :2], 1 - weights[selected]))
-                evidence['sensor_defects'] = np.concatenate((
-                    evidence.get('sensor_defects', np.empty((0, 3))), normal_defects))
-                clearance = evidence.setdefault('sensor_clearance', [])
-                gy, gx = np.mgrid[-4:5, -4:5]
-                for index in selected:
-                    x, y = xx[index], yy[index]
-                    # Exclude only this defect's own source core. Other source
-                    # wings remain untouched, using just a tiny local mask.
-                    nearby = (np.abs(xx - x) < 11) & (np.abs(yy - y) < 11)
-                    nearby[index] = False
-                    clear = np.ones((9, 9), bool)
-                    for nx, ny in zip(xx[nearby], yy[nearby]):
-                        clear &= (gx + x - nx)**2 + (gy + y - ny)**2 > 6.5**2
-                    clearance.append(clear)
-        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d reference_confirmed=%d sensor_pixels=%d time=%.3fs',
+        stationary = np.asarray(diagnostics.get('stationary_mask', np.zeros(len(points), bool)))
+        # Map-only corrections happen after every adaptive filtering stage.
+        # Their early point weights stay untouched, keeping distant pixels exact.
+        selected = np.flatnonzero((stationary & (weights < 1)) | mapped_normal)
+        if len(selected):
+            # Noise in a second channel can move the same proven defect
+            # between source tables. Both paths need the final RGB repair.
+            normal_defects = np.column_stack((points[selected, :2], np.where(mapped_normal[selected], 1, 1 - weights[selected])))
+            evidence['sensor_defects'] = np.concatenate((
+                evidence.get('sensor_defects', np.empty((0, 3))), normal_defects))
+            clearance = evidence.setdefault('sensor_clearance', [])
+            gy, gx = np.mgrid[-4:5, -4:5]
+            for index in selected:
+                x, y = xx[index], yy[index]
+                # Exclude only this defect's own source core. Other source
+                # wings remain untouched, using just a tiny local mask.
+                nearby = (np.abs(xx - x) < 11) & (np.abs(yy - y) < 11)
+                nearby[index] = False
+                clear = np.ones((9, 9), bool)
+                for nx, ny in zip(xx[nearby], yy[nearby]):
+                    clear &= (gx + x - nx)**2 + (gy + y - ny)**2 > 6.5**2
+                clearance.append(clear)
+        logger.info('Sky source catalogue status=%s points=%d confirmed=%d suppressed=%d stationary=%d reference_confirmed=%d mapped_pixels=%d sensor_pixels=%d time=%.3fs',
                     diagnostics.get('status', 'unknown'), len(points),
                     diagnostics.get('confirmed', 0), diagnostics.get('suppressed', 0),
                     diagnostics.get('stationary', 0), diagnostics.get('reference_confirmed', 0),
+                    diagnostics.get('mapped_pixels', 0),
                     len(evidence.get('sensor_defects', ())),
                     time.monotonic() - start)
     elif catalogue is not None and star_protection == 0:
         catalogue.reset()
     return evidence
+
+
+def _mapped_impulses(points, image, colour_dog, scores, bad_pixel_map, margin=0):
+    """Check only observed peaks close to known sensor defects, using current RGB.
+
+    The processor caches the map's tree; array input supports offline callers.
+    Colour dominance and a narrow native-image core prevent a quiet mapped
+    pixel underneath an ordinary star or cloud edge from triggering repair.
+    """
+    result = np.zeros(len(points), bool)
+    if not len(points):
+        return result
+    try:
+        if isinstance(bad_pixel_map, cKDTree):
+            tree = bad_pixel_map
+        else:
+            xy = np.asarray(bad_pixel_map, dtype=float)
+            if (xy.ndim != 2 or xy.shape[1] != 2 or not 0 < len(xy) <= 20000
+                    or not np.isfinite(xy).all() or not np.equal(xy, np.rint(xy)).all()):
+                return result
+            tree = cKDTree(xy)
+        if tree.m != 2 or not 0 < tree.n <= 20000:
+            return result
+        distance, _ = tree.query(points[:, :2] + margin, distance_upper_bound=1.5)
+        selected = np.flatnonzero(np.isfinite(distance))
+    except (TypeError, ValueError, OverflowError):
+        return result
+    if not len(selected):
+        return result
+    x, y = points[selected, :2].astype(int).T
+    values = colour_dog[y, x]
+    channel = np.argmax(values, axis=1)
+    peak = values[np.arange(len(x)), channel]
+    second = np.partition(values, 1, axis=1)[:, 1]
+    significance = np.column_stack([score[y, x] for score in scores])
+    active = ((peak > 3 * np.maximum(second, 0))
+              & (significance[np.arange(len(x)), channel] > 6))
+    # Debayered single-sample defects have little support two pixels away.
+    # Measure the existing image at sparse coordinates, not another full filter.
+    offsets = ((-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (-3, 3), (3, -3), (3, 3))
+    background = np.median(np.stack([image[y+dy, x+dx, channel] for dy, dx in offsets]), axis=0)
+    core = image[y, x, channel] - background
+    outer = np.maximum.reduce([image[y+dy, x+dx, channel] - background
+                               for dy, dx in ((-2, 0), (2, 0), (0, -2), (0, 2))])
+    active &= (core > 0) & (outer < .35 * core)
+    result[selected[active]] = True
+    return result
 
 
 def _single_colour_points(colour_dog, scores, support, distance, valid):

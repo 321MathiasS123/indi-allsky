@@ -138,6 +138,40 @@ def at(points, coordinate):
     return selected[0]
 
 
+@pytest.mark.parametrize('aligned', [False, True])
+def test_only_observed_matching_alignment_authorizes_cloud_motion(scene, aligned):
+    class MotionReference(Reference):
+        def __init__(self, predictions):
+            super().__init__(predictions)
+            self.validated = []
+
+        def mark_validated(self, timestamp):
+            self.validated.append(timestamp)
+
+        def motion_available(self, timestamp):
+            return bool(self.validated)
+
+    class Recorder:
+        def weights(self, points, support, **kwargs):
+            self.context = kwargs
+            return np.ones(len(points), np.float32), {}
+
+    predicted = tables()[1].copy()
+    if not aligned:
+        predicted[:, :2] += 20
+    reference = MotionReference(predicted)
+    catalogue = Recorder()
+    context = dict(capture_time=1000, reference_time=1015, geometry_key='camera')
+    retained = context.copy()
+    sky_denoise._source_evidence(scene, catalogue=catalogue, capture_context=context,
+                                star_reference=reference)
+    assert reference.validated == ([1015] if aligned else [])
+    assert catalogue.context['motion_reference'] is reference
+    assert catalogue.context['capture_time'] == 1000
+    assert catalogue.context['reference_time'] == 1015
+    assert context == retained
+
+
 def test_reference_overrides_cached_false_sensor_proof_without_erasing_memory(scene):
     valid = np.ones(scene.shape[:2], bool)
     context = dict(capture_time=1000, capture_interval=30, geometry_key='camera', sensor_shape=valid.shape)

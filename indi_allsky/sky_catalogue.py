@@ -157,7 +157,8 @@ class SkySourceCatalogue:
 
     def weights(self, points, support_points, *, capture_time, geometry_key,
                 context_valid=True, capture_interval=None, sensor_shape=None,
-                compact=None, sensor_points=None):
+                compact=None, sensor_points=None, motion_reference=None,
+                reference_time=None):
         """Return current-point weights and diagnostics; inputs are x,y,score.
 
         Capture time is the exposure midpoint, not processing time. The caller
@@ -260,7 +261,8 @@ class SkySourceCatalogue:
             motion_info = {'reason': 'motion_rebootstrap'}
         if self._anchor_time is None and not _distributed(anchors, shape):
             return self._fallback(points, compact, timestamp,
-                                  {'reason': 'insufficient_distributed_anchors'}, sensors, sensor_result)
+                                  {'reason': 'insufficient_distributed_anchors'}, sensors, sensor_result,
+                                  motion_reference, reference_time)
         if self._anchor_time is not None:
             dt = timestamp - self._anchor_time
             warm = self._model * (dt / self._model_dt) if self._model is not None else None
@@ -268,10 +270,16 @@ class SkySourceCatalogue:
             if model is None and warm is not None:
                 model, motion_info = _motion(self._anchors, anchors, shape)
             if model is None:
-                return self._fallback(points, compact, timestamp, motion_info, sensors, sensor_result)
+                return self._fallback(points, compact, timestamp, motion_info, sensors, sensor_result,
+                                      motion_reference, reference_time)
             self._tracks[:, :2] += _features(self._tracks[:, :2], shape) @ model
             unproven = self._fixed[:, 8] == 0
-            self._fixed[unproven, 2:4] += _features(self._fixed[unproven, 2:4], shape) @ model
+            fixed_shift = _features(self._fixed[unproven, 2:4], shape) @ model
+            # A reference fallback may first observe a defect after the last
+            # accepted anchor frame. Never attribute the earlier sky motion to
+            # that new track when measured registration becomes available again.
+            duration = np.minimum((timestamp-self._fixed[unproven, 5])/dt, 1)
+            self._fixed[unproven, 2:4] += fixed_shift*duration[:, None]
             for previous in self._history:
                 previous += _features(previous, shape) @ model
             self._model, self._model_dt = model, dt
@@ -378,23 +386,46 @@ class SkySourceCatalogue:
                             suppressed=int(np.count_nonzero(result == 0)),
                             stationary=int(stationary.sum()), stationary_mask=stationary, **sensor_result)
 
-    def _fallback(self, points, compact, timestamp, motion_info, sensors, sensor_result):
+    def _fallback(self, points, compact, timestamp, motion_info, sensors, sensor_result,
+                  motion_reference=None, reference_time=None):
         """Suspend votes, keeping sensor rejection that needs no new sky fit."""
         weights = np.ones(len(points), np.float32)
         combined = np.concatenate((points, sensors)) if len(sensors) else points
         flags = np.concatenate((compact, np.ones(len(sensors), bool))) if len(sensors) else compact
         stationary_all = np.zeros(len(combined), bool)
         stationary_weights = np.ones(len(combined), np.float32)
+        expected_motion = None
+        if motion_reference is not None:
+            try:
+                unproven = self._fixed[:, 8] == 0
+                delta = motion_reference.displacements(self._fixed[unproven, :2],
+                    np.minimum(timestamp-self._fixed[unproven, 5], SENSOR_MEMORY_SECONDS),
+                    reference_time=reference_time)
+                if delta is not None:
+                    delta = np.asarray(delta, dtype=float)
+                    if (delta.shape == (np.count_nonzero(unproven), 2) and np.isfinite(delta).all()
+                            and np.all(np.abs(delta) <= 2*max(self._shape))):
+                        expected_motion = np.zeros(len(self._fixed))
+                        expected_motion[unproven] = np.linalg.norm(delta, axis=1)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                pass
+        if expected_motion is not None:
+            # Only sensor-position proof advances. No measured sky fit exists,
+            # so source persistence votes and projected star tracks stay frozen.
+            stationary_all, stationary_weights = self._stationary(
+                combined, flags, timestamp, 1, expected_motion=expected_motion)
+            motion_info = dict(motion_info, sensor_motion='validated_reference')
         proven = np.flatnonzero(self._fixed[:, 8] != 0)
         selected = np.flatnonzero(flags)
         fixed, current = _pairs(self._fixed[proven, :2], combined[selected, :2], 0.75)
         # Established sensor proof needs no new sky fit. Advance only when the
         # defect is detected again, never for an absent or duplicate capture.
         matched = proven[fixed]
-        fade = self._fixed[matched, 9]
-        self._fixed[matched, 9] = np.where(fade > 0.25, fade / 2, 0)
-        stationary_all[selected[current]] = True
-        stationary_weights[selected[current]] = self._fixed[matched, 9]
+        if expected_motion is None:
+            fade = self._fixed[matched, 9]
+            self._fixed[matched, 9] = np.where(fade > 0.25, fade / 2, 0)
+            stationary_all[selected[current]] = True
+            stationary_weights[selected[current]] = self._fixed[matched, 9]
         stationary = stationary_all[:len(points)]
         if len(sensors):
             sensor_result['sensor_stationary'] = stationary_all[len(points):]
@@ -427,10 +458,12 @@ class SkySourceCatalogue:
         added = positions[unmatched][:MAX_TRACKS - len(self._cold)]
         self._cold = np.concatenate((self._cold, added))
 
-    def _stationary(self, points, compact, timestamp, advance, sky_confirmed=None):
+    def _stationary(self, points, compact, timestamp, advance, sky_confirmed=None,
+                    expected_motion=None):
         """Require repeated compact detections despite clearly moving sky."""
         lifetime = np.where(self._fixed[:, 8] != 0, SENSOR_MEMORY_SECONDS, MEMORY_SECONDS)
-        fixed = self._fixed[self._fixed[:, 6] >= timestamp - lifetime]
+        retained = self._fixed[:, 6] >= timestamp - lifetime
+        fixed = self._fixed[retained]
         fixed[:, 4] = (fixed[:, 4].astype(np.uint8) << min(advance, 6)) & 63
         selected = np.flatnonzero(compact)
         old, new = _pairs(fixed[:, :2], points[selected, :2], 0.75)
@@ -447,7 +480,8 @@ class SkySourceCatalogue:
         deviation = np.linalg.norm(fixed[old, :2] - points[current, :2], axis=1)
         fixed[old, 7] = np.maximum(fixed[old, 7], deviation)
         counts = np.array([int(value).bit_count() for value in range(64)])[fixed[old, 4].astype(int)]
-        movement = np.linalg.norm(fixed[old, 2:4] - fixed[old, :2], axis=1)
+        movement = (np.linalg.norm(fixed[old, 2:4] - fixed[old, :2], axis=1)
+                    if expected_motion is None else expected_motion[retained][old])
         suspicious = ((counts >= 4) & (movement > 4.5) & (fixed[old, 7] <= 0.6)
                       & (timestamp - fixed[old, 5] >= 60))
         fixed[old[suspicious], 8] = 1

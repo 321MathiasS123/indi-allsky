@@ -2221,7 +2221,112 @@ class ImageProcessor(object):
                 # VirtualSky fits the displayed frame clock; independent source
                 # motion still uses the exposure midpoint above.
                 context['reference_time'] = int(i_ref.exp_date_utc.timestamp())
+        if self.config.get('IMAGE_DENOISE_BPM', False):
+            bad_pixel_map = self._denoise_bad_pixel_map(i_ref)
+            if bad_pixel_map is not None:
+                kwargs['bad_pixel_map'] = bad_pixel_map
         return kwargs
+
+
+    def _denoise_bad_pixel_map(self, i_ref):
+        """Cache sparse sensor coordinates; never change calibration selection.
+
+        Reconsider the active map and its file version every five minutes, not
+        on every frame. Gain is deliberately not part of the geometry key: a
+        sensitive map is only a list of candidates for current-image checks.
+        """
+        try:
+            raw = i_ref.hdulist[0].data
+            header = i_ref.hdulist[0].header
+            if raw.ndim == 2:
+                shape = raw.shape
+            elif raw.ndim == 3 and raw.shape[0] == 3:
+                shape = raw.shape[1:]
+            else:
+                raise ValueError('Unsupported raw image geometry')
+            if tuple(shape) != self.image.shape[:2]:
+                raise ValueError('Denoising image no longer has raw geometry')
+            bayer = str(self.config.get('CFA_PATTERN') or i_ref.image_bayerpat or '').upper()
+            origin = tuple(int(header.get(k, 0)) for k in ('XORGSUBF', 'YORGSUBF', 'XBAYROFF', 'YBAYROFF'))
+            key = (i_ref.camera_id, i_ref.image_bitpix, i_ref.binning, tuple(raw.shape), bayer, origin)
+            if key != getattr(self, '_sky_bpm_geometry', None):
+                self._sky_bpm_geometry = key
+                self._sky_bpm_refresh = 0
+                self._sky_bpm_points = None
+                self._sky_bpm_files = {}
+            now = time.monotonic()
+            if now < self._sky_bpm_refresh:
+                return self._sky_bpm_points
+            self._sky_bpm_refresh = now + 300
+            self._sky_bpm_points = None
+            table = IndiAllSkyDbBadPixelMapTable
+            entries = table.query\
+                .filter(table.camera_id == i_ref.camera_id)\
+                .filter(table.active == sa_true())\
+                .filter(table.bitdepth == i_ref.image_bitpix)\
+                .filter(table.binmode == i_ref.binning)\
+                .filter(table.width == shape[1])\
+                .filter(table.height == shape[0])\
+                .order_by(table.gain.desc(), table.exposure.desc(),
+                          table.temp.desc(), table.createDate.desc())\
+                .limit(32).all()
+            for entry in entries:
+                points = self._denoise_load_bad_pixel_map(entry, raw.shape, bayer, origin, i_ref.binning)
+                if points is not None:
+                    self._sky_bpm_points = points
+                    break
+            return self._sky_bpm_points
+        except Exception as exc:
+            # An unavailable optional map must never interrupt capture or reuse
+            # candidates whose camera/geometry is no longer known to match.
+            self._sky_bpm_points = None
+            self._sky_bpm_refresh = time.monotonic() + 300
+            logger.warning('Cannot use denoising bad-pixel map: %s', exc)
+            return None
+
+
+    def _denoise_load_bad_pixel_map(self, entry, raw_shape, bayer, origin, binning):
+        from astropy.io import fits
+        from scipy.spatial import cKDTree
+
+        try:
+            path = Path(entry.getFilesystemPath())
+            stat = path.stat()
+            version = (entry.id, str(path), stat.st_mtime_ns, stat.st_size)
+            cache = self._sky_bpm_files
+            if version in cache:
+                return cache[version]
+            if len(cache) >= 32:
+                cache.clear()
+            cache[version] = None
+            with fits.open(path, memmap=False) as hdulist:
+                data = hdulist[0].data
+                header = hdulist[0].header
+                if data is None or tuple(data.shape) != tuple(raw_shape):
+                    return None
+                if str(header.get('BAYERPAT') or '').upper() != bayer:
+                    return None
+                if tuple(int(header.get(k, 0)) for k in ('XORGSUBF', 'YORGSUBF', 'XBAYROFF', 'YBAYROFF')) != origin:
+                    return None
+                if any(int(header.get(k, binning)) != binning for k in ('XBINNING', 'YBINNING')):
+                    return None
+                if int(header.get('BITPIX', 0)) != int(entry.bitdepth):
+                    return None
+                positive = numpy.isfinite(data) & (data > 0)
+                if data.ndim == 3:
+                    positive = numpy.any(positive, axis=0)
+                count = numpy.count_nonzero(positive)
+                if not 0 < count <= min(20000, positive.size * 0.01):
+                    return None
+                y, x = numpy.nonzero(positive)
+            points = cKDTree(numpy.column_stack((x, y)))
+            points.data.flags.writeable = False
+            cache[version] = points
+            logger.info('Denoising bad-pixel prior: %d candidates from gain %s map %s', count, entry.gain, path)
+            return points
+        except Exception as exc:
+            logger.warning('Cannot read denoising bad-pixel map: %s', exc)
+            return None
 
 
     def _denoise_star_reference(self, i_ref):

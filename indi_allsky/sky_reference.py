@@ -223,6 +223,7 @@ class VirtualSkyReference:
         self.valid = False
         self.binning = 1
         self._model = None
+        self._validated_time = None
         try:
             self.binning = _number(binning)
             if self.binning < 1 or self.binning != int(self.binning):
@@ -253,6 +254,7 @@ class VirtualSkyReference:
             if max(self._output_shape) > 30000:
                 return
             self._inverse = np.linalg.inv(transform)
+            self._transform = transform
             model = vs.get('CALIBRATION')
             if _boolean(vs, 'CALIBRATION_ENABLED') and model is not None:
                 if not _valid_model(model):
@@ -270,6 +272,113 @@ class VirtualSkyReference:
             self.valid = True
         except (KeyError, TypeError, ValueError, OverflowError, AttributeError, np.linalg.LinAlgError):
             pass
+
+    def mark_validated(self, capture_time):
+        """Remember an alignment verified against distributed measured stars."""
+        try:
+            timestamp = _number(capture_time)
+            if not self.valid or not 0 <= timestamp <= 4102444800:
+                return
+            self._validated_time = timestamp
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    def motion_available(self, capture_time):
+        """Clouds may hide anchors, but a recent observed alignment stays useful."""
+        try:
+            timestamp = _number(capture_time)
+            return (self.valid and self._validated_time is not None
+                    and 0 <= timestamp <= 4102444800
+                    and 0 <= timestamp-self._validated_time <= 6*3600)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def displacements(self, points, elapsed_seconds, *, reference_time):
+        """Sparse hypothetical sky motion at measured sensor positions.
+
+        Only an observed, recently validated alignment authorizes this fallback.
+        Unsupported positions (near/below the horizon or outside the image)
+        return zero motion, so they cannot acquire new sensor-defect proof.
+        Elapsed time is the actual midpoint interval; the separate reference
+        timestamp is only the clock used to validate the saved overlay.
+        """
+        if not self.motion_available(reference_time):
+            return None
+        try:
+            points = np.asarray(points, dtype=float)
+            elapsed = np.broadcast_to(np.asarray(elapsed_seconds, dtype=float), (len(points),))
+            if (points.ndim != 2 or points.shape[1] != 2 or not np.isfinite(points).all()
+                    or not np.isfinite(elapsed).all() or np.any(elapsed < 0)
+                    or np.any(elapsed > 6*3600)):
+                return None
+            if not len(points):
+                return np.empty((0, 2))
+            roll, _, _, diameter, ox, oy, altitude, heading, radial = self._geometry
+            radius = diameter/2
+            center = np.array([self._output_shape[1]/2+ox, self._output_shape[0]/2-oy])
+            output = points @ self._transform[:2, :2].T+self._transform[:2, 2]
+            x1, y1, x2, y2 = self._bounds
+            supported = ((points[:, 0] >= 0) & (points[:, 0] < self._shape[1])
+                         & (points[:, 1] >= 0) & (points[:, 1] < self._shape[0])
+                         & (output[:, 0] >= x1) & (output[:, 0] < x2)
+                         & (output[:, 1] >= y1) & (output[:, 1] < y2))
+            xy = (output-center)/radius
+            if self._model is not None:
+                target = xy.copy()
+                # Saved corrections have Jacobian norm <.45. Bounded fixed-point
+                # inversion avoids a solver/dependency and verifies convergence.
+                for _ in range(16):
+                    xy = target-_displacement(xy, self._model)
+                supported &= np.linalg.norm(xy+_displacement(xy, self._model)-target, axis=1) < 1e-6
+            signs = np.array([1 if flag else -1 for flag in self._orientation])
+            xy *= signs
+            observed_r = np.linalg.norm(xy, axis=1)
+            r = np.clip(observed_r, 0, 1)
+            if radial:
+                # Invert the monotone radial mapping on the visible hemisphere.
+                for _ in range(7):
+                    base = 2-r*r
+                    value = r*base**(-radial)
+                    derivative = base**(-radial)*(1+2*radial*r*r/base)
+                    r = np.clip(r-(value-observed_r)/np.maximum(derivative, 1e-8), 0, 1)
+            supported &= observed_r <= 1
+            alt = np.pi/2-2*np.arcsin(np.clip(r*.70710678, 0, 1))
+            az = np.arctan2(xy[:, 0], xy[:, 1])+math.radians(roll)
+            tilt, heading = math.radians(90-altitude), math.radians(heading)
+            across, forward, axis = np.cos(alt)*np.sin(az-heading), np.cos(alt)*np.cos(az-heading), np.sin(alt)
+            along = math.cos(tilt)*forward+math.sin(tilt)*axis
+            up = -math.sin(tilt)*forward+math.cos(tilt)*axis
+            vector = np.column_stack((across*math.cos(heading)+along*math.sin(heading),
+                                      along*math.cos(heading)-across*math.sin(heading), up))
+            supported &= up > math.sin(math.radians(10))
+            pole = np.array([0., math.cos(self._latitude), math.sin(self._latitude)])
+            angle = -elapsed*(2*np.pi/86164.0905)
+            sine, cosine = np.sin(angle)[:, None], np.cos(angle)[:, None]
+            vector = (vector*cosine+np.cross(pole, vector)*sine
+                      +np.outer(vector @ pole, pole)*(1-cosine))
+            supported &= vector[:, 2] > math.sin(math.radians(10))
+            across = vector[:, 0]*math.cos(heading)-vector[:, 1]*math.sin(heading)
+            along = vector[:, 1]*math.cos(heading)+vector[:, 0]*math.sin(heading)
+            forward = math.cos(tilt)*along-math.sin(tilt)*vector[:, 2]
+            axis = math.sin(tilt)*along+math.cos(tilt)*vector[:, 2]
+            alt, az = np.arctan2(axis, np.hypot(across, forward)), heading+np.arctan2(across, forward)
+            supported &= alt > 0
+            r = np.sin((np.pi/2-alt)/2)/.70710678
+            if radial:
+                r *= np.maximum(2-r*r, 1e-12)**(-radial)
+            psi = az-math.radians(roll)
+            xy = np.column_stack((r*np.sin(psi), r*np.cos(psi)))*signs
+            if self._model is not None:
+                xy += _displacement(xy, self._model)
+            xy = xy*radius+center
+            xy = xy @ self._inverse[:2, :2].T+self._inverse[:2, 2]
+            delta = xy-points
+            if not np.isfinite(delta).all():
+                return None
+            delta[~supported] = 0
+            return delta
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            return None
 
     def predictions(self, capture_time):
         """Project at the UTC image timestamp used by the saved alignment.
