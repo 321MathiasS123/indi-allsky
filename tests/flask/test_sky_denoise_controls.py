@@ -18,7 +18,7 @@ from wtforms.widgets import NumberInput
 
 ROOT = Path(__file__).resolve().parents[2] / 'indi_allsky/flask'
 FIELDS = {'IMAGE_DENOISE', 'IMAGE_DENOISE_DAY',
-          'IMAGE_DENOISE_STRENGTH', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE'}
+          'IMAGE_DENOISE_STRENGTH', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE', 'IMAGE_DENOISE_BPM'}
 
 
 @pytest.mark.parametrize('recorded_date', [datetime(2026, 9, 8, 22, 15), None])
@@ -75,7 +75,7 @@ def save_fields(data, preview=False, existing=None):
         if (isinstance(target, ast.Subscript) and ast.unparse(target.value) == destination
                 and isinstance(target.slice, ast.Constant) and target.slice.value in FIELDS):
             assignments.append(node)
-    assert len(assignments) == (2 if preview else 5)
+    assert len(assignments) == (2 if preview else 6)
     saved = dict(existing or {})
     ns = dict(self=SimpleNamespace(indi_allsky_config=saved), p_config=saved,
               request=SimpleNamespace(json=data))
@@ -88,7 +88,7 @@ def save_fields(data, preview=False, existing=None):
 def test_selection_validates_saves_and_reloads(preview, strength):
     config_form, preview_form = load_forms()
     form_class = preview_form if preview else config_form
-    fields = FIELDS if not preview else FIELDS - {'IMAGE_DENOISE_DAY', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE'}
+    fields = FIELDS if not preview else FIELDS - {'IMAGE_DENOISE_DAY', 'IMAGE_DENOISE_STRENGTH_DAY', 'IMAGE_DENOISE_CATALOGUE', 'IMAGE_DENOISE_BPM'}
     data = {key: str(strength) if 'STRENGTH' in key else 'star_aware' for key in fields}
     app = flask.Flask(__name__)
     app.config['WTF_CSRF_ENABLED'] = False
@@ -116,38 +116,40 @@ def test_invalid_method_and_strength_are_rejected(method, strength):
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_optional_reference_toggle_roundtrips_and_old_clients_preserve_it(enabled):
+@pytest.mark.parametrize('key', ['IMAGE_DENOISE_CATALOGUE', 'IMAGE_DENOISE_BPM'])
+def test_optional_reference_toggle_roundtrips_and_old_clients_preserve_it(enabled, key):
     config_form, _ = load_forms()
     data = dict(IMAGE_DENOISE='star_aware', IMAGE_DENOISE_DAY='',
                 IMAGE_DENOISE_STRENGTH=3, IMAGE_DENOISE_STRENGTH_DAY=3)
     app = flask.Flask(__name__)
     app.config['WTF_CSRF_ENABLED'] = False
     with app.test_request_context():
-        assert config_form(data=data).IMAGE_DENOISE_CATALOGUE.data is False
-        form = config_form(data=dict(data, IMAGE_DENOISE_CATALOGUE=enabled))
+        assert getattr(config_form(data=data), key).data is False
+        form = config_form(data=dict(data, **{key: enabled}))
         assert form.validate(), form.errors
         saved = save_fields(form.data)
-        assert config_form(data=saved).IMAGE_DENOISE_CATALOGUE.data is enabled
-        assert save_fields(data, existing=saved)['IMAGE_DENOISE_CATALOGUE'] is enabled
-        assert save_fields(data)['IMAGE_DENOISE_CATALOGUE'] is False
+        assert getattr(config_form(data=saved), key).data is enabled
+        assert save_fields(data, existing=saved)[key] is enabled
+        assert save_fields(data)[key] is False
 
 
-def test_reference_toggle_is_default_off_and_serialized_as_boolean():
+@pytest.mark.parametrize('field', ['IMAGE_DENOISE_CATALOGUE', 'IMAGE_DENOISE_BPM'])
+def test_reference_toggle_is_default_off_and_serialized_as_boolean(field):
     config = ast.parse((ROOT.parent / 'config.py').read_text(encoding='utf-8'))
     defaults = [value for node in ast.walk(config) if isinstance(node, ast.Dict)
                 for key, value in zip(node.keys, node.values)
-                if isinstance(key, ast.Constant) and key.value == 'IMAGE_DENOISE_CATALOGUE']
+                if isinstance(key, ast.Constant) and key.value == field]
     assert len(defaults) == 1 and ast.literal_eval(defaults[0]) is False
     template = (ROOT / 'templates/config.html').read_text(encoding='utf-8')
     checkboxes = re.search(r'const checkbox_field_names = \[(.*?)\];', template, re.S).group(1)
-    assert checkboxes.count("'IMAGE_DENOISE_CATALOGUE'") == 1
+    assert checkboxes.count(repr(field)) == 1
     image_controls = (ROOT / 'templates/config/image.html').read_text(encoding='utf-8')
-    assert 'form_config.IMAGE_DENOISE_CATALOGUE(' in image_controls
+    assert f'form_config.{field}(' in image_controls
     views = ast.parse((ROOT / 'views.py').read_text(encoding='utf-8'))
     loads = [value for node in ast.walk(views) if isinstance(node, ast.Dict)
              for key, value in zip(node.keys, node.values)
-             if isinstance(key, ast.Constant) and key.value == 'IMAGE_DENOISE_CATALOGUE']
+             if isinstance(key, ast.Constant) and key.value == field]
     assert len(loads) == 1
-    for stored in ({}, {'IMAGE_DENOISE_CATALOGUE': True}):
+    for stored in ({}, {field: True}):
         expression = compile(ast.Expression(loads[0]), 'actual-denoise-load', 'eval')
-        assert eval(expression, {'self': SimpleNamespace(indi_allsky_config=stored)}) is stored.get('IMAGE_DENOISE_CATALOGUE', False)
+        assert eval(expression, {'self': SimpleNamespace(indi_allsky_config=stored)}) is stored.get(field, False)

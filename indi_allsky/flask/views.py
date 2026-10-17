@@ -4418,6 +4418,7 @@ class ConfigView(FormView):
             'IMAGE_DENOISE_STRENGTH'         : self.indi_allsky_config.get('IMAGE_DENOISE_STRENGTH', 3),
             'IMAGE_DENOISE_STRENGTH_DAY'     : self.indi_allsky_config.get('IMAGE_DENOISE_STRENGTH_DAY', 3),
             'IMAGE_DENOISE_CATALOGUE'        : self.indi_allsky_config.get('IMAGE_DENOISE_CATALOGUE', False),
+            'IMAGE_DENOISE_BPM'              : self.indi_allsky_config.get('IMAGE_DENOISE_BPM', False),
             'BILATERAL_SIGMA_COLOR'          : self.indi_allsky_config.get('BILATERAL_SIGMA_COLOR', 20),
             'BILATERAL_SIGMA_COLOR_DAY'      : self.indi_allsky_config.get('BILATERAL_SIGMA_COLOR_DAY', 20),
             'BILATERAL_SIGMA_SPACE'          : self.indi_allsky_config.get('BILATERAL_SIGMA_SPACE', 35),
@@ -5535,6 +5536,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['IMAGE_DENOISE_STRENGTH']               = int(request.json['IMAGE_DENOISE_STRENGTH'])
         self.indi_allsky_config['IMAGE_DENOISE_STRENGTH_DAY']           = int(request.json['IMAGE_DENOISE_STRENGTH_DAY'])
         self.indi_allsky_config['IMAGE_DENOISE_CATALOGUE']              = bool(request.json.get('IMAGE_DENOISE_CATALOGUE', self.indi_allsky_config.get('IMAGE_DENOISE_CATALOGUE', False)))
+        self.indi_allsky_config['IMAGE_DENOISE_BPM']                    = bool(request.json.get('IMAGE_DENOISE_BPM', self.indi_allsky_config.get('IMAGE_DENOISE_BPM', False)))
         self.indi_allsky_config['BILATERAL_SIGMA_COLOR']                = int(request.json['BILATERAL_SIGMA_COLOR'])
         self.indi_allsky_config['BILATERAL_SIGMA_COLOR_DAY']            = int(request.json['BILATERAL_SIGMA_COLOR_DAY'])
         self.indi_allsky_config['BILATERAL_SIGMA_SPACE']                = int(request.json['BILATERAL_SIGMA_SPACE'])

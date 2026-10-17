@@ -4641,6 +4641,7 @@ class IndiAllskyConfigForm(FlaskForm):
     IMAGE_DENOISE_STRENGTH           = IntegerField('Denoise Strength (Night)', validators=[IMAGE_DENOISE_STRENGTH_validator], widget=NumberInput(step=1))
     IMAGE_DENOISE_STRENGTH_DAY       = IntegerField('Denoise Strength (Day)', validators=[IMAGE_DENOISE_STRENGTH_validator], widget=NumberInput(step=1))
     IMAGE_DENOISE_CATALOGUE          = BooleanField('Use VirtualSky star positions')
+    IMAGE_DENOISE_BPM                = BooleanField('Use bad-pixel maps for hot-pixel detection')
     BILATERAL_SIGMA_COLOR            = IntegerField('Bilateral Sigma Color (Night)', validators=[BILATERAL_SIGMA_validator], widget=NumberInput(step=1))
     BILATERAL_SIGMA_COLOR_DAY        = IntegerField('Bilateral Sigma Color (Day)', validators=[BILATERAL_SIGMA_validator], widget=NumberInput(step=1))
     BILATERAL_SIGMA_SPACE            = IntegerField('Bilateral Sigma Space (Night)', validators=[BILATERAL_SIGMA_validator], widget=NumberInput(step=1))

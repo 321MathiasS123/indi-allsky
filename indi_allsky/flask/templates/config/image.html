@@ -370,8 +370,17 @@
                         <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.IMAGE_DENOISE_CATALOGUE.label.text }}</span>
                         {{ form_config.IMAGE_DENOISE_CATALOGUE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
                     </label>
-                    <span class="tw:text-[0.625rem] tw:text-base-content/40">Optional star-aware denoising aid during capture. Requires accurate VirtualSky alignment. Star positions are checked against sources in each image; unavailable or inconsistent matches use normal star protection. Other denoisers are unchanged.</span>
+                    <span class="tw:text-[0.625rem] tw:text-base-content/40">Optional star-aware denoising aid during capture. Requires accurate VirtualSky alignment verified against visible stars. A recently verified alignment also helps detect fixed hot pixels through clouds. Unavailable or inconsistent star matches use normal star protection. Other denoisers are unchanged.</span>
                     <div id="IMAGE_DENOISE_CATALOGUE-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                </div>
+
+                <div class="tw:flex tw:flex-col tw:gap-1 tw:py-3 tw:border-b tw:border-base-300/60">
+                    <label class="tw:flex tw:items-center tw:justify-between tw:gap-4">
+                        <span class="tw:text-[0.625rem] tw:font-bold tw:uppercase tw:tracking-wider tw:text-base-content/80">{{ form_config.IMAGE_DENOISE_BPM.label.text }}</span>
+                        {{ form_config.IMAGE_DENOISE_BPM(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                    </label>
+                    <span class="tw:text-[0.625rem] tw:text-base-content/40">Optional nighttime star-aware aid during capture. Caches defect positions from the highest-gain compatible active bad-pixel map, preferring longer exposures. Each image is checked for an actual hot pixel at those positions; map brightness is not subtracted. Works independently of VirtualSky and calibration subtraction.</span>
+                    <div id="IMAGE_DENOISE_BPM-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
                 </div>
 
                 <div class="tw:grid tw:grid-cols-1 sm:tw:grid-cols-2 tw:gap-4 tw:py-3 tw:border-b tw:border-base-300/60">
