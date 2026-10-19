@@ -160,6 +160,9 @@ class IndiAllSkyConfigBase(object):
             # is percent of pixel full scale; MAX_BOOST is stops. Gamma 0 inherits.
             "ENABLE" : False,
             "TWILIGHT_ENABLE" : False,
+            "TWILIGHT_STAR_ALLOWANCE" : 0.1,
+            "TWILIGHT_MOON_ALLOWANCE_50" : 1.8,
+            "TWILIGHT_MOON_ALLOWANCE_FULL" : 24.0,
             "FULL_TARGET" : 0.8,
             "FULL_DEV" : 0.2,
             "ANY_TARGET" : 2.0,

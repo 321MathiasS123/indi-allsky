@@ -1,5 +1,5 @@
 """The optional raw meter follows photographic geometry without altering it."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -122,12 +122,50 @@ def test_disabled_path_does_not_run_optional_geometry(highlight_processor, monke
     assert highlight_processor.measure_highlights() == expected
 
 
-def test_outside_solar_window_returns_original_measurement(highlight_processor, monkeypatch):
+def test_outside_solar_window_only_retains_midpoint_for_smooth_release(highlight_processor, monkeypatch):
     raw = broad_horizon()
     prepare(highlight_processor, raw)
     monkeypatch.setattr(highlight_twilight, 'capture_twilight', lambda *args: (0., 100.))
     monkeypatch.setattr(highlight_twilight, 'measure_ring', Mock(side_effect=AssertionError('inactive path')))
-    assert highlight_processor.measure_highlights() == measure(raw, highlight_processor._adu_mask_dict[1], 16)
+    expected = measure(raw, highlight_processor._adu_mask_dict[1], 16)._replace(twilight_time=100.)
+    assert highlight_processor.measure_highlights() == expected
+
+
+def test_valid_black_ring_retains_solar_strength_for_smooth_recovery(highlight_processor, monkeypatch):
+    raw = np.zeros((460, 500), dtype=np.uint16)
+    prepare(highlight_processor, raw)
+    monkeypatch.setattr(highlight_twilight, 'capture_twilight', lambda *args: (1., 100.))
+    result = highlight_processor.measure_highlights()
+    assert result.twilight_peak == 0
+    assert result.twilight_weight == 1 and result.twilight_time == 100
+
+
+def test_invalid_optional_geometry_only_retains_capture_midpoint(highlight_processor, monkeypatch):
+    raw = broad_horizon()
+    prepare(highlight_processor, raw, LENS_IMAGE_CIRCLE=0)
+    monkeypatch.setattr(highlight_twilight, 'capture_twilight', lambda *args: (1., 100.))
+    expected = measure(raw, highlight_processor._adu_mask_dict[1], 16)._replace(twilight_time=100.)
+    assert highlight_processor.measure_highlights() == expected
+
+
+def test_moon_budget_uses_capture_context_instead_of_delayed_renderer_state(highlight_processor, monkeypatch):
+    raw = broad_horizon()
+    ref = prepare(highlight_processor, raw)
+    stale = {'moon_phase': 1, 'moon_alt': -60, 'sun_alt': 30}
+    highlight_processor.astrometric_data = stale.copy()
+    moon = Mock(return_value=(77., -.5))
+    budget = Mock(return_value=.012)
+    meter = Mock(return_value=.8)
+    monkeypatch.setattr(highlight_twilight, 'capture_twilight', lambda *args: (1., 100.))
+    monkeypatch.setattr(highlight_twilight, 'capture_moon', moon)
+    monkeypatch.setattr(highlight_twilight, 'clipping_budget', budget)
+    monkeypatch.setattr(highlight_twilight, 'measure_ring', meter)
+    result = highlight_processor.measure_highlights()
+    moon.assert_called_once_with(ref.exp_date, ref.exposure, highlight_processor.position_av)
+    budget.assert_called_once_with(77., -.5, highlight_processor.config)
+    assert meter.call_args.kwargs['clipping_fraction'] == .012
+    assert result.twilight_peak == .8 and result.twilight_time == 100
+    assert highlight_processor.astrometric_data == stale
 
 
 def test_solar_context_uses_exposure_midpoint_without_mutating_metadata(highlight_processor):
@@ -155,6 +193,45 @@ def test_capture_solar_envelope_is_calculated_at_midpoint(monkeypatch):
     assert abs((seen[0] - datetime(2026, 10, 19, 5, 0, 15)).total_seconds()) < .0001
 
 
+def test_capture_moon_matches_ephemeris_at_capture_midpoint():
+    import ephem
+    end = datetime(2026, 10, 19, 5, 0, 30, tzinfo=timezone.utc)
+    phase, altitude = highlight_twilight.capture_moon(end, 30, [53, 11, 10])
+    observer = ephem.Observer()
+    observer.lat, observer.lon = '53', '11'
+    observer.elevation, observer.pressure = 10, 0
+    observer.date = end - timedelta(seconds=15)
+    moon = ephem.Moon(observer)
+    assert phase == pytest.approx(moon.moon_phase * 100)
+    assert altitude == pytest.approx(np.degrees(moon.alt))
+
+
+def test_capture_moon_receives_midpoint_without_atmospheric_refraction(monkeypatch):
+    import ephem
+    seen = []
+    monkeypatch.setattr(ephem, 'Moon', lambda observer: seen.append((observer.date.datetime(), observer.pressure))
+                        or SimpleNamespace(moon_phase=.5, alt=np.radians(-.5)))
+    end = datetime(2026, 10, 19, 5, 0, 30, tzinfo=timezone.utc)
+    assert highlight_twilight.capture_moon(end, 30, [53, 11, 10]) == pytest.approx((50, -.5))
+    assert abs((seen[0][0] - datetime(2026, 10, 19, 5, 0, 15)).total_seconds()) < .0001
+    assert seen[0][1] == 0
+
+
 @pytest.mark.parametrize('position', [None, [], [float('nan'), 11, 10], [91, 11, 10], [53, 181, 10]])
 def test_invalid_capture_position_disables_guard(position):
     assert highlight_twilight.capture_twilight(datetime.now(), 30, position) == (0., 0.)
+    assert highlight_twilight.capture_moon(datetime.now(), 30, position) == (0., -90.)
+
+
+@pytest.mark.parametrize('exposure', [None, float('nan'), float('inf'), 'bad'])
+def test_invalid_capture_exposure_has_sane_ephemeris_fallback(exposure):
+    end = datetime(2026, 10, 19, 5, tzinfo=timezone.utc)
+    assert highlight_twilight.capture_twilight(end, exposure, [53, 11, 10]) == (0., 0.)
+    assert highlight_twilight.capture_moon(end, exposure, [53, 11, 10]) == (0., -90.)
+
+
+def test_moon_ephemeris_value_error_has_sane_fallback(monkeypatch):
+    import ephem
+    monkeypatch.setattr(ephem, 'Moon', Mock(side_effect=ValueError('invalid ephemeris input')))
+    end = datetime(2026, 10, 19, 5, tzinfo=timezone.utc)
+    assert highlight_twilight.capture_moon(end, 30, [53, 11, 10]) == (0., -90.)

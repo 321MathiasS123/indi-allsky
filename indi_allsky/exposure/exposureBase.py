@@ -155,6 +155,7 @@ class IndiAllSky_Exposure_Base(object):
         self._highlight_mode = None
         self._highlight_slew = None
         self._twilight_previous = None
+        self._twilight_slew_state = None
 
 
     def compare_highlights(self, measurement, exposure, gain):
@@ -167,6 +168,16 @@ class IndiAllSky_Exposure_Base(object):
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
         mode = tuple(self.night_av)
         twilight_previous = self._twilight_previous
+        twilight_slew = self._twilight_slew_state
+        cadence = max(exposure, self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 15), 0.001)
+        twilight_enabled = settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
+        twilight_valid_time = math.isfinite(measurement.twilight_time) and measurement.twilight_time > 0
+        twilight_active = twilight_enabled and twilight_valid_time and 0 < measurement.twilight_weight <= 1
+        if (twilight_slew is not None and (not twilight_enabled or twilight_slew[0] != mode
+                or not twilight_valid_time
+                or measurement.twilight_time - twilight_slew[1] > max(120, 5 * cadence))):
+            twilight_slew = None
+        twilight_duplicate = twilight_slew is not None and measurement.twilight_time <= twilight_slew[1]
         # Keep this decision's prior strength across the clipping-history
         # resets below. External resets and mode changes must still discard it.
         previous_scale = (self._highlight_slew[1] if self._highlight_slew is not None
@@ -213,9 +224,7 @@ class IndiAllSky_Exposure_Base(object):
             reason += ' + ' + output_reason
             response_target = None  # Output constraints retain their own bounds.
         twilight_needed = False
-        if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False) and measurement.twilight_peak > 0
-                and 0 < measurement.twilight_weight <= 1):
-            cadence = max(exposure, self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 15), 0.001)
+        if twilight_active and measurement.twilight_peak > 0:
             forecast = 1.0
             if twilight_previous is not None and twilight_previous[0] == mode:
                 _, old_time, old_peak, old_exposure, old_gain = twilight_previous
@@ -243,6 +252,14 @@ class IndiAllSky_Exposure_Base(object):
                         measurement.twilight_peak, measurement.twilight_weight, forecast, limit)
         else:
             self._twilight_previous = None
+        # Retain the command slew through internal clipping-history resets and
+        # briefly after the solar envelope ends. Release only once ordinary
+        # control can take over without a larger recovery or reduction step.
+        if twilight_active or twilight_slew is not None:
+            self._twilight_slew_state = (mode, max(measurement.twilight_time, twilight_slew[1])
+                                        if twilight_slew is not None else measurement.twilight_time)
+        else:
+            self._twilight_slew_state = None
         if scale > 1 and response_target is None and self._highlight_request_pending(exposure, gain):
             scale, reason = 1.0, 'await pending exposure/gain'
         self.hist_adu = []
@@ -252,12 +269,16 @@ class IndiAllSky_Exposure_Base(object):
         self.target_adu_found = scale == 1.0
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
-        if scale != 1.0:
+        if scale != 1.0 and not twilight_duplicate:
             self._set_exposure(exposure, gain, exposure * scale, highlight=True,
                                previous_scale=previous_scale, response_target=response_target,
-                               clipping_urgency=clipping_urgency)
+                               clipping_urgency=clipping_urgency,
+                               twilight_slew=self._twilight_slew_state is not None,
+                               twilight_release=not twilight_active)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
+        elif scale == 1.0 and not twilight_active and not self._highlight_request_pending(exposure, gain):
+            self._twilight_slew_state = None
         # Dry-run the same mode policy, ISO selection and storage rounding used
         # by real requests. Copy local policy state so a probe cannot initialize
         # the legacy gain ladder earlier than a real adjustment would.
@@ -354,7 +375,7 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None,
-                      response_target=None, clipping_urgency=0.0):
+                      response_target=None, clipping_urgency=0.0, twilight_slew=False, twilight_release=False):
         reducing = next_exposure < current_exposure
         scale = next_exposure / current_exposure if highlight else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
@@ -461,6 +482,30 @@ class IndiAllSky_Exposure_Base(object):
                     gain_delta = next_gain - current_gain
                     logger.info('Highlight delayed reduction slewed from pending %.6fs @ gain %.3f',
                                 pending_exposure, pending_gain)
+
+        if twilight_slew:
+            # The blended request can cross from 10% recovery to the fast ADU
+            # branch while the guard fades. Bound the final achieved signal in
+            # both directions, from the newest pending command rather than an
+            # older capture. The source-relative request remains the target;
+            # a delayed frame never compounds its full correction on pending.
+            base_exposure = self._expUtils.EXPOSURE_NEXT if pending else current_exposure
+            base_gain = self.effective_gain(self._expUtils.GAIN_NEXT) if pending else current_gain
+            change = self._highlight_signal_change(next_exposure, next_gain, base_exposure, base_gain)
+            cap = -math.log(0.8) if change is not None and change < 0 else math.log(MAX_EXPOSURE_INCREASE)
+            if change is not None and abs(change) > cap:
+                limited = self._calculate_exposure(
+                    base_exposure, base_gain, base_exposure * math.exp(max(-cap, min(cap, change))), highlight=True)
+                limited_change = self._highlight_signal_change(limited[0], limited[1], base_exposure, base_gain)
+                # Hardware gain steps and integer exposure storage set the
+                # smallest achievable step; keep that step when the cap rounds.
+                if limited_change is not None and limited_change * change > 0 and abs(limited_change) < abs(change):
+                    next_exposure, next_gain = limited[:2]
+                    exposure_delta = next_exposure - current_exposure
+                    gain_delta = next_gain - current_gain
+                    logger.info('Twilight signal slew: %.3fx newest pending exposure/gain', math.exp(limited_change))
+            elif twilight_release:
+                self._twilight_slew_state = None
 
         # Binning
         if self.night_av[constants.NIGHT_NIGHT]:

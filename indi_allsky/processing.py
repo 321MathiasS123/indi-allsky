@@ -1647,10 +1647,12 @@ class ImageProcessor(object):
         if (measurement is None or not settings.get('ENABLE', False)
                 or not settings.get('TWILIGHT_ENABLE', False)):
             return measurement
-        from .highlight_twilight import capture_twilight, measure_ring
+        from .highlight_twilight import capture_twilight, capture_moon, clipping_budget, measure_ring
         weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
         if not weight:
-            return measurement
+            return measurement._replace(twilight_time=midpoint)
+        phase, altitude = capture_moon(i_ref.exp_date, i_ref.exposure, self.position_av)
+        allowance = clipping_budget(phase, altitude, self.config)
         # Follow the actual crop, rotation and lens offsets before scale/borders.
         # The JPEG midpoint is not the circle centre when padding is asymmetric.
         highest = _channel_limits(data)[1]
@@ -1670,8 +1672,11 @@ class ImageProcessor(object):
             for operation in ('rotate_90', 'rotate_angle', 'flip_v', 'flip_h', 'crop_image'):
                 getattr(view, operation)()
             mask = (view.image == 255).astype(numpy.uint8)
-        peak = measure_ring(ring_data, mask, bit_depth, self.config, i_ref.binning)
-        return measurement._replace(twilight_peak=peak, twilight_weight=weight if peak > 0 else 0.0,
+        peak = measure_ring(ring_data, mask, bit_depth, self.config, i_ref.binning,
+                            clipping_fraction=allowance, invalid=None)
+        if peak is None:
+            return measurement._replace(twilight_time=midpoint)
+        return measurement._replace(twilight_peak=peak, twilight_weight=weight,
                                     twilight_time=midpoint)
 
 

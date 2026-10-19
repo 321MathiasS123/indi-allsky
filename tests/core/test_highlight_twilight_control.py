@@ -72,7 +72,8 @@ def test_partial_twilight_weight_changes_headroom_constraint_smoothly():
         ratios.append(settings(instance)[0])
     assert ratios[0] > 1
     assert ratios[-1] < 1
-    assert all(before > after for before, after in zip(ratios, ratios[1:]))
+    # The final signal slew can put adjacent strengths on the same cut bound.
+    assert all(before >= after for before, after in zip(ratios, ratios[1:]))
     assert all(before - after < .1 for before, after in zip(ratios, ratios[1:]))
 
 
