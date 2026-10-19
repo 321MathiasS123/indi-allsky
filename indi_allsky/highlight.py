@@ -30,6 +30,11 @@ class HighlightMeasurement(NamedTuple):
     # Older measurements have no such certificate and retain the 10% limit.
     full_fast: float = 100.0
     any_fast: float = 100.0
+    # Optional raw horizon headroom, solar envelope and capture midpoint.
+    # Zero defaults preserve older measurements and ordinary day/night control.
+    twilight_peak: float = 0.0
+    twilight_weight: float = 0.0
+    twilight_time: float = 0.0
 
 
 class HighlightOutput:

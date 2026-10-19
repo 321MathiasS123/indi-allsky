@@ -1621,7 +1621,7 @@ class ImageProcessor(object):
 
     def measure_highlights(self):
         """Meter an independent pre-dark view, leaving saved image data untouched."""
-        from .highlight import measure
+        from .highlight import _channel_limits, measure
 
         i_ref = self.getLatestImage()
         data = i_ref.hdulist[0].data
@@ -1641,8 +1641,38 @@ class ImageProcessor(object):
         # max_bit_depth already honours CCD_BIT_DEPTH or observed output range;
         # FITS storage alone cannot distinguish native 12-bit from scaled 16-bit.
         bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
-        return measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
-                       self.config.get('HIGHLIGHT_PROTECTION', {}).get('THRESHOLD', 99.0))
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        measurement = measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
+                              settings.get('THRESHOLD', 99.0))
+        if (measurement is None or not settings.get('ENABLE', False)
+                or not settings.get('TWILIGHT_ENABLE', False)):
+            return measurement
+        from .highlight_twilight import capture_twilight, measure_ring
+        weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
+        if not weight:
+            return measurement
+        # Follow the actual crop, rotation and lens offsets before scale/borders.
+        # The JPEG midpoint is not the circle centre when padding is asymmetric.
+        highest = _channel_limits(data)[1]
+        mask = (self._detection_mask_dict.get(i_ref.binning)
+                if self.config.get('DETECT_MASK') else None)
+        view = copy.copy(self)
+        if mask is not None:
+            highest = numpy.where(mask != 0, highest, 0)
+        # Preserve a conservative raw peak across bilinear rotation; do not
+        # let interpolation hide a narrow clipped horizon or change the source.
+        view.image = cv2.dilate(highest, numpy.ones((3, 3), dtype=numpy.uint8))
+        for operation in ('rotate_90', 'rotate_angle', 'flip_v', 'flip_h', 'crop_image'):
+            getattr(view, operation)()
+        ring_data = view.image
+        if mask is not None:
+            view.image = mask
+            for operation in ('rotate_90', 'rotate_angle', 'flip_v', 'flip_h', 'crop_image'):
+                getattr(view, operation)()
+            mask = (view.image == 255).astype(numpy.uint8)
+        peak = measure_ring(ring_data, mask, bit_depth, self.config, i_ref.binning)
+        return measurement._replace(twilight_peak=peak, twilight_weight=weight if peak > 0 else 0.0,
+                                    twilight_time=midpoint)
 
 
     def calibrate_highlights(self, measurement):

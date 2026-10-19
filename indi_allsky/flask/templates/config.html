@@ -781,6 +781,7 @@ const checkbox_field_names = [
     'IMAGE_STACK_DAY',
     'IMAGE_CALIBRATE_DARK',
     'HIGHLIGHT_PROTECTION__ENABLE',
+    'HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE',
     'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION',
     'HIGHLIGHT_PROTECTION__OUTPUT_ENABLE',
     'IMAGE_CALIBRATE_BPM',
@@ -1753,6 +1754,8 @@ var group_checkbox_fields_circular_display = [];
 
 group_on_change('CIRCULAR_DISPLAY__ENABLE', group_fields_circular_display, group_checkbox_fields_circular_display);
 
+group_on_change({{ form_config.HIGHLIGHT_PROTECTION__ENABLE.id | tojson }}, [], [{{ form_config.HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE.id | tojson }}]);
+
 
 $( document ).ready(function() {
     // Star detection method - apply initial state
@@ -1956,6 +1959,7 @@ $( document ).ready(function() {
     group_on_ready('FISH2PANO__ENABLE', group_fields_fish2pano, group_checkbox_fields_fish2pano);
     group_on_ready('IMAGE_OVERLAY__ENABLE', group_fields_image_overlay, group_checkbox_fields_image_overlay);
     group_on_ready('CIRCULAR_DISPLAY__ENABLE', group_fields_circular_display, group_checkbox_fields_circular_display);
+    group_on_ready({{ form_config.HIGHLIGHT_PROTECTION__ENABLE.id | tojson }}, [], [{{ form_config.HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE.id | tojson }}]);
 
     // Enable/disable FC-37 Active Low toggle when any sensor slot has FC-37 selected
     function updateFc37ActiveLowState() {

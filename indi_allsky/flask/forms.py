@@ -4662,6 +4662,7 @@ class IndiAllskyConfigForm(FlaskForm):
     TARGET_ADU_DEV                   = IntegerField('Target ADU Deviation (night)', validators=[DataRequired(), TARGET_ADU_DEV_validator])
     TARGET_ADU_DEV_DAY               = IntegerField('Target ADU Deviation (day)', validators=[DataRequired(), TARGET_ADU_DEV_DAY_validator])
     HIGHLIGHT_PROTECTION__ENABLE     = BooleanField('Highlight protection (experimental)')
+    HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE = BooleanField('Protect twilight horizon')
     HIGHLIGHT_PROTECTION__FULL_TARGET = FloatField('All-channel target (%)', default=0.8, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__FULL_DEV    = FloatField('All-channel deviation (percentage points)', default=0.2, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__ANY_TARGET  = FloatField('Any-channel target (%)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.01))

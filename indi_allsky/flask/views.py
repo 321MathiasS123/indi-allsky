@@ -2631,6 +2631,7 @@ class ConfigView(FormView):
             'TARGET_ADU_DEV'                 : self.indi_allsky_config.get('TARGET_ADU_DEV', 10),
             'TARGET_ADU_DEV_DAY'             : self.indi_allsky_config.get('TARGET_ADU_DEV_DAY', 20),
             'HIGHLIGHT_PROTECTION__ENABLE'   : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False),
+            'HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_ENABLE', False),
             'HIGHLIGHT_PROTECTION__FULL_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('FULL_TARGET', 0.8),
             'HIGHLIGHT_PROTECTION__FULL_DEV'  : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('FULL_DEV', 0.2),
             'HIGHLIGHT_PROTECTION__ANY_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ANY_TARGET', 2.0),
@@ -3721,7 +3722,7 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config.setdefault('HIGHLIGHT_PROTECTION', {}).update({
             key: convert(request.json['HIGHLIGHT_PROTECTION__' + key])
             for key, convert in (
-                ('ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
+                ('ENABLE', bool), ('TWILIGHT_ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
                 ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),
                 ('GAMMA', float), ('GAMMA_DAY', float),
                 ('FRINGE_REDUCTION', bool),

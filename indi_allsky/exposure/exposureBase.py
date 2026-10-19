@@ -154,6 +154,7 @@ class IndiAllSky_Exposure_Base(object):
         self._highlight_sample = None
         self._highlight_mode = None
         self._highlight_slew = None
+        self._twilight_previous = None
 
 
     def compare_highlights(self, measurement, exposure, gain):
@@ -165,6 +166,7 @@ class IndiAllSky_Exposure_Base(object):
                      else self.config.get('TARGET_ADU_DEV', 10))
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
         mode = tuple(self.night_av)
+        twilight_previous = self._twilight_previous
         # Keep this decision's prior strength across the clipping-history
         # resets below. External resets and mode changes must still discard it.
         previous_scale = (self._highlight_slew[1] if self._highlight_slew is not None
@@ -210,6 +212,37 @@ class IndiAllSky_Exposure_Base(object):
         if output_reason:
             reason += ' + ' + output_reason
             response_target = None  # Output constraints retain their own bounds.
+        twilight_needed = False
+        if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False) and measurement.twilight_peak > 0
+                and 0 < measurement.twilight_weight <= 1):
+            cadence = max(exposure, self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 15), 0.001)
+            forecast = 1.0
+            if twilight_previous is not None and twilight_previous[0] == mode:
+                _, old_time, old_peak, old_exposure, old_gain = twilight_previous
+                elapsed = measurement.twilight_time - old_time
+                change = self._highlight_signal_change(exposure, gain, old_exposure, old_gain)
+                if change is not None and 0 < elapsed <= max(120, 5 * cadence):
+                    # Normalize out our own exposure/gain commands. Reserve two
+                    # capture intervals for brightening while a frame is in flight.
+                    growth = max(0.0, math.log(measurement.twilight_peak / old_peak) - change) / elapsed
+                    forecast = math.exp(min(math.log(2), growth * 2 * cadence))
+            limit = 0.90 / (measurement.twilight_peak * forecast)
+            if limit < scale:
+                # Blend the constraint in signal space; zero strength retains
+                # the exact existing decision, including every recovery path.
+                scale *= math.exp(measurement.twilight_weight * math.log(limit / scale))
+                reason += ' + twilight horizon'
+                response_target = None
+                clipping_urgency = 1.0  # Pending-command easing must not weaken this ceiling.
+            twilight_needed = measurement.twilight_peak * forecast >= 0.88 and measurement.adu < target - deviation
+            if twilight_previous is not None and twilight_previous[0] == mode and measurement.twilight_time <= twilight_previous[1]:
+                self._twilight_previous = twilight_previous
+            else:
+                self._twilight_previous = (mode, measurement.twilight_time, measurement.twilight_peak, exposure, gain)
+            logger.info('Twilight horizon: raw peak %.3f; strength %.3f; forecast %.3fx; limit %.3fx',
+                        measurement.twilight_peak, measurement.twilight_weight, forecast, limit)
+        else:
+            self._twilight_previous = None
         if scale > 1 and response_target is None and self._highlight_request_pending(exposure, gain):
             scale, reason = 1.0, 'await pending exposure/gain'
         self.hist_adu = []
@@ -234,7 +267,7 @@ class IndiAllSky_Exposure_Base(object):
         ceiling = next_exposure <= exposure + 0.0000005 and next_gain <= gain + 0.0005
         self.highlight_transition.observe(measurement, target, deviation, settings,
                                           self._highlight_request_pending(exposure, gain), ceiling, predicted_block,
-                                          output_needed=self.highlight_output.active)
+                                          output_needed=self.highlight_output.active or twilight_needed)
         logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
                     self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
         self._highlight_slew = (mode, scale) if 0 < scale < 1 else None
