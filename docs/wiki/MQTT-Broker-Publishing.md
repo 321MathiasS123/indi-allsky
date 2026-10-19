@@ -165,9 +165,12 @@ Adjust the topic if you use a different MQTT base topic. Filter on
 Use `payload: failed` in a second automation to receive failure notifications.
 
 ## Local broker
-Included in the repository is a script that an quickly deploy a Mosquitto MQTT broker to your system.
+Included in the repository is a script that can quickly deploy a Mosquitto MQTT broker to your system.
 
-The script is at `./misc/setup_mosquitto.sh`.  The script will ask for a password for the `indi-allsky` mqtt user.
+* **Debian Package (`.deb`)**: `sudo indi-allsky-ctl setup-mqtt`
+* **Source / Git**: `./misc/setup_mosquitto_mqtt.sh`
+
+The script will prompt for a password for the `indi-allsky` MQTT user.
 
 Mosquitto will be setup with the following ports:
 | Port | Service |
