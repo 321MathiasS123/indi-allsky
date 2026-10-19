@@ -738,6 +738,16 @@ def HIGHLIGHT_NUMBER_validator(form, field):
         raise ValidationError('Please enter a finite number')
 
 
+def HIGHLIGHT_TWILIGHT_ALLOWANCE_validator(form, field):
+    HIGHLIGHT_NUMBER_validator(form, field)
+    values = [getattr(form, 'HIGHLIGHT_PROTECTION__' + key).data for key in
+              ('TWILIGHT_STAR_ALLOWANCE', 'TWILIGHT_MOON_ALLOWANCE_50', 'TWILIGHT_MOON_ALLOWANCE_FULL')]
+    if any(value is None or not math.isfinite(value) for value in values):
+        return
+    if not values[0] <= values[1] <= values[2]:
+        raise ValidationError('Allowances must increase from stars to half Moon to full Moon')
+
+
 def HIGHLIGHT_DEVIATION_validator(form, field):
     HIGHLIGHT_NUMBER_validator(form, field)
     target = getattr(form, field.name.replace('_DEV', '_TARGET')).data
@@ -4680,6 +4690,10 @@ class IndiAllskyConfigForm(FlaskForm):
     TARGET_ADU_DEV                   = IntegerField('Target ADU Deviation (night)', validators=[DataRequired(), TARGET_ADU_DEV_validator])
     TARGET_ADU_DEV_DAY               = IntegerField('Target ADU Deviation (day)', validators=[DataRequired(), TARGET_ADU_DEV_DAY_validator])
     HIGHLIGHT_PROTECTION__ENABLE     = BooleanField('Highlight protection (experimental)')
+    HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE = BooleanField('Protect twilight horizon')
+    HIGHLIGHT_PROTECTION__TWILIGHT_STAR_ALLOWANCE = FloatField('Stars allowance (% of ring)', default=0.1, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))
+    HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_50 = FloatField('50% Moon allowance (% of ring)', default=1.8, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))
+    HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_FULL = FloatField('Full Moon allowance (% of ring)', default=24.0, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__FULL_TARGET = FloatField('All-channel target (%)', default=0.8, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__FULL_DEV    = FloatField('All-channel deviation (percentage points)', default=0.2, validators=[HIGHLIGHT_DEVIATION_validator], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__ANY_TARGET  = FloatField('Any-channel target (%)', default=2.0, validators=[HIGHLIGHT_NUMBER_validator, NumberRange(min=0.01, max=100)], widget=NumberInput(step=0.01))

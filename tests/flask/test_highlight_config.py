@@ -54,6 +54,31 @@ def test_invalid_settings_rejected(form_class, field, value):
         assert form['HIGHLIGHT_PROTECTION__' + field].errors
 
 
+@pytest.mark.parametrize('field', ['TWILIGHT_STAR_ALLOWANCE', 'TWILIGHT_MOON_ALLOWANCE_50',
+                                  'TWILIGHT_MOON_ALLOWANCE_FULL'])
+@pytest.mark.parametrize('value', ['nan', 'inf', '-0.01', '50.01', ''])
+def test_twilight_area_allowances_reject_nonfinite_or_out_of_range_values(form_class, field, value):
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + field: value}))
+        assert not form.validate()
+        assert form['HIGHLIGHT_PROTECTION__' + field].errors
+
+
+@pytest.mark.parametrize('values,valid', [((0, .5, 50), True), ((0, 0, 0), True),
+                                        ((50, 50, 50), True), ((.6, .5, 2), False),
+                                        ((.01, 2.1, 2), False), ((.01, .5, .1), False)])
+def test_twilight_area_allowances_must_follow_increasing_phase_order(form_class, values, valid):
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    keys = ('TWILIGHT_STAR_ALLOWANCE', 'TWILIGHT_MOON_ALLOWANCE_50', 'TWILIGHT_MOON_ALLOWANCE_FULL')
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + key: str(value)
+                                            for key, value in zip(keys, values)}))
+        assert form.validate() is valid, form.errors
+
+
 @pytest.mark.parametrize('field', ['GAMMA', 'GAMMA_DAY'])
 @pytest.mark.parametrize('value', ['0', '1', '1.85'])
 def test_highlight_gamma_accepts_inherit_unity_and_override(form_class, field, value):
@@ -73,7 +98,8 @@ def test_percentage_defaults_and_fine_tuning_fit_rendered_input_steps(form_class
         form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__' + k: v for k, v in values.items()}))
         assert form.validate(), form.errors
         for key in ('FULL_TARGET', 'FULL_DEV', 'ANY_TARGET', 'ANY_DEV',
-                    'OUTPUT_FULL_TARGET', 'OUTPUT_FULL_DEV', 'OUTPUT_ANY_TARGET', 'OUTPUT_ANY_DEV'):
+                    'OUTPUT_FULL_TARGET', 'OUTPUT_FULL_DEV', 'OUTPUT_ANY_TARGET', 'OUTPUT_ANY_DEV',
+                    'TWILIGHT_STAR_ALLOWANCE', 'TWILIGHT_MOON_ALLOWANCE_50', 'TWILIGHT_MOON_ALLOWANCE_FULL'):
             field = form['HIGHLIGHT_PROTECTION__' + key]
             attributes = dict(re.findall(r'(\w+)="([^"]*)"', str(field())))
             # HTML number-input steps are anchored at min (or the initial value
@@ -138,7 +164,10 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
     payload.update(HIGHLIGHT_PROTECTION__ENABLE=True, HIGHLIGHT_PROTECTION__FULL_TARGET=0.9,
                    HIGHLIGHT_PROTECTION__OUTPUT_ENABLE=True, HIGHLIGHT_PROTECTION__OUTPUT_ANY_DEV=0.25,
                    HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85,
-                   HIGHLIGHT_PROTECTION__FRINGE_REDUCTION=True)
+                   HIGHLIGHT_PROTECTION__FRINGE_REDUCTION=True,
+                   HIGHLIGHT_PROTECTION__TWILIGHT_STAR_ALLOWANCE=.02,
+                   HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_50=.7,
+                   HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_FULL=2.4)
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-highlight-fields', 'exec'),
          {'self': view, 'request': SimpleNamespace(json=payload)})
     assert config['TARGET_ADU'] == 70
@@ -155,7 +184,11 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
         assert form.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION.data is True
     # A configuration tab opened before the upgrade does not supply new fields.
     # Saving it must neither fail nor switch off an already-enabled feature.
-    old_payload = {key: value for key, value in payload.items() if key != 'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION'}
+    old_payload = {key: value for key, value in payload.items()
+                   if key != 'HIGHLIGHT_PROTECTION__FRINGE_REDUCTION'
+                   and key not in ('HIGHLIGHT_PROTECTION__TWILIGHT_STAR_ALLOWANCE',
+                                   'HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_50',
+                                   'HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_FULL')}
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-old-form', 'exec'),
          {'self': view, 'request': SimpleNamespace(json=old_payload)})
     assert eval(load, {'self': view}) == payload
