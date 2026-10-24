@@ -255,8 +255,23 @@ class IndiAllSky_Exposure_Base(object):
         if twilight_active and math.isfinite(measurement.adu) and measurement.adu > 0:
             forecast = 1.0
             threatened = False
+            channels = (measurement.twilight_blue, measurement.twilight_green, measurement.twilight_red)
+            raw_channels = (measurement.twilight_blue_raw, measurement.twilight_green_raw, measurement.twilight_red_raw)
+            ceiling = settings.get('THRESHOLD', 99.0) / 100.0
+            raw_ceiling = min(ceiling, .99)
+            quantum = measurement.twilight_quantum
+            if not math.isfinite(quantum) or not 0 < quantum <= 1:
+                quantum = 0
+            channels = tuple(value if quantum and math.isfinite(value) and math.isfinite(raw)
+                             and 0 < value < ceiling and 0 < raw < raw_ceiling else 0
+                             for value, raw in zip(channels, raw_channels))
+            warning = (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
+                       or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4))
+            channel_threatened = [warning and math.isfinite(value) and math.isfinite(raw)
+                                  and 0 < value < ceiling and ceiling / MAX_EXPOSURE_INCREASE <= raw < raw_ceiling
+                                  for value, raw in zip(channels, raw_channels)]
             if twilight_prediction_previous is not None and twilight_prediction_previous[0] == mode:
-                _, old_time, old_adu, old_exposure, old_gain, old_threatened = twilight_prediction_previous
+                _, old_time, old_adu, old_exposure, old_gain, old_channels, old_quantum, old_channel_threatened, old_threatened = twilight_prediction_previous
                 elapsed = measurement.twilight_time - old_time
                 change = self._highlight_signal_change(exposure, gain, old_exposure, old_gain)
                 if change is not None and 0 < elapsed <= max(120, 5 * cadence):
@@ -264,9 +279,27 @@ class IndiAllSky_Exposure_Base(object):
                     # areas certify headroom; their size is not signal growth.
                     growth = max(0.0, math.log(measurement.adu / old_adu) - change) / elapsed
                     forecast = math.exp(min(math.log(2), growth * 2 * cadence))
+                    for index, (value, old_value, raw) in enumerate(zip(channels, old_channels, raw_channels)):
+                        if (quantum and quantum == old_quantum and math.isfinite(value) and math.isfinite(old_value)
+                                and math.isfinite(raw) and 0 < raw < raw_ceiling
+                                and 0 < value < ceiling and 0 < old_value < ceiling):
+                            # Calibrated colour tails supply a scene trend; raw
+                            # headroom excludes clipped plateaus and keeps faint
+                            # fast-growing channels from taking over the reserve.
+                            difference = math.log(value / old_value) - change
+                            # Ignore the paired one-code quantile uncertainties;
+                            # otherwise a static Moon can acquire a false slope.
+                            noise = quantum / value + old_quantum / old_value
+                            growth = difference / elapsed if difference > noise else 0.0
+                            channel_forecast = math.exp(min(math.log(2), growth * 2 * cadence))
+                            projected = raw + value * (channel_forecast - 1)
+                            if (growth > 0 and (old_channel_threatened[index] or channel_threatened[index]
+                                                or (warning and projected >= ceiling))):
+                                # Track a previously threatened colour through
+                                # headroom recovery until its scene stops rising.
+                                channel_threatened[index] = True
+                                forecast = max(forecast, channel_forecast)
                     threatened = old_threatened and forecast > 1.000001
-            warning = (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
-                       or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4))
             threatened |= warning
             if threatened:
                 # Start with a small reserve and allow a 10% early cut as dawn
@@ -288,10 +321,13 @@ class IndiAllSky_Exposure_Base(object):
                                 forecast, twilight_prediction_limit)
                 else:
                     threatened = False
+            if not threatened:
+                channel_threatened = [False] * 3
             if twilight_prediction_previous is not None and measurement.twilight_time <= twilight_prediction_previous[1]:
                 self._twilight_prediction_previous = twilight_prediction_previous
             else:
-                self._twilight_prediction_previous = (mode, measurement.twilight_time, measurement.adu, exposure, gain, threatened)
+                self._twilight_prediction_previous = (mode, measurement.twilight_time, measurement.adu, exposure, gain,
+                                                     channels, quantum, tuple(channel_threatened), threatened)
         else:
             self._twilight_prediction_previous = None
         if twilight_active and measurement.twilight_peak > 0:

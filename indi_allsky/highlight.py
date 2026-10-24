@@ -35,6 +35,15 @@ class HighlightMeasurement(NamedTuple):
     twilight_peak: float = 0.0
     twilight_weight: float = 0.0
     twilight_time: float = 0.0
+    # Calibrated colour-tail intensities; zero means unavailable or raw-clipped.
+    twilight_blue: float = 0.0
+    twilight_green: float = 0.0
+    twilight_red: float = 0.0
+    # Retain uncensored pre-dark levels for genuine channel headroom.
+    twilight_blue_raw: float = 0.0
+    twilight_green_raw: float = 0.0
+    twilight_red_raw: float = 0.0
+    twilight_quantum: float = 0.0
 
 
 class HighlightOutput:

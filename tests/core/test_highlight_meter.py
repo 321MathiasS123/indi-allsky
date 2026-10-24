@@ -218,23 +218,30 @@ def worker():
 
 
 @pytest.mark.parametrize('failure', [False, True])
-def test_forward_retains_original_and_suppresses_later_control_even_on_failure(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('channels', [{}, {'twilight_blue': .92, 'twilight_green': .7, 'twilight_red': .4,
+                                         'twilight_blue_raw': .94, 'twilight_green_raw': .72, 'twilight_red_raw': .41,
+                                         'twilight_quantum': 1 / 65535}])
+def test_forward_retains_original_and_suppresses_later_control_even_on_failure(tmp_path, monkeypatch, failure, channels):
     import indi_allsky.highlight_meter as module
     monkeypatch.setattr(module.time, 'time', lambda: 101.)
     original = tmp_path / 'original.fit'
     original.write_bytes(b'original camera data')
     meter = worker()
+    measurement = HighlightMeasurement(0, 0, 30, **channels)
     if failure:
         meter.meter = Mock(side_effect=RuntimeError('calibration unavailable'))
     else:
-        meter.meter = Mock(return_value=(HighlightMeasurement(0, 0, 30), 'metered', False, False))
+        meter.meter = Mock(return_value=(measurement, 'metered', False, False))
     capture = job(filename=str(original))
     meter.forward(capture)
     forwarded = meter.image_q.get_nowait()
     assert forwarded is capture
     assert original.read_bytes() == b'original camera data'
     assert forwarded['highlight_control']['status'] == ('metering failed' if failure else 'metered')
-    assert forwarded['highlight_control']['measurement'] == (None if failure else tuple(HighlightMeasurement(0, 0, 30)))
+    payload = forwarded['highlight_control']['measurement']
+    assert payload == (None if failure else tuple(measurement))
+    if not failure:
+        assert HighlightMeasurement(*payload) == measurement
     assert meter.image_q.empty()
 
 
@@ -264,7 +271,10 @@ def test_raw_pending_guard_survives_output_bypass_and_recovers_on_actual_capture
 
 
 @pytest.mark.parametrize('mode_changes,finishes_at', [(False, 101), (True, 101), (False, 121)])
-def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mode(monkeypatch, mode_changes, finishes_at):
+@pytest.mark.parametrize('channels', [{}, {'twilight_blue': .92, 'twilight_green': .7, 'twilight_red': .4,
+                                         'twilight_blue_raw': .94, 'twilight_green_raw': .72, 'twilight_red_raw': .41,
+                                         'twilight_quantum': 1 / 65535}])
+def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mode(monkeypatch, mode_changes, finishes_at, channels):
     import indi_allsky.highlight_meter as module
     monkeypatch.setattr(module.time, 'time', lambda: finishes_at)
     meter = worker()
@@ -284,7 +294,7 @@ def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mo
     meter.controller.apply_transition_limits = Mock(side_effect=locked_limits)
     events = []
     reference = SimpleNamespace(asi676mc_repair_result=None, libcamera_black_level=0)
-    measurement = HighlightMeasurement(1, 2, 200)
+    measurement = HighlightMeasurement(1, 2, 200, **channels)
 
     def raw_meter():
         events.append('raw')
@@ -307,7 +317,7 @@ def test_meter_orders_raw_clipping_before_calibration_and_commands_only_fresh_mo
     monkeypatch.setitem(sys.modules, 'indi_allsky.flask.models', SimpleNamespace(IndiAllSkyDbCameraTable=table))
     result, status, _, _ = meter.meter(job(), 0)
     assert events == ['astro', 'decode', 'repair', 'raw', 'calibrate', 'holes', 'debayer', 'calibrated ADU']
-    assert result == HighlightMeasurement(1, 2, 20)
+    assert result == measurement._replace(adu=20)
     fresh = not mode_changes and finishes_at <= 120
     assert meter.controller.compare_highlights.call_count == int(fresh)
     assert meter.controller.apply_transition_limits.call_count == int(fresh)
