@@ -1647,10 +1647,18 @@ class ImageProcessor(object):
         if (measurement is None or not settings.get('ENABLE', False)
                 or not settings.get('TWILIGHT_ENABLE', False)):
             return measurement
-        from .highlight_twilight import capture_twilight, capture_moon, clipping_budget, measure_ring
+        from .highlight_twilight import capture_twilight, capture_moon, clipping_budget, measure_ring, measure_channels
         weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
         if not weight:
             return measurement._replace(twilight_time=midpoint)
+        channel_levels = measure_channels(data, self._adu_mask_dict[i_ref.binning], bit_depth, self.config)
+        # Recorded plateaus can stop just below full code range (65534/65520).
+        # Keep a conservative trend certificate even at a 100% clipping setting.
+        cutoff = min(settings.get('THRESHOLD', 99.0), 99.0) / 100.0
+        channel_levels = tuple(level if 0 < level < cutoff else 0.0 for level in channel_levels)
+        measurement = measurement._replace(twilight_quantum=1 / ((1 << bit_depth) - 1), **dict(zip(
+            ('twilight_blue', 'twilight_green', 'twilight_red',
+             'twilight_blue_raw', 'twilight_green_raw', 'twilight_red_raw'), channel_levels * 2)))
         phase, altitude = capture_moon(i_ref.exp_date, i_ref.exposure, self.position_av)
         allowance = clipping_budget(phase, altitude, self.config)
         # Follow the actual crop, rotation and lens offsets before scale/borders.
@@ -1685,6 +1693,22 @@ class ImageProcessor(object):
         # for the exposure controller's ADU target and shadow-lift limit.
         i_ref = self.getLatestImage()
         data = i_ref.opencv_data
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        fields = ('twilight_blue', 'twilight_green', 'twilight_red')
+        if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
+                and measurement.twilight_weight > 0 and any(getattr(measurement, field) for field in fields)):
+            from .highlight_twilight import measure_channels
+            channel_data = data
+            if data.ndim == 2:
+                bayer_pattern = self.config.get('CFA_PATTERN') or getattr(i_ref, 'image_bayerpat', None)
+                if bayer_pattern:
+                    # Colour metering must remain independent of display grayscale.
+                    channel_data = cv2.cvtColor(i_ref.hdulist[0].data, self.__cfa_bgr_map[bayer_pattern])
+            levels = measure_channels(channel_data, self._adu_mask_dict[i_ref.binning],
+                                      min(self.max_bit_depth, i_ref.image_bitpix), self.config)
+            measurement = measurement._replace(**{
+                field: level if getattr(measurement, field) > 0 else 0.0
+                for field, level in zip(fields, levels)})
         if data.ndim == 3:
             data = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
         bit_depth = min(self.max_bit_depth, i_ref.image_bitpix)

@@ -2,6 +2,50 @@
 import math
 
 import numpy
+import cv2
+
+
+def measure_channels(data, mask, bit_depth, config):
+    """Normalized BGR tail levels for forecasting, not a clipping-area policy.
+
+    Omit the total area allowed by the existing any-channel upper limit. Tiny
+    sources below that area cannot dominate this statistic. The caller rejects
+    raw-censored levels before replacing eligible values with calibrated ones;
+    a clipped plateau cannot certify that the scene stopped brightening.
+    """
+    unavailable = (0.0, 0.0, 0.0)
+    if (not isinstance(data, numpy.ndarray) or not data.size
+            or data.dtype not in (numpy.uint8, numpy.uint16)
+            or data.ndim != 3 or data.shape[2] != 3
+            or not isinstance(mask, numpy.ndarray) or mask.shape != data.shape[:2]
+            or mask.dtype.kind not in 'buif' or not numpy.isfinite(mask).all()):
+        return unavailable
+    try:
+        depth = int(bit_depth)
+        settings = config.get('HIGHLIGHT_PROTECTION', {})
+        fraction = (float(settings.get('ANY_TARGET', 2.0))
+                    + float(settings.get('ANY_DEV', 0.4))) / 100.0
+        if (depth != bit_depth or not 1 <= depth <= numpy.iinfo(data.dtype).bits
+                or not math.isfinite(fraction) or not 0 < fraction < 1):
+            return unavailable
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return unavailable
+    valid = numpy.asarray(mask != 0, dtype=numpy.uint8)
+    count = cv2.countNonZero(valid)
+    if not count:
+        return unavailable
+    maximum = (1 << depth) - 1
+    rank = count - 1 - int(count * fraction)
+    result = []
+    for channel in range(3):
+        histogram = cv2.calcHist([data], [channel], valid, [maximum + 1], [0, maximum + 1]).ravel()
+        # Out-of-range samples cannot provide a trustworthy source trend.
+        if int(histogram.sum()) != count:
+            result.append(0.0)
+            continue
+        value = int(numpy.searchsorted(numpy.cumsum(histogram), rank + 1))
+        result.append(value / maximum)
+    return tuple(result)
 
 
 def capture_twilight(exp_date, exposure, position):

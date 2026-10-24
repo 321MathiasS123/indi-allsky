@@ -148,7 +148,7 @@ def test_invalid_ring_geometry_keeps_whole_image_prediction_available(highlight_
     expected = measure(raw, highlight_processor._adu_mask_dict[1], 16)
     result = highlight_processor.measure_highlights()
     assert expected.any == 0 and expected.any_next > 1.3
-    assert result == expected._replace(twilight_weight=1., twilight_time=100.)
+    assert result == expected._replace(twilight_weight=1., twilight_time=100., twilight_quantum=1 / 65535)
 
 
 def test_moon_budget_uses_capture_context_instead_of_delayed_renderer_state(highlight_processor, monkeypatch):
