@@ -140,12 +140,15 @@ def test_valid_black_ring_retains_solar_strength_for_smooth_recovery(highlight_p
     assert result.twilight_weight == 1 and result.twilight_time == 100
 
 
-def test_invalid_optional_geometry_only_retains_capture_midpoint(highlight_processor, monkeypatch):
+def test_invalid_ring_geometry_keeps_whole_image_prediction_available(highlight_processor, monkeypatch):
     raw = broad_horizon()
+    raw[224:236, 244:256] = 61000
     prepare(highlight_processor, raw, LENS_IMAGE_CIRCLE=0)
     monkeypatch.setattr(highlight_twilight, 'capture_twilight', lambda *args: (1., 100.))
-    expected = measure(raw, highlight_processor._adu_mask_dict[1], 16)._replace(twilight_time=100.)
-    assert highlight_processor.measure_highlights() == expected
+    expected = measure(raw, highlight_processor._adu_mask_dict[1], 16)
+    result = highlight_processor.measure_highlights()
+    assert expected.any == 0 and expected.any_next > 1.3
+    assert result == expected._replace(twilight_weight=1., twilight_time=100.)
 
 
 def test_moon_budget_uses_capture_context_instead_of_delayed_renderer_state(highlight_processor, monkeypatch):
