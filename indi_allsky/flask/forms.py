@@ -4690,7 +4690,7 @@ class IndiAllskyConfigForm(FlaskForm):
     TARGET_ADU_DEV                   = IntegerField('Target ADU Deviation (night)', validators=[DataRequired(), TARGET_ADU_DEV_validator])
     TARGET_ADU_DEV_DAY               = IntegerField('Target ADU Deviation (day)', validators=[DataRequired(), TARGET_ADU_DEV_DAY_validator])
     HIGHLIGHT_PROTECTION__ENABLE     = BooleanField('Highlight protection (experimental)')
-    HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE = BooleanField('Protect twilight horizon')
+    HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE = BooleanField('Protect twilight highlights')
     HIGHLIGHT_PROTECTION__TWILIGHT_STAR_ALLOWANCE = FloatField('Stars allowance (% of ring)', default=0.1, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_50 = FloatField('50% Moon allowance (% of ring)', default=1.8, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))
     HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_FULL = FloatField('Full Moon allowance (% of ring)', default=24.0, validators=[HIGHLIGHT_TWILIGHT_ALLOWANCE_validator, NumberRange(min=0, max=50)], widget=NumberInput(step=0.01))

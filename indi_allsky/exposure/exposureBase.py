@@ -180,6 +180,7 @@ class IndiAllSky_Exposure_Base(object):
         self._highlight_mode = None
         self._highlight_slew = None
         self._twilight_previous = None
+        self._twilight_prediction_previous = None
         self._twilight_slew_state = None
 
 
@@ -193,6 +194,7 @@ class IndiAllSky_Exposure_Base(object):
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
         mode = tuple(self.night_av)
         twilight_previous = self._twilight_previous
+        twilight_prediction_previous = self._twilight_prediction_previous
         twilight_slew = self._twilight_slew_state
         cadence = max(exposure, self.config.get('EXPOSURE_PERIOD' if night else 'EXPOSURE_PERIOD_DAY', 15), 0.001)
         twilight_enabled = settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
@@ -249,6 +251,49 @@ class IndiAllSky_Exposure_Base(object):
             reason += ' + ' + output_reason
             response_target = None  # Output constraints retain their own bounds.
         twilight_needed = False
+        twilight_prediction_limit = None
+        if twilight_active and math.isfinite(measurement.adu) and measurement.adu > 0:
+            forecast = 1.0
+            threatened = False
+            if twilight_prediction_previous is not None and twilight_prediction_previous[0] == mode:
+                _, old_time, old_adu, old_exposure, old_gain, old_threatened = twilight_prediction_previous
+                elapsed = measurement.twilight_time - old_time
+                change = self._highlight_signal_change(exposure, gain, old_exposure, old_gain)
+                if change is not None and 0 < elapsed <= max(120, 5 * cadence):
+                    # Only linear ADU supplies a time trend. Predicted patch
+                    # areas certify headroom; their size is not signal growth.
+                    growth = max(0.0, math.log(measurement.adu / old_adu) - change) / elapsed
+                    forecast = math.exp(min(math.log(2), growth * 2 * cadence))
+                    threatened = old_threatened and forecast > 1.000001
+            warning = (measurement.full_next > settings.get('FULL_TARGET', 0.8) + settings.get('FULL_DEV', 0.2)
+                       or measurement.any_next > settings.get('ANY_TARGET', 2.0) + settings.get('ANY_DEV', 0.4))
+            threatened |= warning
+            if threatened:
+                # Start with a small reserve and allow a 10% early cut as dawn
+                # brightens. Ordinary clipping retains its stronger backstop.
+                # Keep this whole-image reserve inside the normal shadow floor.
+                floor = target / 2 ** settings.get('MAX_BOOST', 2.0)
+                if measurement.adu > floor * 1.02:
+                    # Once headroom is restored, track continuing dawn growth
+                    # instead of immediately undoing protection with recovery.
+                    # Static sources and fading scenes do not retain this hold.
+                    limit = max(0.9, 0.95 / forecast if warning else 1 / math.sqrt(forecast),
+                                floor / measurement.adu)
+                    twilight_prediction_limit = math.exp(measurement.twilight_weight * math.log(limit))
+                    reason += ' + twilight predicted clipping'
+                    # Rendering already leaves signal above target unlifted;
+                    # engaging now lets it compensate subsequent protected cuts.
+                    twilight_needed = True
+                    logger.info('Twilight whole-image headroom: forecast %.3fx; source signal ceiling %.3fx',
+                                forecast, twilight_prediction_limit)
+                else:
+                    threatened = False
+            if twilight_prediction_previous is not None and measurement.twilight_time <= twilight_prediction_previous[1]:
+                self._twilight_prediction_previous = twilight_prediction_previous
+            else:
+                self._twilight_prediction_previous = (mode, measurement.twilight_time, measurement.adu, exposure, gain, threatened)
+        else:
+            self._twilight_prediction_previous = None
         if twilight_active and measurement.twilight_peak > 0:
             forecast = 1.0
             if twilight_previous is not None and twilight_previous[0] == mode:
@@ -268,7 +313,7 @@ class IndiAllSky_Exposure_Base(object):
                 reason += ' + twilight horizon'
                 response_target = None
                 clipping_urgency = 1.0  # Pending-command easing must not weaken this ceiling.
-            twilight_needed = measurement.twilight_peak * forecast >= 0.88 and measurement.adu < target - deviation
+            twilight_needed |= measurement.twilight_peak * forecast >= 0.88 and measurement.adu < target - deviation
             if twilight_previous is not None and twilight_previous[0] == mode and measurement.twilight_time <= twilight_previous[1]:
                 self._twilight_previous = twilight_previous
             else:
@@ -291,13 +336,14 @@ class IndiAllSky_Exposure_Base(object):
         # Keep existing status/telemetry fields useful without the ADU history
         # delay. The reason string and requested multiplier are logged once here.
         self._current_adu_target = measurement.adu
-        self.target_adu_found = scale == 1.0
+        self.target_adu_found = scale == 1.0 and twilight_prediction_limit is None
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
-        if scale != 1.0 and not twilight_duplicate:
+        if (scale != 1.0 or twilight_prediction_limit is not None) and not twilight_duplicate:
             self._set_exposure(exposure, gain, exposure * scale, highlight=True,
                                previous_scale=previous_scale, response_target=response_target,
                                clipping_urgency=clipping_urgency,
+                               twilight_prediction_limit=twilight_prediction_limit,
                                twilight_slew=self._twilight_slew_state is not None,
                                twilight_release=not twilight_active)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
@@ -316,7 +362,8 @@ class IndiAllSky_Exposure_Base(object):
                                           output_needed=self.highlight_output.active or twilight_needed)
         logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
                     self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
-        self._highlight_slew = (mode, scale) if 0 < scale < 1 else None
+        request_scale = min(scale, twilight_prediction_limit) if twilight_prediction_limit is not None else scale
+        self._highlight_slew = (mode, request_scale) if 0 < request_scale < 1 else None
         return measurement.adu, measurement.adu
 
 
@@ -400,7 +447,8 @@ class IndiAllSky_Exposure_Base(object):
 
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None,
-                      response_target=None, clipping_urgency=0.0, twilight_slew=False, twilight_release=False):
+                      response_target=None, clipping_urgency=0.0, twilight_slew=False, twilight_release=False,
+                      twilight_prediction_limit=None):
         reducing = next_exposure < current_exposure
         scale = next_exposure / current_exposure if highlight else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
@@ -421,7 +469,11 @@ class IndiAllSky_Exposure_Base(object):
                         or (target_change > 0 and previous_change >= target_change)
                         or (target_change < 0 and previous_change <= target_change)):
                     logger.info('Highlight ADU target already covered by pending exposure/gain')
-                    return
+                    if twilight_prediction_limit is None:
+                        return
+                    # The ADU target can be covered while a newer twilight
+                    # headroom warning still needs a tighter source ceiling.
+                    target_change = previous_change
                 # Half the remaining logarithmic error gives proportional,
                 # diminishing steps even when the next capture is in flight.
                 # Anchor the target to the measured capture, never multiply an
@@ -435,7 +487,9 @@ class IndiAllSky_Exposure_Base(object):
                     change = min(change, math.log(scale))
                     if change <= previous_change + 1e-9:
                         logger.info('Highlight growth held: await pending exposure/gain headroom')
-                        return
+                        if twilight_prediction_limit is None:
+                            return
+                        change = previous_change
                 else:
                     if previous_change > 0:
                         # Cancel unmeasured growth immediately when the source
@@ -444,7 +498,9 @@ class IndiAllSky_Exposure_Base(object):
                         change = min(change, math.log(scale))
                     change = max(change, math.log(0.5))
                     if change >= previous_change - 1e-9:
-                        return
+                        if twilight_prediction_limit is None:
+                            return
+                        change = previous_change
                 response_exposure, response_gain, _, _ = self._calculate_exposure(
                     pending_exposure, pending_gain,
                     pending_exposure * math.exp(change - previous_change), highlight=True)
@@ -457,6 +513,22 @@ class IndiAllSky_Exposure_Base(object):
                     response_applied = True
                     logger.info('Highlight ADU response: target %.3fx captured signal; command %.3fx pending signal',
                                 response_target, math.exp(achieved))
+
+        if twilight_prediction_limit is not None:
+            # Apply the reserve to achieved signal AFTER proportional ADU
+            # easing. Comparing it with the abstract ADU scale would miss a
+            # half-error response that is still too gentle for a brightening sky.
+            change = self._highlight_signal_change(next_exposure, next_gain, current_exposure, current_gain)
+            if change is None or change > math.log(twilight_prediction_limit):
+                next_exposure, next_gain, _, _ = self._calculate_exposure(
+                    current_exposure, current_gain, current_exposure * twilight_prediction_limit, highlight=True)
+                exposure_delta = next_exposure - current_exposure
+                gain_delta = next_gain - current_gain
+                reducing = True
+                # The ceiling is tied to this capture. Preserve a newer pending
+                # cut below, and do not ease the protective reserve a second time.
+                response_applied = False
+                clipping_urgency = 1.0
 
         if pending and not reducing and response_target is not None and not response_applied:
             # Legacy gain ladders have no known signal conversion; retain the

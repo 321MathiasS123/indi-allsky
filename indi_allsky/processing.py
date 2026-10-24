@@ -1682,7 +1682,7 @@ class ImageProcessor(object):
         peak = measure_ring(ring_data, mask, bit_depth, self.config, i_ref.binning,
                             clipping_fraction=allowance, invalid=None)
         if peak is None:
-            return measurement._replace(twilight_time=midpoint)
+            return measurement._replace(twilight_weight=weight, twilight_time=midpoint)
         return measurement._replace(twilight_peak=peak, twilight_weight=weight,
                                     twilight_time=midpoint)
 
