@@ -820,13 +820,13 @@ class miscUpload(object):
             self.upload_q.put({'task_id' : latest_upload_task.id})
 
 
-    def upload_fits_image(self, fits_image_entry):
+    def upload_fits_image(self, fits_image_entry, timestamp=None):
         if not self.config.get('FILETRANSFER', {}).get('UPLOAD_FITS'):
             #logger.warning('FITS image uploading disabled')
             return
 
 
-        now = datetime.now()
+        now = datetime.now() if timestamp is None else datetime.fromtimestamp(timestamp)
 
         # Parameters for string formatting
         file_data_dict = {

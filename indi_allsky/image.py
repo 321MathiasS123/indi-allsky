@@ -32,6 +32,7 @@ from fractions import Fraction
 from . import constants
 from .capture_period import CaptureSequenceTracker, FrameTemperatureValues, failure_key, frame_mode, read_inflight, set_inflight
 from . import asi676mc
+from . import fits_save
 
 from .processing import ImageProcessor
 from .panorama import panoramaSourceCircleClipped
@@ -356,7 +357,8 @@ class ImageWorker(Process):
         if failed:
             logger.warning('Capture period %s is incomplete; generating end-of-period outputs from available images', marker['period_id'])
         # Reaching this FIFO item means the preceding processImage calls have
-        # completed their local file writes and database commits.
+        # completed their live-image writes and database commits. Background
+        # FITS saves precede these end jobs in the same producer's video FIFO.
         self.image_processor.realtimeKeogramDataSave()
         for item in marker['tasks']:
             self.video_q.put(item)
@@ -2070,7 +2072,36 @@ class ImageWorker(Process):
         image_height, image_width = data.shape[:2]
 
 
-        if self.config.get('IMAGE_SAVE_FITS_COMPRESSED'):
+        background_save = False
+        if self.config.get('IMAGE_SAVE_FITS_COMPRESSED') and self.video_q is not None:
+            try:
+                if fits_save.pending_count(self.image_dir) < fits_save.MAX_PENDING:
+                    background_save = True
+                else:
+                    logger.warning('Background FITS staging is full; saving synchronously to retain this frame')
+            except (OSError, ValueError):
+                logger.exception('Background FITS staging is unavailable; saving synchronously')
+
+        if background_save:
+            # Freeze every HDU at the existing pre-/post-dark save point. Only
+            # paths and captured metadata cross the background worker queue.
+            f_tmpfile = None
+            try:
+                f_tmpfile = tempfile.NamedTemporaryFile(
+                    mode='w+b', delete=False, suffix='.fit',
+                    dir=fits_save.pending_directory(self.image_dir),
+                )
+                i_ref.hdulist.writeto(f_tmpfile)
+            except (OSError, ValueError):
+                if f_tmpfile is not None:
+                    f_tmpfile.close()
+                    Path(f_tmpfile.name).unlink(missing_ok=True)
+                background_save = False
+                logger.exception('Unable to stage background FITS; saving synchronously')
+
+        if background_save:
+            fits_ext = 'fit.gz'
+        elif self.config.get('IMAGE_SAVE_FITS_COMPRESSED'):
             import gzip
 
             fits_image_buffer = io.BytesIO()
@@ -2093,8 +2124,9 @@ class ImageWorker(Process):
         tmpfile_p = Path(f_tmpfile.name)
 
 
-        fits_size_bytes = tmpfile_p.stat().st_size
-        logger.info('FITS image file size: %0.1f MB', fits_size_bytes / 1024 / 1024)
+        fits_size_bytes = None if background_save else tmpfile_p.stat().st_size
+        if fits_size_bytes is not None:
+            logger.info('FITS image file size: %0.1f MB', fits_size_bytes / 1024 / 1024)
 
 
         date_str = i_ref.exp_date.strftime('%Y%m%d_%H%M%S')
@@ -2152,6 +2184,39 @@ class ImageWorker(Process):
             fits_metadata['data'][
                 asi676mc.FITS_REPAIR_STATUS_METADATA_KEY
             ] = str(repair_result['status'])
+
+        if background_save:
+            jobdata = {
+                'action': 'saveFits',
+                'kwargs': {
+                    'source': str(tmpfile_p.relative_to(self.image_dir.resolve())),
+                    'filename': str(filename.relative_to(self.image_dir)),
+                    'camera_id': i_ref.camera_id,
+                    'metadata': fits_metadata,
+                    'upload_timestamp': time.time(),
+                },
+            }
+            task = IndiAllSkyDbTaskQueueTable(
+                queue=TaskQueueQueue.VIDEO,
+                state=TaskQueueState.QUEUED,
+                data=json.loads(json.dumps(jobdata)),
+            )
+            db.session.add(task)
+            try:
+                db.session.commit()
+            except Exception:
+                # A failed commit can have an uncertain outcome. Keep the
+                # snapshot rather than deleting a potentially admitted save.
+                logger.exception('Unable to admit background FITS save; snapshot retained at %s', tmpfile_p)
+                raise
+            try:
+                self.video_q.put({'task_id': task.id})
+            except Exception:
+                task.state = TaskQueueState.MANUAL
+                db.session.commit()
+                logger.exception('FITS save %d retained for background redispatch', task.id)
+            logger.info('Queued background FITS save %d: %s', task.id, filename)
+            return
 
         fits_entry = self._miscDb.addFitsImage(
             filename.relative_to(self.image_dir),

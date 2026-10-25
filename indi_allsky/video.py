@@ -22,6 +22,7 @@ from . import constants
 from . import asi676mc
 from . import asi676mc_calibration
 from . import customKeogram
+from . import fits_save
 
 from .timelapse import TimelapseGenerator
 from .timelapse_completion import record_media, completion_payload
@@ -222,6 +223,9 @@ class VideoWorker(Process):
     def saferun(self):
         #raise Exception('Test exception handling in worker')
 
+        with app.app_context():
+            self._resumeFitsSaves()
+
         while True:
             try:
                 v_dict = self.video_q.get(timeout=61)  # prime number
@@ -290,6 +294,66 @@ class VideoWorker(Process):
                 # Notification failure must not interrupt capture or later batches.
                 db.session.rollback()
                 logger.exception('Unable to queue timelapse completion notification')
+
+
+    def _resumeFitsSaves(self):
+        """Recover disk-backed saves before regular jobs after a worker restart."""
+        tasks = IndiAllSkyDbTaskQueueTable.query\
+            .filter(IndiAllSkyDbTaskQueueTable.queue == TaskQueueQueue.VIDEO)\
+            .filter(IndiAllSkyDbTaskQueueTable.data['action'].as_string() == 'saveFits')\
+            .filter(IndiAllSkyDbTaskQueueTable.state.in_((
+                TaskQueueState.QUEUED, TaskQueueState.RUNNING, TaskQueueState.SUCCESS,
+            )))\
+            .order_by(IndiAllSkyDbTaskQueueTable.id.asc()).all()
+        for task in tasks:
+            if task.state == TaskQueueState.SUCCESS:
+                # A crash immediately after the success commit may leave only
+                # its staging file. Do not let that consume a staging slot.
+                try:
+                    kwargs = task.data['kwargs']
+                    source = fits_save.source_path(self.image_dir, kwargs['source'])
+                    filename = fits_save.destination_path(self.image_dir, kwargs['filename'])
+                    if source.exists() and filename.exists():
+                        source.unlink()
+                except (KeyError, OSError, ValueError):
+                    logger.exception('Unable to clean completed FITS staging for task %d', task.id)
+                continue
+            task.setQueued()
+            self.processTask({'task_id': task.id})
+
+
+    def saveFits(self, task, source, filename, camera_id, metadata, upload_timestamp=None):
+        """Publish an immutable snapshot at the video worker's background priority."""
+        try:
+            source = fits_save.source_path(self.image_dir, source)
+            filename = fits_save.destination_path(self.image_dir, filename)
+            metadata = dict(metadata)
+            metadata['fileSize'] = fits_save.publish(source, filename)
+            relative_filename = str(filename.relative_to(self.image_dir.resolve()))
+            fits_entry = IndiAllSkyDbFitsImageTable.query.filter_by(
+                filename=relative_filename, camera_id=camera_id,
+            ).first()
+            if fits_entry is None:
+                fits_entry = self._miscDb.addFitsImage(
+                    Path(relative_filename), camera_id, metadata,
+                )
+            self._miscUpload.s3_upload_fits(fits_entry, metadata)
+            self._miscUpload.upload_fits_image(fits_entry, timestamp=upload_timestamp)
+            task.setSuccess('Saved FITS: {0:s}'.format(str(filename)))
+        except Exception as e:
+            db.session.rollback()
+            task.setFailed('FITS save failed; snapshot retained: {0:s}'.format(str(e))[:255])
+            logger.exception('Background FITS save %d failed; snapshot retained', task.id)
+            self._miscDb.addNotification(
+                NotificationCategory.WORKER, 'FitsSave',
+                'Background FITS saving failed; its uncompressed snapshot was retained.',
+                expire=timedelta(hours=4),
+            )
+            return
+        try:
+            source.unlink()
+        except OSError:
+            logger.exception('Unable to clean completed FITS staging for task %d', task.id)
 
 
     def _loadAsi676mcCalibrationDatabase(self, source_details, progress_callback):

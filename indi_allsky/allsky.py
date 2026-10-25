@@ -1773,6 +1773,12 @@ class IndiAllSky(object):
                 task_data['progress'] = progress
                 task.data = task_data
 
+            if (task.queue == TaskQueueQueue.VIDEO
+                    and (task.data or {}).get('action') == 'saveFits'):
+                # The immutable snapshot survives a daemon restart. The new
+                # video worker resumes it before consuming its regular FIFO.
+                task.state = TaskQueueState.QUEUED
+                continue
             logger.warning('Expiring orphaned task %d', task.id)
             task.state = TaskQueueState.EXPIRED
 
