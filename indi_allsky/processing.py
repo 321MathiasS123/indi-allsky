@@ -1649,17 +1649,22 @@ class ImageProcessor(object):
                 and settings.get('TWILIGHT_OUTPUT_ENABLE', False)):
             from .highlight_twilight import capture_twilight
             weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
-            if weight:
-                from .highlight_output import moon_region
-                region = moon_region(self.config, data.shape[:2], i_ref.binning,
-                                     i_ref.exp_date, i_ref.exposure, self.position_av,
-                                     getattr(i_ref, 'camera_uuid', ''), native=True)
-                if region is not None and mask is not None:
-                    masked = mask.copy()
-                    cv2.circle(masked, (round(region[0]), round(region[1])),
-                               int(math.ceil(region[2] * math.sqrt(weight))), 0, -1)
-                    if cv2.countNonZero(masked):
-                        mask = self._highlight_twilight_mask = masked
+        moon_weight = weight or 0.0
+        if settings.get('ENABLE', False) and settings.get('NIGHT_MOON_EXCLUSION_ENABLE', True):
+            from .highlight_output import night_moon_weight
+            moon_weight = max(moon_weight, night_moon_weight(
+                i_ref.exp_date, i_ref.exposure, self.position_av))
+        if moon_weight:
+            from .highlight_output import moon_region
+            region = moon_region(self.config, data.shape[:2], i_ref.binning,
+                                 i_ref.exp_date, i_ref.exposure, self.position_av,
+                                 getattr(i_ref, 'camera_uuid', ''), native=True)
+            if region is not None and mask is not None:
+                masked = mask.copy()
+                cv2.circle(masked, (round(region[0]), round(region[1])),
+                           int(math.ceil(region[2] * math.sqrt(moon_weight))), 0, -1)
+                if cv2.countNonZero(masked):
+                    mask = self._highlight_twilight_mask = masked
         measurement = measure(data, mask, bit_depth,
                               settings.get('THRESHOLD', 99.0))
         if (measurement is None or not settings.get('ENABLE', False)
@@ -1795,7 +1800,21 @@ class ImageProcessor(object):
                                          target=settings.get('TWILIGHT_OUTPUT_TARGET', 252))
                 return HighlightMeasurement(0, over * 100, 0, twilight_peak=peak,
                                             twilight_weight=weight, twilight_time=midpoint)
-        result = measure_rendered(self.image, self._highlight_output_mask)
+        output_mask = self._highlight_output_mask
+        if settings.get('ENABLE', False) and settings.get('NIGHT_MOON_EXCLUSION_ENABLE', True):
+            from .highlight_output import moon_region, night_moon_weight
+            moon_weight = night_moon_weight(i_ref.exp_date, i_ref.exposure, self.position_av)
+            if moon_weight:
+                region = moon_region(self.config, mask.shape, i_ref.binning,
+                                     i_ref.exp_date, i_ref.exposure, self.position_av,
+                                     getattr(i_ref, 'camera_uuid', ''))
+                if region is not None:
+                    masked = output_mask.copy()
+                    cv2.circle(masked, (round(region[0]), round(region[1])),
+                               int(math.ceil(region[2] * math.sqrt(moon_weight))), 0, -1)
+                    if cv2.countNonZero(masked):
+                        output_mask = masked
+        result = measure_rendered(self.image, output_mask)
         if result is None:
             logger.warning('Highlight output unavailable: empty or mismatched metering mask')
         return result

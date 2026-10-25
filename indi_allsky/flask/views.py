@@ -2631,6 +2631,7 @@ class ConfigView(FormView):
             'TARGET_ADU_DEV'                 : self.indi_allsky_config.get('TARGET_ADU_DEV', 10),
             'TARGET_ADU_DEV_DAY'             : self.indi_allsky_config.get('TARGET_ADU_DEV_DAY', 20),
             'HIGHLIGHT_PROTECTION__ENABLE'   : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('ENABLE', False),
+            'HIGHLIGHT_PROTECTION__NIGHT_MOON_EXCLUSION_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('NIGHT_MOON_EXCLUSION_ENABLE', True),
             'HIGHLIGHT_PROTECTION__TWILIGHT_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_ENABLE', False),
             'HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_OUTPUT_ENABLE', False),
             'HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET' : self.indi_allsky_config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_OUTPUT_TARGET', 252),
@@ -3728,6 +3729,7 @@ class AjaxConfigView(BaseView):
             key: convert(request.json['HIGHLIGHT_PROTECTION__' + key])
             for key, convert in (
                 ('ENABLE', bool), ('TWILIGHT_ENABLE', bool), ('FULL_TARGET', float), ('FULL_DEV', float),
+                ('NIGHT_MOON_EXCLUSION_ENABLE', bool),
                 ('TWILIGHT_OUTPUT_ENABLE', bool), ('TWILIGHT_OUTPUT_TARGET', int),
                 ('TWILIGHT_STAR_ALLOWANCE', float), ('TWILIGHT_MOON_ALLOWANCE_50', float), ('TWILIGHT_MOON_ALLOWANCE_FULL', float),
                 ('ANY_TARGET', float), ('ANY_DEV', float), ('THRESHOLD', float), ('MAX_BOOST', float),

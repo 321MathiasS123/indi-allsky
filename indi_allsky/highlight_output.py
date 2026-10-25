@@ -1,4 +1,4 @@
-"""Small display-tail meter and bounded Moon exception for optional twilight control.
+"""Small display-tail meter and bounded Moon exceptions for highlight control.
 
 The sparse geometry follows processing/VirtualSky without importing the lens
 solver's catalogue or eager Astropy initialization in the capture hot path.
@@ -79,6 +79,35 @@ def _geometry(config, shape, binning):
         raise ValueError('Invalid border')
     transform = np.array([[1., 0., left], [0., 1., top], [0., 0., 1.]]) @ transform
     return transform, (int(h+top+bottom), int(w+left+right)), preborder, pre_shape
+
+
+def night_moon_weight(exp_date, exposure, position):
+    """Fade the night Moon exception from Sun -16 to -18 degrees.
+
+    Use the geometric solar centre at the capture midpoint, independently of
+    rendering delay. Unusable capture context retains the existing safeguard.
+    """
+    import ephem
+
+    try:
+        latitude, longitude, elevation = map(float, position[:3])
+        exposure = float(exposure)
+        midpoint = float(exp_date.timestamp()) - exposure / 2
+        if (not all(math.isfinite(value) for value in (latitude, longitude, elevation, exposure, midpoint))
+                or not -90 <= latitude <= 90 or not -180 <= longitude <= 180
+                or exposure < 0 or not 0 <= midpoint <= 4102444800):
+            return 0.0
+        observer = ephem.Observer()
+        observer.lat, observer.lon = math.radians(latitude), math.radians(longitude)
+        observer.elevation, observer.pressure = elevation, 0
+        observer.date = datetime.fromtimestamp(midpoint, timezone.utc)
+        altitude = math.degrees(float(ephem.Sun(observer).alt))
+        if not math.isfinite(altitude):
+            return 0.0
+        strength = min(1.0, max(0.0, (-altitude - 16.0) / 2.0))
+        return strength * strength * (3.0 - 2.0 * strength)
+    except (AttributeError, IndexError, OSError, TypeError, ValueError, OverflowError):
+        return 0.0
 
 
 def moon_region(config, native_shape, binning, exp_date, exposure, position,
