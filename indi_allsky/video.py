@@ -185,8 +185,6 @@ class VideoWorker(Process):
 
         ### use this as a method to log uncaught exceptions
         try:
-            with app.app_context():
-                self._resumeFitsSaves()
             self.saferun()
         except Exception as e:
             tb = traceback.format_exc()
@@ -198,6 +196,9 @@ class VideoWorker(Process):
 
     def saferun(self):
         #raise Exception('Test exception handling in worker')
+
+        with app.app_context():
+            self._resumeFitsSaves()
 
         while True:
             try:

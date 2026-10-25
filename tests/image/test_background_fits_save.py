@@ -532,9 +532,11 @@ def test_video_fifo_finishes_queued_fits_before_period_job(tmp_path):
     ))
     video.video_q = video_queue
     video._shutdown = False
+    video._resumeFitsSaves = Mock()
     video.processTask = process
 
     methods.saferun(video)
+    video._resumeFitsSaves.assert_called_once()
 
     assert events[-1] == 'period-end job'
     assert video_queue.empty()
