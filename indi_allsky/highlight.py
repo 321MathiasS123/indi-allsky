@@ -44,6 +44,9 @@ class HighlightMeasurement(NamedTuple):
     twilight_green_raw: float = 0.0
     twilight_red_raw: float = 0.0
     twilight_quantum: float = 0.0
+    # An applied, localized night Moon mask and its actual excluded clipping.
+    night_moon_weight: float = 0.0
+    night_moon_clipped: float = 0.0
 
 
 class HighlightOutput:
@@ -220,12 +223,13 @@ class HighlightTransition:
     def phase(self):
         return 'protected' if self.active else ('releasing' if self.lift or self.gamma_mix else 'normal')
 
-    def observe(self, measurement, target, deviation, settings, pending, ceiling, predicted_block, output_needed=False):
+    def observe(self, measurement, target, deviation, settings, pending, ceiling, predicted_block,
+                output_needed=False, compensation_needed=False):
         """Decide activity from the calibrated capture, never a rendered stack."""
         self.trusted = True
         full_low = settings.get('FULL_TARGET', 0.8) - settings.get('FULL_DEV', 0.2)
         any_low = settings.get('ANY_TARGET', 2.0) - settings.get('ANY_DEV', 0.4)
-        needed = output_needed or measurement.full > full_low or measurement.any > any_low or (predicted_block and not ceiling)
+        needed = compensation_needed or output_needed or measurement.full > full_low or measurement.any > any_low or (predicted_block and not ceiling)
         headroom = (measurement.full_next is not None and measurement.any_next is not None
                     and measurement.full_next <= full_low and measurement.any_next <= any_low)
         clear = measurement.full <= full_low * 0.9 and measurement.any <= any_low * 0.9
@@ -234,7 +238,8 @@ class HighlightTransition:
                 # Start from the current appearance, including a partial release.
                 self.reference = None
             self.active = True
-            self.reason = 'output protection needed' if output_needed else 'clipping protection needed'
+            self.reason = ('night Moon exposure preference' if compensation_needed else
+                           ('output protection needed' if output_needed else 'clipping protection needed'))
         elif self.active:
             if pending:
                 self.reason = 'await pending exposure/gain'

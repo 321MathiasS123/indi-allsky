@@ -8,6 +8,7 @@ from ..utils import IndiAllSkyExposureUtils
 from ..gain import gain_limits, quantize_gain
 from ..highlight import MAX_EXPOSURE_INCREASE, HighlightOutput, HighlightTransition, exposure_decision
 from ..highlight_output_control import TwilightOutputControl
+from ..highlight_night import NightExposurePreference
 
 
 logger = logging.getLogger('indi_allsky')
@@ -34,6 +35,7 @@ class IndiAllSky_Exposure_Base(object):
         self.highlight_transition = HighlightTransition()
         self.highlight_output = HighlightOutput()
         self.twilight_output = TwilightOutputControl()
+        self.night_preference = NightExposurePreference()
         self.reset_highlights()
 
 
@@ -150,7 +152,7 @@ class IndiAllSky_Exposure_Base(object):
         self._set_exposure(current_exposure, current_gain, next_exposure)
 
 
-    def reset_highlights(self):
+    def reset_highlights(self, preserve_night=False):
         """Discard correction history after a mode change or unusable capture."""
         self._highlight_reduction = 0.0
         self._highlight_previous_reduction = 0.0
@@ -160,6 +162,8 @@ class IndiAllSky_Exposure_Base(object):
         self._twilight_previous = None
         self._twilight_prediction_previous = None
         self._twilight_slew_state = None
+        if not preserve_night:
+            self.night_preference.reset()
 
 
     def compare_highlights(self, measurement, exposure, gain):
@@ -188,7 +192,7 @@ class IndiAllSky_Exposure_Base(object):
         previous_scale = (self._highlight_slew[1] if self._highlight_slew is not None
                           and self._highlight_slew[0] == mode else None)
         if mode != self._highlight_mode:
-            self.reset_highlights()
+            self.reset_highlights(preserve_night=True)
         self._highlight_mode = mode
         scale, reason = exposure_decision(measurement, target, deviation, settings)
         # ADU is linear signal, unlike clipped patch area. Retain its absolute
@@ -215,7 +219,7 @@ class IndiAllSky_Exposure_Base(object):
             self._highlight_reduction = reduction
             scale = 1.0 - reduction
         else:
-            self.reset_highlights()
+            self.reset_highlights(preserve_night=True)
         # Crossing a clipping limit must not weaken an ADU correction. Apply
         # this after clipping's smoothing so the ordinary brightness ceiling
         # still wins when it calls for the stronger (bounded) reduction.
@@ -223,6 +227,17 @@ class IndiAllSky_Exposure_Base(object):
             adu_scale = max(0.9, (target + deviation) / measurement.adu)
             if adu_scale < scale:
                 scale, reason = adu_scale, reason + ' + ADU above band'
+        night_active = self.night_preference.update(measurement, mode, settings)
+        if night_active:
+            night_scale = self.night_preference.constrain(self, measurement, exposure, gain, target, deviation, scale)
+            night_active = night_scale is not None
+            if night_active:
+                scale = night_scale
+                if measurement.adu <= target + deviation:
+                    response_target = None
+                reason += ' + night Moon exposure preference'
+                logger.info('Night Moon exposure preference: configured maximum %.6fs; minimum gain %.3f; source signal %.3fx',
+                            self.exposure_max, self.gain_min, scale)
         twilight_output_active = twilight_active and settings.get('TWILIGHT_OUTPUT_ENABLE', False)
         scale, output_reason = ((scale, None) if twilight_output_active else self.highlight_output.constrain(
             scale, measurement.adu, target, deviation, exposure, gain, mode, settings))
@@ -369,13 +384,17 @@ class IndiAllSky_Exposure_Base(object):
         self.target_adu_found = scale == 1.0 and twilight_prediction_limit is None
         logger.info('Highlight patches (pre-dark): full %.3f%%, any %.3f%%; calibrated ADU %.2f; exposure request %.3fx; reason: %s',
                     measurement.full, measurement.any, measurement.adu, scale, reason)
-        if (scale != 1.0 or twilight_prediction_limit is not None) and not twilight_duplicate:
+        night_reallocate = (night_active and exposure < self.exposure_max - .0000005
+                            and gain > self.gain_min + .0005)
+        if (scale != 1.0 or twilight_prediction_limit is not None or night_reallocate) and not twilight_duplicate and not (
+                night_active and self.night_preference.duplicate):
             self._set_exposure(exposure, gain, exposure * scale, highlight=True,
                                previous_scale=previous_scale, response_target=response_target,
                                clipping_urgency=clipping_urgency,
                                twilight_prediction_limit=twilight_prediction_limit,
                                twilight_slew=self._twilight_slew_state is not None,
-                               twilight_release=not twilight_active)
+                               twilight_release=not twilight_active,
+                               night_preference=night_active)
             if self._expUtils.EXPOSURE_NEXT == exposure and self._expUtils.GAIN_NEXT == gain:
                 logger.info('Highlight adjustment limited by exposure/gain settings')
         elif scale == 1.0 and not twilight_active and not self._highlight_request_pending(exposure, gain):
@@ -389,7 +408,8 @@ class IndiAllSky_Exposure_Base(object):
         ceiling = next_exposure <= exposure + 0.0000005 and next_gain <= gain + 0.0005
         self.highlight_transition.observe(measurement, target, deviation, settings,
                                           self._highlight_request_pending(exposure, gain), ceiling, predicted_block,
-                                          output_needed=self.highlight_output.active or twilight_needed)
+                                          output_needed=self.highlight_output.active or twilight_needed,
+                                          compensation_needed=night_active)
         logger.info('Highlight rendering control: %s; %s; predicted +10%% patches: full %.3f%%, any %.3f%%',
                     self.highlight_transition.phase, self.highlight_transition.reason, measurement.full_next, measurement.any_next)
         request_scale = min(scale, twilight_prediction_limit) if twilight_prediction_limit is not None else scale
@@ -478,7 +498,7 @@ class IndiAllSky_Exposure_Base(object):
 
     def _set_exposure(self, current_exposure, current_gain, next_exposure, highlight=False, previous_scale=None,
                       response_target=None, clipping_urgency=0.0, twilight_slew=False, twilight_release=False,
-                      twilight_prediction_limit=None):
+                      twilight_prediction_limit=None, night_preference=False):
         reducing = next_exposure < current_exposure
         scale = next_exposure / current_exposure if highlight else 1.0
         next_exposure, next_gain, exposure_delta, gain_delta = self._calculate_exposure(current_exposure, current_gain, next_exposure, highlight)
@@ -633,6 +653,21 @@ class IndiAllSky_Exposure_Base(object):
                     logger.info('Twilight signal slew: %.3fx newest pending exposure/gain', math.exp(limited_change))
             elif twilight_release:
                 self._twilight_slew_state = None
+
+        if night_preference:
+            if pending:
+                previous = self._highlight_signal_change(
+                    self._expUtils.EXPOSURE_NEXT, self.effective_gain(self._expUtils.GAIN_NEXT),
+                    current_exposure, current_gain)
+                change = self._highlight_signal_change(
+                    next_exposure, next_gain, self._expUtils.EXPOSURE_NEXT,
+                    self.effective_gain(self._expUtils.GAIN_NEXT))
+                if previous is not None and previous < -1e-9 and change is not None and change > 1e-9:
+                    logger.info('Night preference held: keeping stronger pending exposure/gain')
+                    return
+            next_exposure, next_gain = self.night_preference.reallocate(self, next_exposure, next_gain)
+            exposure_delta = next_exposure - current_exposure
+            gain_delta = next_gain - current_gain
 
         # Binning
         if self.night_av[constants.NIGHT_NIGHT]:
