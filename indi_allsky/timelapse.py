@@ -123,6 +123,16 @@ class TimelapseGenerator(object):
 
         cmd = [self.ffmpeg_bin]
 
+        try:
+            cpu_limit = max(0, int(self.config.get('VIDEO_CPU_LIMIT', 1)))
+        except (TypeError, ValueError, OverflowError):
+            cpu_limit = 1
+        if cpu_limit:
+            # Bound decoder and filter pools as well as the encoder. Worker
+            # affinity also bounds aggregate CPU use across these pools.
+            cmd.extend(['-threads', str(cpu_limit), '-filter_threads', str(cpu_limit),
+                        '-filter_complex_threads', str(cpu_limit)])
+
 
         # add codec options
         if self.codec in ['h264_qsv']:
@@ -168,6 +178,9 @@ class TimelapseGenerator(object):
         # add extra options
         if self.ffmpeg_extra_options:
             cmd.extend(self.ffmpeg_extra_options.split(' '))
+
+        if cpu_limit:
+            cmd.extend(['-threads', str(cpu_limit)])
 
 
         # finally add filename

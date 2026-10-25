@@ -448,6 +448,7 @@ class IndiAllSkyConfigBase(object):
         "CAPTURE_HOOK_PRE"      : "",
         "CAPTURE_HOOK_TIMEOUT"  : 5,
         "IMAGE_QUEUE_BACKOFF"   : 0.5,
+        "VIDEO_CPU_LIMIT"       : 1,
         "FFMPEG_FRAMERATE"      : 25,
         "FFMPEG_FRAMERATE_DAY"  : 25,
         "FFMPEG_BITRATE"        : "5000k",
