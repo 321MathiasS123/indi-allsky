@@ -161,6 +161,7 @@ class IndiAllSkyConfigBase(object):
             # Patch targets/deviations are mask-area percentage points. THRESHOLD
             # is percent of pixel full scale; MAX_BOOST is stops. Gamma 0 inherits.
             "ENABLE" : False,
+            "NIGHT_MOON_EXCLUSION_ENABLE" : True,
             "TWILIGHT_ENABLE" : False,
             "TWILIGHT_OUTPUT_ENABLE" : False,
             "TWILIGHT_OUTPUT_TARGET" : 252,
