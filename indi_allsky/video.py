@@ -181,6 +181,20 @@ class VideoWorker(Process):
         except (AttributeError, OSError, psutil.Error) as e:
             logger.warning('Unable to lower Video worker I/O priority: %s', str(e))
 
+        # Low priority alone does not reserve CPU capacity for live images.
+        # New threads and encoder children inherit this child's allowed CPUs.
+        try:
+            cpu_limit = max(0, int(self.config.get('VIDEO_CPU_LIMIT', 1)))
+            if cpu_limit:
+                process = psutil.Process()
+                available = process.cpu_affinity()
+                count = min(cpu_limit, max(1, len(available) - 1))
+                if len(available) > count:
+                    process.cpu_affinity(available[-count:])
+                logger.info('Video worker CPU budget: %d of %d allowed CPUs', count, len(available))
+        except (AttributeError, OSError, TypeError, ValueError, OverflowError, psutil.Error) as e:
+            logger.warning('Unable to limit Video worker CPUs: %s', str(e))
+
 
         # Calibration has its own serial thread so a long retained-FITS scan
         # does not prevent the video worker from accepting timelapse jobs.

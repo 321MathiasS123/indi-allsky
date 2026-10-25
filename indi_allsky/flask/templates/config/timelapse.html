@@ -33,6 +33,14 @@
                     </div>
                 </div>
 
+                <!-- Background Video CPU Limit -->
+                <div class="tw:flex tw:flex-col tw:gap-1 tw:py-3 tw:border-b tw:border-base-300/60">
+                    <label for="VIDEO_CPU_LIMIT" class="tw:text-xs tw:font-bold">{{ form_config.VIDEO_CPU_LIMIT.label.text }}</label>
+                    {{ form_config.VIDEO_CPU_LIMIT(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                    <div id="VIDEO_CPU_LIMIT-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                    <p class="tw:text-xs tw:text-base-content/70">1 reserves CPU capacity for live images; 0 restores unrestricted generation. Video generation may take longer. Applies to new background video workers after reload.</p>
+                </div>
+
                 <!-- Pre-Processor Selection -->
                 <div class="tw:grid tw:grid-cols-1 md:tw:grid-cols-4 tw:gap-2 md:tw:gap-4 tw:items-center tw:py-3 tw:border-b tw:border-base-300/60">
                     <div class="tw:flex tw:flex-col">

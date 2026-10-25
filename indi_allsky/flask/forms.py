@@ -4877,6 +4877,7 @@ class IndiAllskyConfigForm(FlaskForm):
     IMAGE_FITS_EXPIRE_DAYS           = IntegerField('FITS Image expiration (days)', validators=[DataRequired(), IMAGE_EXPIRE_DAYS_validator])
     TIMELAPSE_EXPIRE_DAYS            = IntegerField('Timelapse expiration (days)', validators=[DataRequired(), TIMELAPSE_EXPIRE_DAYS_validator])
     TIMELAPSE_OVERWRITE              = BooleanField('Allow Overwrite Existing Timelapses')
+    VIDEO_CPU_LIMIT                 = IntegerField('Background video CPU limit', default=1, validators=[NumberRange(min=0, max=64)], widget=NumberInput(step=1))
     FFMPEG_FRAMERATE                 = IntegerField('FFMPEG Framerate (Night)', validators=[DataRequired(), FFMPEG_FRAMERATE_validator])
     FFMPEG_FRAMERATE_DAY             = IntegerField('FFMPEG Framerate (Day)', validators=[DataRequired(), FFMPEG_FRAMERATE_validator])
     FFMPEG_BITRATE                   = StringField('FFMPEG Bitrate (Night)', validators=[DataRequired(), FFMPEG_BITRATE_validator])

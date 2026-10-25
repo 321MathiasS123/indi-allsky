@@ -32,7 +32,12 @@ def worker_environment():
     events = []
     cpu = Mock(side_effect=lambda value: events.append(('cpu', value)))
     io = Mock(side_effect=lambda value: events.append(('io', value)))
-    process = Mock(return_value=SimpleNamespace(ionice=io))
+    def affinity(*values):
+        if values:
+            events.append(('affinity', values[0]))
+        else:
+            return [2, 4, 6, 8]
+    process = Mock(return_value=SimpleNamespace(ionice=io, cpu_affinity=Mock(side_effect=affinity)))
     thread = Mock()
     thread.start.side_effect = lambda: events.append(('thread',))
     namespace = {
@@ -63,7 +68,7 @@ def test_constructor_does_not_change_supervisor_priority(worker_environment):
 def test_child_sets_priorities_before_starting_threads_and_work(worker_environment):
     worker, _, events, _, _ = worker_environment
     worker.run()
-    assert events == [('cpu', 19), ('io', 3), ('thread',), ('work',)]
+    assert events == [('cpu', 19), ('io', 3), ('affinity', [8]), ('thread',), ('work',)]
     assert worker._asi676mc_calibration_q.get_nowait() is None
 
 
@@ -92,6 +97,86 @@ def test_priority_failure_does_not_prevent_work(worker_environment, failure):
     assert worker._asi676mc_calibration_q.get_nowait() is None
 
 
+@pytest.mark.parametrize('limit,available,expected', [
+    (0, [2, 4, 6, 8], None),
+    (2, [2, 4, 6, 8], [6, 8]),
+    (8, [2, 4, 6, 8], [4, 6, 8]),
+    (1, [7], None),
+    (1, [1, 5], [5]),
+])
+def test_cpu_budget_respects_allowed_set_and_keeps_live_capacity(worker_environment,
+                                                               limit, available, expected):
+    worker, namespace, events, _, _ = worker_environment
+    worker.config['VIDEO_CPU_LIMIT'] = limit
+    affinity = namespace['psutil'].Process.return_value.cpu_affinity
+    affinity.side_effect = lambda *values: available if not values else events.append(('affinity', values[0]))
+    worker.run()
+    assert [event for event in events if event[0] == 'affinity'] == ([] if expected is None
+                                                                 else [('affinity', expected)])
+    if limit == 0:
+        affinity.assert_not_called()
+    else:
+        assert affinity.call_args_list[0].args == ()
+    assert events[-2:] == [('thread',), ('work',)]
+
+
+@pytest.mark.parametrize('failure', ['unsupported', 'denied', 'oserror', 'invalid_setting'])
+def test_cpu_budget_failure_does_not_prevent_work(worker_environment, failure):
+    worker, namespace, events, _, _ = worker_environment
+    process = namespace['psutil'].Process.return_value
+    if failure == 'unsupported':
+        del process.cpu_affinity
+    elif failure == 'denied':
+        process.cpu_affinity.side_effect = psutil.AccessDenied()
+    elif failure == 'oserror':
+        process.cpu_affinity.side_effect = OSError('unsupported')
+    else:
+        worker.config['VIDEO_CPU_LIMIT'] = 'invalid'
+    worker.run()
+    assert events[-2:] == [('thread',), ('work',)]
+    assert worker._asi676mc_calibration_q.get_nowait() is None
+
+
+@pytest.mark.skipif(not hasattr(psutil.Process, 'cpu_affinity'), reason='CPU affinity unsupported')
+def test_actual_child_threads_and_encoder_inherit_cpu_budget():
+    before = psutil.Process().cpu_affinity()
+    script = textwrap.dedent('''
+        import json, logging, os, queue, signal, subprocess, sys, threading, traceback
+        from pathlib import Path
+        from types import SimpleNamespace
+        import psutil
+        Process = object
+        signal = SimpleNamespace(signal=lambda *args: None, SIGHUP=1, SIGTERM=15,
+                                 SIGINT=2, SIGALRM=14)
+        miscDb = miscUpload = lambda *args: None
+        logger = logging.getLogger('cpu-budget-test')
+        exec(sys.argv[1])
+        def cpus():
+            if hasattr(os, 'sched_getaffinity'):
+                return sorted(os.sched_getaffinity(0))
+            return psutil.Process().cpu_affinity()
+        inherited = cpus()
+        worker = VideoWorker(1, {'IMAGE_FOLDER': '.'}, queue.Queue(), None, None, None, None)
+        constructed = cpus()
+        result = queue.Queue()
+        worker._asi676mcCalibrationWorker = lambda: result.put(cpus())
+        def work():
+            child = json.loads(subprocess.check_output([sys.executable, '-c',
+                'import json,psutil; print(json.dumps(psutil.Process().cpu_affinity()))'],
+                text=True, timeout=5))
+            print(json.dumps([inherited, constructed, cpus(), result.get(timeout=5), child]))
+        worker.saferun = work
+        worker.run()
+    ''')
+    result = subprocess.run([sys.executable, '-c', script, worker_source()],
+                            text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+    inherited, constructed, worker, thread, encoder = json.loads(result.stdout)
+    assert constructed == inherited
+    assert worker == thread == encoder == inherited[-1:]
+    assert psutil.Process().cpu_affinity() == before
+
+
 @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux scheduling inheritance')
 def test_linux_supervisor_unchanged_and_worker_descendants_inherit_priority():
     # Isolate even a failing constructor in a disposable interpreter: no test
@@ -106,7 +191,7 @@ def test_linux_supervisor_unchanged_and_worker_descendants_inherit_priority():
         exec(sys.argv[1])
         def priorities():
             p = psutil.Process(threading.get_native_id())
-            return [p.nice(), list(p.ionice())]
+            return [p.nice(), list(p.ionice()), p.cpu_affinity()]
         before = priorities()
         reports = multiprocessing.get_context('fork').Queue()
         worker = VideoWorker(1, {'IMAGE_FOLDER': '.'}, reports, None, None, None, None)
@@ -115,7 +200,7 @@ def test_linux_supervisor_unchanged_and_worker_descendants_inherit_priority():
         worker._asi676mcCalibrationWorker = lambda: thread_report.put(priorities())
         def work():
             child = json.loads(subprocess.check_output([sys.executable, '-c',
-                'import json,psutil; p=psutil.Process(); print(json.dumps([p.nice(), list(p.ionice())]))'],
+                'import json,psutil; p=psutil.Process(); print(json.dumps([p.nice(), list(p.ionice()), p.cpu_affinity()]))'],
                 text=True, timeout=5))
             reports.put([priorities(), thread_report.get(timeout=5), child])
         worker.saferun = work
@@ -134,5 +219,5 @@ def test_linux_supervisor_unchanged_and_worker_descendants_inherit_priority():
     assert result.returncode == 0, result.stdout + result.stderr
     before, constructed, after, descendants = json.loads(result.stdout)
     assert constructed == before == after
-    expected = [min(19, before[0] + 19), [int(psutil.IOPRIO_CLASS_IDLE), 0]]
+    expected = [min(19, before[0] + 19), [int(psutil.IOPRIO_CLASS_IDLE), 0], before[2][-1:]]
     assert descendants == [expected, expected, expected]

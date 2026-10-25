@@ -2840,6 +2840,7 @@ class ConfigView(FormView):
             'IMAGE_FITS_EXPIRE_DAYS'         : self.indi_allsky_config.get('IMAGE_FITS_EXPIRE_DAYS', 10),
             'TIMELAPSE_EXPIRE_DAYS'          : self.indi_allsky_config.get('TIMELAPSE_EXPIRE_DAYS', 365),
             'TIMELAPSE_OVERWRITE'            : self.indi_allsky_config.get('TIMELAPSE_OVERWRITE', False),
+            'VIDEO_CPU_LIMIT'                : self.indi_allsky_config.get('VIDEO_CPU_LIMIT', 1),
             'FFMPEG_FRAMERATE'               : self.indi_allsky_config.get('FFMPEG_FRAMERATE', 25),
             'FFMPEG_FRAMERATE_DAY'           : self.indi_allsky_config.get('FFMPEG_FRAMERATE_DAY', 25),
             'FFMPEG_BITRATE'                 : self.indi_allsky_config.get('FFMPEG_BITRATE', '5000k'),
@@ -3919,6 +3920,8 @@ class AjaxConfigView(BaseView):
         self.indi_allsky_config['IMAGE_FITS_EXPIRE_DAYS']               = int(request.json['IMAGE_FITS_EXPIRE_DAYS'])
         self.indi_allsky_config['TIMELAPSE_EXPIRE_DAYS']                = int(request.json['TIMELAPSE_EXPIRE_DAYS'])
         self.indi_allsky_config['TIMELAPSE_OVERWRITE']                  = bool(request.json['TIMELAPSE_OVERWRITE'])
+        if 'VIDEO_CPU_LIMIT' in request.json:
+            self.indi_allsky_config['VIDEO_CPU_LIMIT'] = int(request.json['VIDEO_CPU_LIMIT'])
         self.indi_allsky_config['FFMPEG_FRAMERATE']                     = int(request.json['FFMPEG_FRAMERATE'])
         self.indi_allsky_config['FFMPEG_FRAMERATE_DAY']                 = int(request.json['FFMPEG_FRAMERATE_DAY'])
         self.indi_allsky_config['FFMPEG_BITRATE']                       = str(request.json['FFMPEG_BITRATE'])
