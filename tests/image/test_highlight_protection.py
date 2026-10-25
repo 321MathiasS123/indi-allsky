@@ -335,18 +335,22 @@ def test_output_feedback_waits_for_matching_trusted_stack(highlight_processor, c
 @pytest.mark.parametrize('trusted', [False, True])
 @pytest.mark.parametrize('valid_output', [False, True])
 @pytest.mark.parametrize('prepared', [False, True])
-def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_enabled, trusted, valid_output, prepared):
+@pytest.mark.parametrize('twilight_output', [False, True])
+def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_enabled, trusted, valid_output, prepared, twilight_output):
     source = (Path(__file__).resolve().parents[2] / 'indi_allsky/image.py').read_text(encoding='utf-8')
-    section = textwrap.dedent(source[source.index('        if highlights is not None and self.config.get'):
+    section = textwrap.dedent(source[source.index('        twilight_output_active = (highlights'):
                                      source.index('        self.image_processor.realtimeKeogramUpdate()')])
     assert source.index('self.image_processor.colormap()') < source.index(section.splitlines()[0].strip())
     assert source.index(section.splitlines()[0].strip()) < source.index('self.image_processor.apply_logo_overlay(')
     state = HighlightOutput()
-    controller = SimpleNamespace(highlight_output=state)  # no command methods available
-    result = HighlightMeasurement(2.5, 4, 0)
+    twilight_state = SimpleNamespace(reset=Mock(), observe=Mock())
+    controller = SimpleNamespace(highlight_output=state, twilight_output=twilight_state)  # no command methods available
+    result = HighlightMeasurement(2.5, 4, 70, twilight_weight=1 if twilight_output else 0,
+                                  twilight_peak=1, twilight_time=100)
     processor = SimpleNamespace(measure_output_highlights=Mock(return_value=result if valid_output else None),
                                 highlight_output_trusted=Mock(return_value=trusted))
-    worker = SimpleNamespace(config={'HIGHLIGHT_PROTECTION': {'OUTPUT_ENABLE': output_enabled}},
+    worker = SimpleNamespace(config={'HIGHLIGHT_PROTECTION': {'OUTPUT_ENABLE': output_enabled,
+                                                             'TWILIGHT_OUTPUT_ENABLE': twilight_output}},
                              exposure_o=controller, image_processor=processor, night_av=[True, False],
                              send_highlight_feedback=Mock())
     if prepared:
@@ -355,10 +359,12 @@ def test_late_output_feedback_only_records_and_never_commands(valid_raw, output_
     exec(section, dict(self=worker, highlights=result if valid_raw else None, exposure=1., gain=0,
                        i_ref=SimpleNamespace(exp_date=datetime(2026, 10, 5)), logger=logging.getLogger(__name__),
                        i_dict=capture))
-    assert processor.measure_output_highlights.call_count == int(valid_raw and output_enabled)
-    assert state.active is (valid_raw and output_enabled and trusted and valid_output and not prepared)
-    assert worker.send_highlight_feedback.call_count == int(valid_raw and output_enabled and prepared)
-    if valid_raw and output_enabled and prepared:
+    enabled = output_enabled or twilight_output
+    assert processor.measure_output_highlights.call_count == int(valid_raw and enabled)
+    assert state.active is (valid_raw and output_enabled and trusted and valid_output and not prepared and not twilight_output)
+    assert worker.send_highlight_feedback.call_count == int(valid_raw and enabled and prepared)
+    assert twilight_state.observe.call_count == int(valid_raw and twilight_output and trusted and valid_output and not prepared)
+    if valid_raw and enabled and prepared:
         worker.send_highlight_feedback.assert_called_once_with(capture, result if valid_output else None, trusted)
 
 

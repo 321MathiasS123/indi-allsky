@@ -8,6 +8,7 @@ from .. import constants
 from ..utils import IndiAllSkyExposureUtils
 from ..gain import gain_limits, quantize_gain
 from ..highlight import MAX_EXPOSURE_INCREASE, HighlightOutput, HighlightTransition, exposure_decision
+from ..highlight_output_control import TwilightOutputControl
 
 
 logger = logging.getLogger('indi_allsky')
@@ -33,6 +34,7 @@ class IndiAllSky_Exposure_Base(object):
         self.gain_quantum = 0.0
         self.highlight_transition = HighlightTransition()
         self.highlight_output = HighlightOutput()
+        self.twilight_output = TwilightOutputControl()
         self.reset_highlights()
 
 
@@ -53,6 +55,7 @@ class IndiAllSky_Exposure_Base(object):
     def compare_exposure(self, adu, exposure, gain):
         self.reset_highlights()
         self.highlight_output.reset()
+        self.twilight_output.reset()
         if adu <= 0.0:
             # ensure we do not divide by zero
             logger.warning('Zero average, setting a default of 0.1')
@@ -245,8 +248,9 @@ class IndiAllSky_Exposure_Base(object):
             adu_scale = max(0.9, (target + deviation) / measurement.adu)
             if adu_scale < scale:
                 scale, reason = adu_scale, reason + ' + ADU above band'
-        scale, output_reason = self.highlight_output.constrain(
-            scale, measurement.adu, target, deviation, exposure, gain, mode, settings)
+        twilight_output_active = twilight_active and settings.get('TWILIGHT_OUTPUT_ENABLE', False)
+        scale, output_reason = ((scale, None) if twilight_output_active else self.highlight_output.constrain(
+            scale, measurement.adu, target, deviation, exposure, gain, mode, settings))
         if output_reason:
             reason += ' + ' + output_reason
             response_target = None  # Output constraints retain their own bounds.
@@ -330,6 +334,21 @@ class IndiAllSky_Exposure_Base(object):
                                                      channels, quantum, tuple(channel_threatened), threatened)
         else:
             self._twilight_prediction_previous = None
+        output_limit = self.twilight_output.limit(
+            measurement, exposure, gain, mode, settings, self._highlight_signal_change,
+            self._expUtils.EXPOSURE_NEXT, self.effective_gain(self._expUtils.GAIN_NEXT), target, cadence)
+        if output_limit is not None:
+            requested = min(scale, twilight_prediction_limit) if twilight_prediction_limit is not None else scale
+            if output_limit < requested:
+                twilight_prediction_limit = math.exp(
+                    (1 - measurement.twilight_weight) * math.log(requested)
+                    + measurement.twilight_weight * math.log(output_limit))
+                twilight_needed = True
+                reason += ' + twilight output ceiling'
+                logger.info('Twilight output: source %s; tail %.1f; excess %.3f%%; signal ceiling %.3fx',
+                            self.twilight_output.sample[0].twilight_time,
+                            self.twilight_output.sample[0].twilight_peak * 255,
+                            self.twilight_output.sample[0].any, twilight_prediction_limit)
         if twilight_active and measurement.twilight_peak > 0:
             forecast = 1.0
             if twilight_previous is not None and twilight_previous[0] == mode:

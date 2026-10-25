@@ -1630,6 +1630,7 @@ class ImageProcessor(object):
         """Meter an independent pre-dark view, leaving saved image data untouched."""
         from .highlight import _channel_limits, measure
 
+        self._highlight_twilight_mask = None
         i_ref = self.getLatestImage()
         data = i_ref.hdulist[0].data
         # Build a metering view without changing the mosaic, FITS header or
@@ -1649,16 +1650,34 @@ class ImageProcessor(object):
         # FITS storage alone cannot distinguish native 12-bit from scaled 16-bit.
         bit_depth = min(self.max_bit_depth, 8 if i_ref.image_bitpix == 8 else 16)
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
-        measurement = measure(data, self._adu_mask_dict[i_ref.binning], bit_depth,
+        mask = self._adu_mask_dict[i_ref.binning]
+        weight = midpoint = None
+        if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
+                and settings.get('TWILIGHT_OUTPUT_ENABLE', False)):
+            from .highlight_twilight import capture_twilight
+            weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
+            if weight:
+                from .highlight_output import moon_region
+                region = moon_region(self.config, data.shape[:2], i_ref.binning,
+                                     i_ref.exp_date, i_ref.exposure, self.position_av,
+                                     getattr(i_ref, 'camera_uuid', ''), native=True)
+                if region is not None and mask is not None:
+                    masked = mask.copy()
+                    cv2.circle(masked, (round(region[0]), round(region[1])),
+                               int(math.ceil(region[2] * math.sqrt(weight))), 0, -1)
+                    if cv2.countNonZero(masked):
+                        mask = self._highlight_twilight_mask = masked
+        measurement = measure(data, mask, bit_depth,
                               settings.get('THRESHOLD', 99.0))
         if (measurement is None or not settings.get('ENABLE', False)
                 or not settings.get('TWILIGHT_ENABLE', False)):
             return measurement
         from .highlight_twilight import capture_twilight, capture_moon, clipping_budget, measure_ring, measure_channels
-        weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
+        if weight is None:
+            weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
         if not weight:
             return measurement._replace(twilight_time=midpoint)
-        channel_levels = measure_channels(data, self._adu_mask_dict[i_ref.binning], bit_depth, self.config)
+        channel_levels = measure_channels(data, mask, bit_depth, self.config)
         # Recorded plateaus can stop just below full code range (65534/65520).
         # Keep a conservative trend certificate even at a 100% clipping setting.
         cutoff = min(settings.get('THRESHOLD', 99.0), 99.0) / 100.0
@@ -1711,7 +1730,10 @@ class ImageProcessor(object):
                 if bayer_pattern:
                     # Colour metering must remain independent of display grayscale.
                     channel_data = cv2.cvtColor(i_ref.hdulist[0].data, self.__cfa_bgr_map[bayer_pattern])
-            levels = measure_channels(channel_data, self._adu_mask_dict[i_ref.binning],
+            channel_mask = getattr(self, '_highlight_twilight_mask', None)
+            if channel_mask is None:
+                channel_mask = self._adu_mask_dict[i_ref.binning]
+            levels = measure_channels(channel_data, channel_mask,
                                       min(self.max_bit_depth, i_ref.image_bitpix), self.config)
             measurement = measurement._replace(**{
                 field: level if getattr(measurement, field) > 0 else 0.0
@@ -1756,6 +1778,30 @@ class ImageProcessor(object):
             # Exclude interpolated mask edges rather than expanding the ROI.
             self._highlight_output_mask = (view.image == 255).astype(numpy.uint8)
             self._highlight_output_mask_key = key
+        settings = self.config.get('HIGHLIGHT_PROTECTION', {})
+        if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
+                and settings.get('TWILIGHT_OUTPUT_ENABLE', False)):
+            from .highlight_twilight import capture_twilight
+            weight, midpoint = capture_twilight(i_ref.exp_date, i_ref.exposure, self.position_av)
+            if weight:
+                from .highlight import HighlightMeasurement
+                from .highlight_output import moon_region, output_tail
+                output_mask = self._highlight_output_mask
+                region = moon_region(self.config, mask.shape, i_ref.binning,
+                                     i_ref.exp_date, i_ref.exposure, self.position_av,
+                                     getattr(i_ref, 'camera_uuid', ''))
+                if region is not None:
+                    output_mask = output_mask.copy()
+                    cv2.circle(output_mask, (round(region[0]), round(region[1])),
+                               int(math.ceil(region[2] * math.sqrt(weight))), 0, -1)
+                if (self.image.shape[:2] != output_mask.shape
+                        or not cv2.countNonZero(output_mask)):
+                    return None
+                peak, over = output_tail(self.image, output_mask,
+                                         star_allowance=settings.get('TWILIGHT_STAR_ALLOWANCE', .1) / 100,
+                                         target=settings.get('TWILIGHT_OUTPUT_TARGET', 252))
+                return HighlightMeasurement(0, over * 100, 0, twilight_peak=peak,
+                                            twilight_weight=weight, twilight_time=midpoint)
         result = measure_rendered(self.image, self._highlight_output_mask)
         if result is None:
             logger.warning('Highlight output unavailable: empty or mismatched metering mask')
