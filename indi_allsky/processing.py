@@ -1652,6 +1652,7 @@ class ImageProcessor(object):
         settings = self.config.get('HIGHLIGHT_PROTECTION', {})
         mask = self._adu_mask_dict[i_ref.binning]
         weight = midpoint = None
+        night_weight = night_clipped = 0.0
         if (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
                 and settings.get('TWILIGHT_OUTPUT_ENABLE', False)):
             from .highlight_twilight import capture_twilight
@@ -1659,8 +1660,8 @@ class ImageProcessor(object):
         moon_weight = weight or 0.0
         if settings.get('ENABLE', False) and settings.get('NIGHT_MOON_EXCLUSION_ENABLE', True):
             from .highlight_output import night_moon_weight
-            moon_weight = max(moon_weight, night_moon_weight(
-                i_ref.exp_date, i_ref.exposure, self.position_av))
+            night_weight = night_moon_weight(i_ref.exp_date, i_ref.exposure, self.position_av)
+            moon_weight = max(moon_weight, night_weight)
         if moon_weight:
             from .highlight_output import moon_region
             region = moon_region(self.config, data.shape[:2], i_ref.binning,
@@ -1671,9 +1672,30 @@ class ImageProcessor(object):
                 cv2.circle(masked, (round(region[0]), round(region[1])),
                            int(math.ceil(region[2] * math.sqrt(moon_weight))), 0, -1)
                 if cv2.countNonZero(masked):
+                    if night_weight:
+                        # Certify the actual local exception, not just a saved
+                        # option or a Moon prediction outside the usable ROI.
+                        radius = int(math.ceil(region[2] * math.sqrt(moon_weight)))
+                        x, y = round(region[0]), round(region[1])
+                        roi = numpy.s_[max(0, y-radius):min(data.shape[0], y+radius+1),
+                                       max(0, x-radius):min(data.shape[1], x+radius+1)]
+                        excluded = (mask[roi] != 0) & (masked[roi] == 0)
+                        if numpy.any(excluded):
+                            highest = _channel_limits(data[roi])[1]
+                            cutoff = ((1 << bit_depth) - 1) * settings.get('THRESHOLD', 99.0) / 100.0
+                            night_clipped = float(numpy.any(highest[excluded] >= cutoff))
+                        else:
+                            night_weight = 0.0
                     mask = self._highlight_twilight_mask = masked
+                else:
+                    night_weight = 0.0
+            else:
+                night_weight = 0.0
         measurement = measure(data, mask, bit_depth,
                               settings.get('THRESHOLD', 99.0))
+        if measurement is not None and night_weight:
+            measurement = measurement._replace(night_moon_weight=night_weight,
+                                                night_moon_clipped=night_clipped)
         if (measurement is None or not settings.get('ENABLE', False)
                 or not settings.get('TWILIGHT_ENABLE', False)):
             return measurement

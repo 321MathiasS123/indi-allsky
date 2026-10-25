@@ -58,6 +58,7 @@ def test_night_exception_masks_only_moon_and_preserves_calibrated_adu_and_inputs
     rendered = p.measure_output_highlights()
 
     assert protected.full == protected.any == 0
+    assert protected.night_moon_weight == protected.night_moon_clipped == 1
     assert rendered.full == rendered.any == 0
     expected_adu = cv2.mean(cv2.cvtColor(data, cv2.COLOR_BGR2GRAY),
                             mask=original[3])[0] / 256
@@ -106,6 +107,7 @@ def test_default_enabled_and_explicit_disable_restore_exact_old_metrics(highligh
     old = calibrated(p)
     expected = highlight.measure(data, p._adu_mask_dict[1], 16)
     assert old == expected
+    assert old.night_moon_weight == old.night_moon_clipped == 0
     assert old.full > 1 and old.any > 1
     assert p.measure_output_highlights() == highlight.measure_rendered(p.image, p._adu_mask_dict[1])
     assert p._highlight_twilight_mask is None
@@ -146,7 +148,9 @@ def test_missing_or_unusable_projection_retains_all_highlight_safeguards(
     monkeypatch.setattr(highlight_output, 'moon_region', lambda *args, **kwargs: region)
     before = p._adu_mask_dict[1].copy()
 
-    assert calibrated(p) == highlight.measure(data, before, 16)
+    measured = calibrated(p)
+    assert measured == highlight.measure(data, before, 16)
+    assert measured.night_moon_weight == measured.night_moon_clipped == 0
     assert p.measure_output_highlights() == highlight.measure_rendered(p.image, before)
     np.testing.assert_array_equal(p._adu_mask_dict[1], before)
 
@@ -159,6 +163,8 @@ def test_partial_night_fade_changes_only_the_small_moon_exception(highlight_proc
     for weight in (0., .5, 1.):
         monkeypatch.setattr(highlight_output, 'night_moon_weight', lambda *args, value=weight: value)
         metrics.append((calibrated(p), p.measure_output_highlights()))
+        assert metrics[-1][0].night_moon_weight == weight
+        assert metrics[-1][0].night_moon_clipped == float(weight > 0)
     assert metrics[0][0].full > metrics[1][0].full > metrics[2][0].full == 0
     assert metrics[0][1].full > metrics[1][1].full > metrics[2][1].full == 0
     assert len({row[0].adu for row in metrics}) == 1
@@ -202,3 +208,34 @@ def test_exposure_priority_can_reach_configured_maximum_without_a_forced_floor(
     assert (utils.EXPOSURE_MIN_NIGHT, utils.EXPOSURE_MAX) == original_limits
     assert utils.EXPOSURE_MIN_NIGHT < min(history)
     assert instance.config['CCD_EXPOSURE_MAX'] == maximum
+
+
+@pytest.mark.parametrize('peak,clipped', [(64879, False), (64880, True)])
+def test_night_certificate_requires_actual_excluded_channel_clipping(
+        highlight_processor, monkeypatch, peak, clipped):
+    p = highlight_processor
+    ref, data, _ = night_frame(p, monkeypatch)
+    y, x = np.ogrid[:100, :100]
+    data[(x - 75) ** 2 + (y - 50) ** 2 <= 6 ** 2] = (peak, 7680, 7680)
+    set_pixels(p, ref, data)
+
+    result = calibrated(p)
+
+    assert result.night_moon_weight == 1
+    assert result.night_moon_clipped == float(clipped)
+    assert result.full == result.any == 0
+    np.testing.assert_array_equal(ref.opencv_data, data)
+
+
+def test_moon_prediction_outside_metering_roi_cannot_certify_night_compensation(
+        highlight_processor, monkeypatch):
+    p = highlight_processor
+    night_frame(p, monkeypatch)
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[5:25, 5:25] = 255
+    p._adu_mask_dict[1] = mask
+
+    result = calibrated(p)
+
+    assert result.night_moon_weight == result.night_moon_clipped == 0
+    np.testing.assert_array_equal(p._adu_mask_dict[1], mask)
