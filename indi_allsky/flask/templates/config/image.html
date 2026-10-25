@@ -192,6 +192,20 @@
                 </div>
                 <p class="tw:text-xs tw:text-base-content/70">Allowances are percentages of the usable ring, including a small margin for transient bright sources. Use clear astronomical-night frames for the stars and half-Moon references; full Moon is an estimate. The allowance changes smoothly with the capture-time Moon phase and uses only the stars reference while the Moon is below the horizon. Normal day/night control resumes after twilight recovery.</p>
                 <div class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:border-t tw:border-base-300 tw:pt-4">
+                    <label for="HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE" class="tw:text-sm tw:font-bold">{{ form_config.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE.label.text }}</label>
+                    {{ form_config.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
+                </div>
+                <div id="HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE-error" class="tw:text-error tw:text-xs" style="display: none;"></div>
+                <p class="tw:text-xs tw:text-base-content/70">Use the processed image's brightest colour values to guide smooth exposure changes during sunrise and sunset, with the same twilight fades. Uses valid VirtualSky alignment to exclude a bounded area around the predicted Moon and allows a small amount of star and transient clipping. Requires Highlight Protection and Protect Twilight Highlights. Off by default. Uncheck and reload to restore the current twilight protection; ordinary day and night behaviour stays unchanged.</p>
+                {% with field = form_config.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET %}
+                <div class="tw:flex tw:flex-col tw:gap-1">
+                    <label for="{{ field.id }}" class="tw:text-xs tw:font-bold">{{ field.label.text }}</label>
+                    {{ field(class='tw:input tw:input-bordered tw:input-sm tw:h-11 tw:bg-base-100 tw:text-base-content tw:w-full') }}
+                    <div id="{{ field.id }}-error" class="tw:text-error tw:text-xs tw:mt-1" style="display: none;"></div>
+                </div>
+                {% endwith %}
+                <p class="tw:text-xs tw:text-base-content/70">252 leaves a little room below white. Choose 240–254. Camera limits, changing clouds and processing delay can still allow clipping; raw highlight protection remains active.</p>
+                <div class="tw:flex tw:items-center tw:justify-between tw:gap-4 tw:border-t tw:border-base-300 tw:pt-4">
                     <label for="HIGHLIGHT_PROTECTION__FRINGE_REDUCTION" class="tw:text-sm tw:font-bold">{{ form_config.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION.label.text }}</label>
                     {{ form_config.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION(class='tw:toggle tw:toggle-primary tw:toggle-sm') }}
                 </div>

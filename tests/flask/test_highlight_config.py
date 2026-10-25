@@ -11,7 +11,7 @@ from flask_wtf import FlaskForm
 from jinja2 import Environment
 import pytest
 from werkzeug.datastructures import MultiDict
-from wtforms import BooleanField, FloatField
+from wtforms import BooleanField, FloatField, IntegerField
 from wtforms.validators import NumberRange, ValidationError
 from wtforms.widgets import NumberInput
 
@@ -28,7 +28,7 @@ def form_class():
               and isinstance(n.targets[0], ast.Name) and n.targets[0].id.startswith('HIGHLIGHT_PROTECTION__')]
     cls = ast.ClassDef(name='HighlightForm', bases=[ast.Name(id='FlaskForm', ctx=ast.Load())],
                        keywords=[], body=fields, decorator_list=[])
-    namespace = dict(math=math, FlaskForm=FlaskForm, BooleanField=BooleanField, FloatField=FloatField,
+    namespace = dict(math=math, FlaskForm=FlaskForm, BooleanField=BooleanField, FloatField=FloatField, IntegerField=IntegerField,
                      NumberRange=NumberRange, NumberInput=NumberInput, ValidationError=ValidationError)
     exec(compile(ast.fix_missing_locations(ast.Module(body=validators + [cls], type_ignores=[])),
                  str(ROOT / 'forms.py'), 'exec'), namespace)
@@ -44,6 +44,8 @@ def form_class():
     ('GAMMA_DAY', 'inf'), ('GAMMA_DAY', ''),
     ('OUTPUT_FULL_TARGET', 'nan'), ('OUTPUT_ANY_TARGET', '0'),
     ('OUTPUT_FULL_DEV', '1.5'), ('OUTPUT_ANY_DEV', '-1'), ('OUTPUT_ANY_DEV', 'inf'),
+    ('TWILIGHT_OUTPUT_TARGET', '239'), ('TWILIGHT_OUTPUT_TARGET', '255'),
+    ('TWILIGHT_OUTPUT_TARGET', '252.5'), ('TWILIGHT_OUTPUT_TARGET', 'nan'),
 ])
 def test_invalid_settings_rejected(form_class, field, value):
     app = Flask(__name__)
@@ -89,6 +91,16 @@ def test_highlight_gamma_accepts_inherit_unity_and_override(form_class, field, v
         assert form.validate(), form.errors
 
 
+@pytest.mark.parametrize('value', [240, 250, 252, 254])
+def test_twilight_output_target_accepts_bounded_integer_levels(form_class, value):
+    app = Flask(__name__)
+    app.config['WTF_CSRF_ENABLED'] = False
+    with app.test_request_context():
+        form = form_class(formdata=MultiDict({'HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET': str(value)}))
+        assert form.validate(), form.errors
+        assert form.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET.data == value
+
+
 @pytest.mark.parametrize('values', [{}, {'FULL_TARGET': '0.6', 'FULL_DEV': '0.15',
                                        'ANY_TARGET': '1.3', 'ANY_DEV': '0.25'}])
 def test_percentage_defaults_and_fine_tuning_fit_rendered_input_steps(form_class, values):
@@ -119,6 +131,8 @@ def test_defaults_off_controls_render_and_use_existing_save_registry(form_class)
         assert form.validate(), form.errors
         assert not form.HIGHLIGHT_PROTECTION__ENABLE.data
         assert not form.HIGHLIGHT_PROTECTION__OUTPUT_ENABLE.data
+        assert not form.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE.data
+        assert form.HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET.data == 252
         assert not form.HIGHLIGHT_PROTECTION__FRINGE_REDUCTION.data
         assert form.HIGHLIGHT_PROTECTION__GAMMA.data == 0
         assert form.HIGHLIGHT_PROTECTION__GAMMA_DAY.data == 0
@@ -166,6 +180,8 @@ def test_settings_round_trip_through_real_config_view_assignments(form_class):
                    HIGHLIGHT_PROTECTION__GAMMA=0.95, HIGHLIGHT_PROTECTION__GAMMA_DAY=1.85,
                    HIGHLIGHT_PROTECTION__FRINGE_REDUCTION=True,
                    HIGHLIGHT_PROTECTION__TWILIGHT_STAR_ALLOWANCE=.02,
+                   HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_ENABLE=True,
+                   HIGHLIGHT_PROTECTION__TWILIGHT_OUTPUT_TARGET=254,
                    HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_50=.7,
                    HIGHLIGHT_PROTECTION__TWILIGHT_MOON_ALLOWANCE_FULL=2.4)
     exec(compile(ast.Module(body=[save], type_ignores=[]), 'save-highlight-fields', 'exec'),

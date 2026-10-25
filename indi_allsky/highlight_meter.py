@@ -13,6 +13,7 @@ import traceback
 
 from . import constants
 from .highlight import HighlightMeasurement
+from .highlight_output_control import output_signature
 
 
 logger = logging.getLogger('indi_allsky')
@@ -67,13 +68,14 @@ class OutputFeedbackGate:
     minutes. Two successive usable outputs prevent flapping at the age limit.
     """
 
-    def __init__(self):
+    def __init__(self, render_signature=None):
         self.latest = None
         self.degraded = False
         self.fresh_count = 0
         self.last_accepted = None
+        self.render_signature = render_signature
 
-    def update(self, controller, job, feedback, allowance=0.0):
+    def update(self, controller, job, feedback, allowance=0.0, measurement=None):
         if feedback is not None and (
                 self.latest is None or feedback['exp_time'] > self.latest['exp_time']):
             self.latest = feedback
@@ -89,9 +91,50 @@ class OutputFeedbackGate:
         # a small file-write/scheduling margin, but never two nominal frames:
         # a stalled capture or slow meter must not make old output fresh again.
         window = min(cadence * 1.5, acquisition + min(1.0, cadence * 0.1) + max(0.0, allowance))
+        twilight_output = (settings.get('ENABLE', False) and settings.get('TWILIGHT_ENABLE', False)
+                           and settings.get('TWILIGHT_OUTPUT_ENABLE', False)
+                           and measurement is not None and measurement.twilight_weight > 0)
+        if twilight_output:
+            output.reset()
+            usable = (all(math.isfinite(value) for value in measurement)
+                      and 0 < measurement.twilight_weight <= 1 and measurement.adu > 0
+                      and math.isfinite(job['exposure']) and job['exposure'] > 0
+                      and math.isfinite(job['gain'])
+                      and self.render_signature is not None
+                      and candidate is not None and candidate.get('trusted', False)
+                      and candidate.get('twilight_output', False)
+                      and candidate.get('render_signature') == self.render_signature
+                      and candidate.get('measurement') is not None
+                      and candidate['camera_id'] == job['camera_id']
+                      and candidate['binning'] == job['binning']
+                      and tuple(candidate['capture_mode']) == mode
+                      and 0 <= job['exp_time'] - candidate['exp_time'] <= min(120, 2 * cadence + max(0, allowance)))
+            if usable:
+                returned = HighlightMeasurement(*candidate['measurement'])
+                usable = (all(math.isfinite(value) for value in returned)
+                          and 0 < returned.twilight_peak <= 1 and returned.adu > 0
+                          and 0 < returned.twilight_weight <= 1
+                          and 0 < returned.twilight_time <= measurement.twilight_time
+                          and 0 <= returned.any <= 100
+                          and math.isfinite(candidate['exposure']) and candidate['exposure'] > 0
+                          and math.isfinite(candidate['gain'])
+                          and controller._highlight_signal_change(
+                              job['exposure'], job['gain'], candidate['exposure'], candidate['gain']) is not None)
+                if usable:
+                    change = controller._highlight_signal_change(
+                        job['exposure'], job['gain'], candidate['exposure'], candidate['gain'])
+                    usable = math.isfinite(change)
+            if not usable:
+                controller.twilight_output.reset()
+                logger.info('Twilight output feedback unavailable or expired; retain fresh raw protection')
+                return False
+            controller.twilight_output.observe(returned, candidate['exposure'], candidate['gain'], mode)
+            return True
+        controller.twilight_output.reset()
         usable = (
             settings.get('OUTPUT_ENABLE', False)
             and candidate is not None and candidate.get('trusted', False)
+            and not candidate.get('twilight_output', False)
             and candidate.get('measurement') is not None
             and candidate['camera_id'] == job['camera_id']
             and candidate['binning'] == job['binning']
@@ -169,7 +212,7 @@ class HighlightMeterWorker(Process):
         exposure_class = getattr(exposure_module, name, exposure_module.exposure_basic)
         self.controller = exposure_class(self.config, self.exposure_av, self.gain_av,
                                          self.binning_av, self.frame_mode)
-        self.feedback_gate = OutputFeedbackGate()
+        self.feedback_gate = OutputFeedbackGate(output_signature(self.config))
         self._miscDb = miscDb(self.config)
 
     def run(self):
@@ -342,7 +385,8 @@ class HighlightMeterWorker(Process):
             if time.time() - job['exp_time'] > capture_cadence(job, self.config):
                 self.controller.highlight_output.reset()
                 return measurement, 'old capture', False, False
-            self.feedback_gate.update(self.controller, job, latest, time.monotonic() - started)
+            self.feedback_gate.update(self.controller, job, latest, time.monotonic() - started,
+                                      measurement=measurement)
             transition = self.controller.highlight_transition
             startup = transition._startup
             self.controller.compare_highlights(measurement, job['exposure'], job['gain'])

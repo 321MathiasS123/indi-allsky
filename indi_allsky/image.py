@@ -41,6 +41,7 @@ from .adsb import AdsbAircraftHttpWorker
 from . import exposure as exposure_module
 from .highlight import HighlightMeasurement, HighlightRenderHistory
 from .highlight_meter import apply_control_snapshot
+from .highlight_output_control import output_signature
 
 from .flask import create_app
 from .flask import db
@@ -101,6 +102,7 @@ class ImageWorker(Process):
 
         self.config = config
         self.highlight_render_history = HighlightRenderHistory(config, highlight_render_state)
+        self.twilight_output_signature = output_signature(config)
 
         self.error_q = error_q
         self.image_q = image_q
@@ -369,6 +371,9 @@ class ImageWorker(Process):
             'camera_id': job['camera_id'], 'capture_mode': tuple(self.night_av),
             'measurement': tuple(output) if output is not None else None,
             'trusted': bool(trusted),
+            'twilight_output': bool(output is not None and output.twilight_weight > 0
+                                    and self.config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_OUTPUT_ENABLE', False)),
+            'render_signature': getattr(self, 'twilight_output_signature', None),
         })
 
 
@@ -924,16 +929,28 @@ class ImageWorker(Process):
         self.image_processor.apply_image_circle_mask(i_ref.binning)
 
 
-        if highlights is not None and self.config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False):
+        twilight_output_active = (highlights is not None and highlights.twilight_weight > 0
+                                  and self.config.get('HIGHLIGHT_PROTECTION', {}).get('TWILIGHT_OUTPUT_ENABLE', False))
+        if highlights is not None and (twilight_output_active or self.config.get('HIGHLIGHT_PROTECTION', {}).get('OUTPUT_ENABLE', False)):
             # Record output feedback for the next early control pass. Never
             # publish a second, late exposure command for this same capture.
             output = self.image_processor.measure_output_highlights()
             trusted_output = self.image_processor.highlight_output_trusted()
+            if twilight_output_active and output is not None:
+                output = output._replace(adu=highlights.adu)
+                logger.info('Twilight rendered output: frame %s; tail %.1f; excess %.3f%%; trusted %s',
+                            i_ref.exp_date.isoformat(), output.twilight_peak * 255, output.any, trusted_output)
             if getattr(self, '_highlight_control', None) is not None:
                 self.send_highlight_feedback(i_dict, output, trusted_output)
             elif output is None:
                 # A missing ROI must not leave a stale output constraint latched.
                 self.exposure_o.highlight_output.reset()
+                self.exposure_o.twilight_output.reset()
+            elif twilight_output_active:
+                if trusted_output:
+                    self.exposure_o.twilight_output.observe(output, exposure, gain, tuple(self.night_av))
+                else:
+                    self.exposure_o.twilight_output.reset()
             else:
                 self.exposure_o.highlight_output.observe(
                     output if trusted_output else None, exposure, gain, tuple(self.night_av),
