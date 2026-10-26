@@ -134,6 +134,7 @@ def test_day_and_existing_twilight_paths_are_identical_with_night_option_toggled
     prepare(p)
     setup_moon(monkeypatch, weight=1. if twilight else 0.)
     monkeypatch.setattr(highlight_output, 'night_moon_weight', lambda *args: 0.)
+    monkeypatch.setattr(highlight_output, 'moon_mask_weight', lambda *args: float(twilight))
     p.config['HIGHLIGHT_PROTECTION']['NIGHT_MOON_EXCLUSION_ENABLE'] = False
     before = calibrated(p), p.measure_output_highlights()
     p.config['HIGHLIGHT_PROTECTION']['NIGHT_MOON_EXCLUSION_ENABLE'] = True

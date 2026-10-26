@@ -110,6 +110,35 @@ def night_moon_weight(exp_date, exposure, position):
         return 0.0
 
 
+def moon_mask_weight(exp_date, exposure, position):
+    """Keep the physical Moon exception through night and twilight.
+
+    This does not control the night exposure preference or twilight controller.
+    Only the existing daylight-side fade, Sun -2 to 0 degrees, changes its area.
+    """
+    import ephem
+
+    try:
+        latitude, longitude, elevation = map(float, position[:3])
+        exposure = float(exposure)
+        midpoint = float(exp_date.timestamp()) - exposure / 2
+        if (not all(math.isfinite(value) for value in (latitude, longitude, elevation, exposure, midpoint))
+                or not -90 <= latitude <= 90 or not -180 <= longitude <= 180
+                or exposure < 0 or not 0 <= midpoint <= 4102444800):
+            return 0.0
+        observer = ephem.Observer()
+        observer.lat, observer.lon = math.radians(latitude), math.radians(longitude)
+        observer.elevation, observer.pressure = elevation, 0
+        observer.date = datetime.fromtimestamp(midpoint, timezone.utc)
+        altitude = math.degrees(float(ephem.Sun(observer).alt))
+        if not math.isfinite(altitude):
+            return 0.0
+        strength = min(1.0, max(0.0, -altitude / 2.0))
+        return strength * strength * (3.0 - 2.0 * strength)
+    except (AttributeError, IndexError, OSError, TypeError, ValueError, OverflowError):
+        return 0.0
+
+
 def moon_region(config, native_shape, binning, exp_date, exposure, position,
                 camera_uuid='', *, native=False):
     """Moon (x,y,radius) in sensor or rotated/flipped/cropped pre-border pixels.

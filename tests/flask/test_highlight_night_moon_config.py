@@ -110,7 +110,9 @@ def test_control_renders_checked_and_is_gated_by_highlight_parent(form_class):
         assert 'id="' + FIELD + '"' in html
         assert 'checked' in html
         assert 'configured Maximum Exposure' in html
-        assert 'Independent of the twilight settings' in html
+        assert 'Moon exclusion continues through twilight' in html
+        assert 'fades out between −2° and 0°' in html
+        assert 'preference still fades in between −16° and −18°' in html
         assert 'capture intervals stay unchanged' in html
         registry = (ROOT / 'flask/templates/config.html').read_text(encoding='utf-8')
         assert registry.count("'" + FIELD + "'") == 1

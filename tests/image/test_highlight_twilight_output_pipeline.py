@@ -18,6 +18,7 @@ def prepare(processor, **settings):
     data[5:15, 5:15] = 65535  # distant horizon remains included
     processor.config = {'LENS_IMAGE_CIRCLE': 100, 'HIGHLIGHT_PROTECTION': {
         'ENABLE': True, 'TWILIGHT_ENABLE': True, 'TWILIGHT_OUTPUT_ENABLE': True,
+        'NIGHT_MOON_EXCLUSION_ENABLE': False,
         'ANY_TARGET': 1.1, 'ANY_DEV': .2, 'TWILIGHT_STAR_ALLOWANCE': .1,
         **settings}}
     ref = SimpleNamespace(hdulist=[SimpleNamespace(data=np.moveaxis(data[:, :, ::-1], -1, 0))],
