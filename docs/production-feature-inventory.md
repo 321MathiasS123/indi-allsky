@@ -1,6 +1,6 @@
 # Production feature inventory and upstream status
 
-Last functional review: **29 October 2026, Europe/Berlin**.
+Last functional review: **2 November 2026, Europe/Berlin**.
 
 The revisions and counts below describe the last reviewed functional snapshot. Later documentation-only commits do not change that baseline. Update this inventory when production functionality or upstream status changes, following the maintenance instructions at the end.
 
@@ -12,16 +12,16 @@ Production contains substantial changes to calibration, exposure control, image 
 
 | Reference | Revision | Meaning |
 | --- | --- | --- |
-| Audited production code | `29ff82407661493fb0ffd467d8d178565cb13aed` | Functional snapshot, last code commit 28 October |
-| Audited upstream main | `938bf860b28a472ed71e801d75b7ec9a230b6fef` | Upstream revision checked at the last review |
-| Last upstream main included in audited production | `18b8407d31843f3df9c69f8b5b16443f7df65c82` | Also the local main branch at audit time |
+| Audited production code | `47c420374f2e37ce80f72688a2955c68b419e8c1` | Functional snapshot after the 2 November sync |
+| Audited upstream main | `b42b9814604be572f703e399e22e5dd4d9d328eb` | Upstream revision checked at the last review |
+| Last upstream main included in audited production | `b42b9814604be572f703e399e22e5dd4d9d328eb` | Also the merge base of both reviewed revisions |
 | Starting parent of first production-specific integration | `254379ebd3c34c6f4f6b272ffbd4afa91aa0f05a` | Upstream revision from 19 August |
 
 The earliest surviving production-specific first-parent commit is [`1a90697c`](https://github.com/321MathiasS123/indi-allsky/commit/1a90697cbf8206c2e3e931f0d39ba479abd4fc65), dated **22 August 2026**, integrating the mini-timelapse overhaul. Dark automation followed the same day. Git does not permanently record a branch creation event, so this is the practical beginning of the production history. Some integrated development began earlier.
 
-At the last functional review, production had **507 commits not in audited upstream main**, including 272 non-merge commits. These are not 507 separate features: the history includes merges, squashes, duplicate cherry-picks, reversions and later upstream equivalents. Relative to the last incorporated upstream revision, the remaining delta spanned 221 files, including extensive tests and generated assets.
+At the last functional review, production had **507 commits not in audited upstream main**, including 271 non-merge commits. These are not 507 separate features: the history includes merges, squashes, duplicate cherry-picks, reversions and later upstream equivalents. Relative to the last incorporated upstream revision, the remaining delta spanned 222 files, including extensive tests and generated assets.
 
-At that review, upstream was two commits ahead of the shared revision: the sensor display-units change and its merge, [PR #3304](https://github.com/aaronwmorris/indi-allsky/pull/3304). That was **upstream work not yet included in production**, rather than a custom feature.
+Production includes the full audited upstream revision, including the [sensor display-units change](https://github.com/aaronwmorris/indi-allsky/pull/3304), the form compatibility fixes and the shared camera-time correction.
 
 “Still custom” below means a functional difference remains in the checked production tree. “Upstream” means the functionality is in the checked upstream main; it does not imply availability in older releases. Defaults refer to source defaults. This inventory does not establish the revision or enabled settings currently running on the camera.
 
@@ -50,7 +50,7 @@ At that review, upstream was two commits ahead of the shared revision: the senso
 | Gallery panorama switch and toolbar | Still custom; [#3225 open](https://github.com/aaronwmorris/indi-allsky/pull/3225) | Different gallery navigation and actions |
 | VirtualSky mirroring and related planet fixes | Still custom; [#3201 open](https://github.com/aaronwmorris/indi-allsky/pull/3201) | Different overlay geometry and mirror-aware solving |
 | Latest capture-health warning | Still custom | Additional warning states and polling |
-| Local-camera DST freshness and VirtualSky time correction | Still custom; [#3309 open](https://github.com/aaronwmorris/indi-allsky/pull/3309) | Different behavior across clock changes |
+| Local-camera DST freshness and VirtualSky time correction | Upstream; [#3309 merged](https://github.com/aaronwmorris/indi-allsky/pull/3309) | Shared on revisions containing the fix; older versions can still differ across clock changes |
 | Automatic timelapse MQTT completion and HA discovery | Still custom | Additional completion events for automations |
 | Chart sizing at fractional browser zoom | Still custom; [#3298 open](https://github.com/aaronwmorris/indi-allsky/pull/3298) | Different chart layout on affected browsers |
 | Mini-timelapse overhaul, bitrate and preview improvements | Upstream | Shared functionality on sufficiently recent versions |
@@ -234,7 +234,7 @@ With separate day colour settings and increased saturation, the daytime saturati
 
 **Why this matters:** disabling highlight protection, smooth transitions and star-aware denoise still does not guarantee upstream-equivalent pixels. Banding, gradients, white balance, gamma, saturation and green-removal comparisons need an actual upstream render.
 
-Sources: [image pipeline](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/image.py), [processing functions](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/processing.py), [SCNR](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/scnr.py).
+Sources: [image pipeline](https://github.com/321MathiasS123/indi-allsky/blob/47c420374f2e37ce80f72688a2955c68b419e8c1/indi_allsky/image.py), [processing functions](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/processing.py), [SCNR](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/scnr.py).
 
 ## Capture lifecycle and performance
 
@@ -395,15 +395,15 @@ Source: [capture health](https://github.com/321MathiasS123/indi-allsky/blob/29ff
 
 ### DST freshness and VirtualSky time correction
 
-**Freshness fix integrated 25 October; shared VirtualSky correction on 28 October. Still custom. PR #3309 open.**
+**Freshness fix integrated 25 October; shared VirtualSky correction on 28 October. Both reached upstream on 2 November through PR #3309.**
 
 Local cameras use the host’s current time directly instead of applying a stale saved UTC offset. Remote cameras retain offset conversion. VirtualSky reuses that shared calculation.
 
 This prevents false local freshness windows and shifted overlay time across daylight-saving changes. It does not change physical exposure or the sensor’s captured pixels.
 
-The final production commit also repairs the VirtualSky test fixture’s package context. That is test maintenance, not another user-facing feature.
+Production also carries a separate correction to the VirtualSky test fixture’s package context. It changes no runtime behavior and is outside PR #3309.
 
-Source: [shared view timing](https://github.com/321MathiasS123/indi-allsky/blob/29ff82407661493fb0ffd467d8d178565cb13aed/indi_allsky/flask/base_views.py), [PR #3309](https://github.com/aaronwmorris/indi-allsky/pull/3309).
+Source: [shared view timing](https://github.com/aaronwmorris/indi-allsky/blob/b42b9814604be572f703e399e22e5dd4d9d328eb/indi_allsky/flask/base_views.py), [PR #3309](https://github.com/aaronwmorris/indi-allsky/pull/3309).
 
 ### Charts and local build hygiene
 
@@ -441,6 +441,7 @@ Dates in this table are GitHub merge timestamps converted to Europe/Berlin. They
 | 2026-10-05 | [#3253](https://github.com/aaronwmorris/indi-allsky/pull/3253) | Daytime MTF white balance | Use daytime channel settings when separate daytime colour is selected. |
 | 2026-10-05 | [#3252](https://github.com/aaronwmorris/indi-allsky/pull/3252) | Sensor day/night settings | Correct SI7021 night heater selection and SI1145 daytime range logging. |
 | 2026-10-12 | [#3268](https://github.com/aaronwmorris/indi-allsky/pull/3268) | ASI676MC archive recovery | Search retained reserves more widely, prefer complete reference triplets, retain strict acceptance and improve reporting. |
+| 2026-11-02 | [#3309](https://github.com/aaronwmorris/indi-allsky/pull/3309) | Local-camera DST freshness and VirtualSky timing | Use current host time for local cameras and the shared camera offset for VirtualSky; retain remote-camera offset conversion. |
 
 ### What can now be treated as shared functionality
 
@@ -448,7 +449,7 @@ The mini-timelapse work includes panorama framing across the horizontal seam, fi
 
 This does **not** mean mini-timelapses can be generated solely from remote or S3-only originals. The checked implementation requires usable local source images. The reviewed external PR [#3170](https://github.com/aaronwmorris/indi-allsky/pull/3170) was closed without merging.
 
-VirtualSky’s original tilted-camera projection, automatic pointing recovery, lens curvature and optional additional calibration are upstream. The custom mirroring, orientation-dependent model handling, planet fixes and DST changes described above remain relevant when reproducing overlay issues.
+VirtualSky’s original tilted-camera projection, automatic pointing recovery, lens curvature, optional calibration and DST timing correction are upstream. Custom mirroring, orientation-dependent model handling and planet fixes still matter when reproducing overlay issues.
 
 The checked ASI676MC implementation and its two feature wiki pages have **no production-versus-upstream residual**. Original purple handling predated production; reserve replacement and full archive recovery were added later and upstreamed. Archive recovery prefers complete normal/purple/normal groups but can retain suitable pairs when needed. Original FITS are preserved, acceptance checks remain strict, and manual uploads retain their fixed evidence collection.
 
@@ -456,7 +457,7 @@ Individual gamma, MTF and daytime white-balance fixes are now shared. Production
 
 ### Open PRs and closed alternatives
 
-Six open upstream PRs correspond to functionality currently present in production: [dark library #3112](https://github.com/aaronwmorris/indi-allsky/pull/3112), [VirtualSky mirroring #3201](https://github.com/aaronwmorris/indi-allsky/pull/3201), [gallery panorama #3225](https://github.com/aaronwmorris/indi-allsky/pull/3225), [Archive sync #3267](https://github.com/aaronwmorris/indi-allsky/pull/3267), [chart sizing #3298](https://github.com/aaronwmorris/indi-allsky/pull/3298) and [DST timing #3309](https://github.com/aaronwmorris/indi-allsky/pull/3309).
+Five open upstream PRs correspond to functionality currently present in production: [dark library #3112](https://github.com/aaronwmorris/indi-allsky/pull/3112), [VirtualSky mirroring #3201](https://github.com/aaronwmorris/indi-allsky/pull/3201), [gallery panorama #3225](https://github.com/aaronwmorris/indi-allsky/pull/3225), [Archive sync #3267](https://github.com/aaronwmorris/indi-allsky/pull/3267) and [chart sizing #3298](https://github.com/aaronwmorris/indi-allsky/pull/3298).
 
 The earlier dark-library PR [#3106](https://github.com/aaronwmorris/indi-allsky/pull/3106) was closed without merging; #3112 is the active replacement. The early panorama mini-timelapse PR [#3052](https://github.com/aaronwmorris/indi-allsky/pull/3052) was also closed without merging, while the broader implementation reached main through #3065. A closed PR must therefore not automatically be read as either “merged” or “functionality absent.”
 
@@ -486,8 +487,9 @@ These are production integration dates, grouping repeated refinements into funct
 | 16–18 October | Polaris protection, VirtualSky-assisted denoise, cached BPMs, cloud-aware motion and SyncAPI TLS classification | Custom |
 | 19 October | Chart zoom sizing and twilight horizon highlight protection | Custom |
 | 24 October | Whole-image and per-colour twilight forecasts | Custom |
-| 25–26 October | DST freshness, output-driven twilight control, live CPU budget, background compressed FITS, Moon-night exception/gain policy and continuous handover | Custom |
-| 28 October | VirtualSky shared DST offset and fixture correction | Runtime correction custom; fixture is test maintenance |
+| 25–26 October | DST freshness, output-driven twilight control, live CPU budget, background compressed FITS, Moon-night exception/gain policy and continuous handover | DST freshness upstream; the other changes remain custom |
+| 28 October | VirtualSky shared DST offset and fixture correction | Runtime correction upstream; fixture is test maintenance |
+| 2 November | Synchronized with upstream main, including PR #3309 | DST freshness and VirtualSky timing now shared |
 
 ## Experiments and changes that are not current production features
 
@@ -527,7 +529,7 @@ Retained feature branches are not a reliable substitute for checking the product
 | Camera stalls, restart or missing final frames | Actual-frame watchdog, fixed/adaptive timeout, period drain and fresh-worker recovery |
 | Load-dependent faults | CPU budget/priority, compressed FITS background saving and backlog/spool pressure |
 | SyncAPI transfers | Live versus Archive mode, both receiver versions, hardened lookup/retry/TLS behavior |
-| UI, overlay or freshness | Custom gallery, mirroring/planet corrections, capture-health warnings, DST fix and chart CSS |
+| UI, overlay or freshness | Custom gallery, mirroring/planet corrections, capture-health warnings and chart CSS. For DST, first check whether the upstream revision contains #3309. |
 
 A local observation can still be useful. Describe it as a result on the modified production branch until the relevant behavior has been compared with upstream at a stated revision. A matching result on upstream is stronger evidence than assuming that disabling the obvious feature switches removed every difference.
 
@@ -556,4 +558,4 @@ Update this document whenever production gains, changes, removes or reverts func
 4. Update the status table, affected descriptions, functionality timeline and issue-reproduction guidance. Preserve introduction and upstream merge dates. Record removals and separate experiments without presenting them as active production features.
 5. Refresh the review date, revisions, snapshot counts and affected source links for functional reviews. Use immutable GitHub links for implementation evidence and Europe/Berlin dates for upstream merge timestamps. Keep source defaults distinct from verified live settings and deployment provenance.
 
-The initial review used the production tree and integration history, comparisons with fetched upstream main and live PR metadata. Source permalinks throughout the feature descriptions preserve its implementation evidence. The recorded baseline can also be compared directly through the [custom production delta](https://github.com/321MathiasS123/indi-allsky/compare/18b8407d31843f3df9c69f8b5b16443f7df65c82...29ff82407661493fb0ffd467d8d178565cb13aed).
+The initial review used the production tree and integration history, comparisons with fetched upstream main and live PR metadata. Source permalinks throughout the feature descriptions preserve its implementation evidence. The recorded baseline can also be compared directly through the [custom production delta](https://github.com/321MathiasS123/indi-allsky/compare/b42b9814604be572f703e399e22e5dd4d9d328eb...47c420374f2e37ce80f72688a2955c68b419e8c1).
